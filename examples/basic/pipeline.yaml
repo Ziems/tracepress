@@ -1,0 +1,21 @@
+from: ./stages
+
+defaults:
+  on_child_error: partial
+  ordered: true
+
+id_field: id
+
+pipelines:
+  - in: input/traces.jsonl
+    out: output/overviews.jsonl
+    pipeline:
+      - filter: enabled
+      - tee: output/kept.jsonl
+      - group:
+          expand: split_samples
+          pipeline:
+            - filter: interesting
+            - map: score
+          reduce: summarize_trace
+
