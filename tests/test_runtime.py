@@ -12,7 +12,7 @@ import pytest
 from mine_trace.config import load_config
 from mine_trace.errors import ConfigError, PipelineExecutionError
 from mine_trace.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER
-from mine_trace.runtime import run_config, run_config_async
+from mine_trace.runtime import run_config, run_config_async, run_stream, run_stream_async
 
 
 def write_jsonl(path: Path, records: list[object]) -> None:
@@ -157,6 +157,236 @@ pipelines:
 
     assert "[mine-trace] reduce: merge" in stream.getvalue()
     assert "2/2" in stream.getvalue()
+
+
+def test_stream_processes_appended_lines_and_writes_checkpoint(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def double(record):
+    return {**record, "value": record["value"] * 2}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: double
+""",
+        [],
+    )
+
+    async def run() -> None:
+        task = asyncio.create_task(run_stream_async(config, max_records=2, poll_interval=0.01, progress=False))
+        await asyncio.sleep(0.02)
+        with (tmp_path / "input.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"id": "a", "value": 2}) + "\n")
+            handle.write(json.dumps({"id": "b", "value": 3}) + "\n")
+        await task
+
+    asyncio.run(run())
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [
+        {"id": "a", "value": 4},
+        {"id": "b", "value": 6},
+    ]
+    checkpoints = list((tmp_path / ".mine-trace" / "checkpoints").glob("*.json"))
+    assert len(checkpoints) == 1
+    checkpoint = json.loads(checkpoints[0].read_text(encoding="utf-8"))
+    assert checkpoint["inputs"][str(tmp_path / "input.jsonl")]["offset"] == (tmp_path / "input.jsonl").stat().st_size
+
+
+def test_stream_ignores_partial_line_until_newline(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def double(record):
+    return {**record, "value": record["value"] * 2}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: double
+""",
+        [],
+    )
+    (tmp_path / "input.jsonl").write_text('{"id":"a","value":2}', encoding="utf-8")
+
+    run_stream(config, stop_when_idle=True, poll_interval=0.01, progress=False)
+
+    assert not (tmp_path / "output.jsonl").exists()
+
+    with (tmp_path / "input.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write("\n")
+    run_stream(config, max_records=1, poll_interval=0.01, progress=False)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "value": 4}]
+
+
+def test_stream_resumes_from_checkpoint(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def double(record):
+    return {**record, "value": record["value"] * 2}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: double
+""",
+        [{"id": "a", "value": 2}],
+    )
+
+    run_stream(config, max_records=1, poll_interval=0.01, progress=False)
+    with (tmp_path / "input.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"id": "b", "value": 3}) + "\n")
+    run_stream(config, max_records=1, poll_interval=0.01, progress=False)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [
+        {"id": "a", "value": 4},
+        {"id": "b", "value": 6},
+    ]
+
+
+def test_stream_from_end_skips_existing_lines(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def double(record):
+    return {**record, "value": record["value"] * 2}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: double
+""",
+        [{"id": "old", "value": 2}],
+    )
+
+    run_stream(config, from_end=True, stop_when_idle=True, poll_interval=0.01, progress=False)
+    with (tmp_path / "input.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"id": "new", "value": 3}) + "\n")
+    run_stream(config, max_records=1, poll_interval=0.01, progress=False)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "new", "value": 6}]
+
+
+def test_stream_skips_blank_lines(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def double(record):
+    return {**record, "value": record["value"] * 2}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: double
+""",
+        [],
+    )
+    (tmp_path / "input.jsonl").write_text("\n\n" + json.dumps({"id": "a", "value": 2}) + "\n", encoding="utf-8")
+
+    run_stream(config, max_records=3, poll_interval=0.01, progress=False)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "value": 4}]
+
+
+def test_stream_routes_records_through_pipeline_dag(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def double(record):
+    return {**record, "value": record["value"] * 2}
+
+def add_one(record):
+    return {**record, "value": record["value"] + 1}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: intermediate.jsonl
+    pipeline:
+      - map: double
+  - in: intermediate.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: add_one
+""",
+        [{"id": "a", "value": 2}],
+    )
+
+    run_stream(config, max_records=1, poll_interval=0.01, progress=False)
+
+    assert read_jsonl(tmp_path / "intermediate.jsonl") == [{"id": "a", "value": 4}]
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "value": 5}]
+
+
+def test_stream_rejects_by_groups(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def total(children):
+    return {"total": len(children)}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          by: kind
+          reduce: total
+""",
+        [{"id": "a", "kind": "x"}],
+    )
+
+    with pytest.raises(PipelineExecutionError, match="close condition"):
+        run_stream(config, max_records=1, progress=False)
+
+
+def test_stream_flushes_incomplete_every_on_shutdown(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def merge(children, ctx):
+    return {"window": ctx.key, "ids": [child["id"] for child in children]}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          every: 2
+          reduce: merge
+""",
+        [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+    )
+
+    run_stream(config, max_records=3, poll_interval=0.01, progress=False)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [
+        {"ids": ["a", "b"], "window": 1},
+        {"ids": ["c"], "window": 2},
+    ]
 
 
 def test_expand_group_handles_varying_sizes_and_empty_groups(tmp_path: Path) -> None:
