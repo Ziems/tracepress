@@ -2,7 +2,7 @@
 name = "mine-trace"
 version = "0.1.0"
 description = "Config-driven map/filter/reduce runtime for variable-size groups."
-readme = "pipeline-spec.md"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "dspy>=3.3.1",
