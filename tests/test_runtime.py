@@ -7,6 +7,7 @@ import pytest
 
 from mine_trace.config import load_config
 from mine_trace.errors import ConfigError, PipelineExecutionError
+from mine_trace.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER
 from mine_trace.runtime import run_config
 
 
@@ -488,3 +489,438 @@ pipelines:
 
     with pytest.raises(ConfigError, match="post-MVP"):
         load_config(config)
+
+
+def test_lm_map_field_mapping_passthrough_and_model_override(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class LabelSignature:
+    input_fields = {"text": Field(str)}
+    output_fields = {"label": Field(str), "confidence": Field(float)}
+
+
+class LabelModule:
+    signature = LabelSignature()
+
+    def __init__(self):
+        self.models = []
+
+    def with_model(self, model):
+        self.models.append(model)
+        return self
+
+    def __call__(self, **kwargs):
+        assert "model" not in kwargs
+        return {"label": kwargs["text"].upper(), "confidence": 0.8}
+
+
+label = LabelModule()
+""",
+        """
+from: ./stages
+lm:
+  default: strong-model
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map:
+          stage: label
+          lm:
+            model: cheap-model
+""",
+        [{"id": "a", "text": "alpha", "untouched": True}],
+    )
+
+    loaded = load_config(config)
+    assert loaded.pipelines[0].steps[0].stage.lm_model == "cheap-model"
+    run_config(loaded)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [
+        {"confidence": 0.8, "id": "a", "label": "ALPHA", "text": "alpha", "untouched": True}
+    ]
+    assert loaded.module.label.models == ["cheap-model"]
+
+
+def test_lm_config_validation_default_model_python_lm_options_and_filter_shape(tmp_path: Path) -> None:
+    stages = """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class LabelSignature:
+    input_fields = {"text": Field(str)}
+    output_fields = {"label": Field(str)}
+
+
+class LabelModule:
+    signature = LabelSignature()
+    def __call__(self, **kwargs):
+        return {"label": kwargs["text"]}
+
+
+def py_stage(record):
+    return record
+
+
+label = LabelModule()
+"""
+    default_model = write_project(
+        tmp_path / "default-model",
+        stages,
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "hello"}],
+    )
+    loaded = load_config(default_model)
+    stage = loaded.pipelines[0].steps[0].stage
+    assert stage is not None
+    assert stage.lm_provider == DEFAULT_LM_PROVIDER
+    assert stage.lm_model == DEFAULT_LM_MODEL
+
+    python_lm = write_project(
+        tmp_path / "python-lm",
+        stages,
+        """
+from: ./stages
+lm:
+  default: model
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map:
+          stage: py_stage
+          lm:
+            model: model
+""",
+        [{"id": "a", "text": "hello"}],
+    )
+    with pytest.raises(ConfigError, match="Python stage"):
+        load_config(python_lm)
+
+    bad_filter = write_project(
+        tmp_path / "bad-filter",
+        stages,
+        """
+from: ./stages
+lm:
+  default: model
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - filter: label
+""",
+        [{"id": "a", "text": "hello"}],
+    )
+    with pytest.raises(ConfigError, match="LM filter"):
+        load_config(bad_filter)
+
+    bad_provider = write_project(
+        tmp_path / "bad-provider",
+        stages,
+        """
+from: ./stages
+lm:
+  provider: local
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "hello"}],
+    )
+    with pytest.raises(ConfigError, match="openrouter"):
+        load_config(bad_provider)
+
+
+def test_lm_openrouter_default_provider_invocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+
+class Label(dspy.Signature):
+    \"\"\"Return a concise material label.\"\"\"
+
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label = dspy.Predict(Label)
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"label": "ORE"})}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return Response()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("mine_trace.runtime.urlopen", fake_urlopen)
+
+    run_config(config)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "label": "ORE", "text": "ore"}]
+    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert captured["timeout"] == 60
+    assert captured["body"]["model"] == DEFAULT_LM_MODEL
+    assert captured["body"]["messages"][1]["role"] == "user"
+    assert json.loads(captured["body"]["messages"][1]["content"]) == {
+        "inputs": {"text": "ore"},
+        "instructions": "Return a concise material label.",
+        "output_fields": ["label"],
+        "stage": "label",
+    }
+
+
+def test_lm_missing_input_field_has_clear_error(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class LabelSignature:
+    input_fields = {"text": Field(str)}
+    output_fields = {"label": Field(str)}
+
+
+class LabelModule:
+    signature = LabelSignature()
+    def __call__(self, **kwargs):
+        return {"label": kwargs["text"]}
+
+
+label = LabelModule()
+""",
+        """
+from: ./stages
+lm:
+  default: model
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "body": "hello"}],
+    )
+
+    with pytest.raises(PipelineExecutionError, match="missing input field `text`"):
+        run_config(config)
+
+
+def test_lm_filter_expand_and_reduce(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class SplitSignature:
+    input_fields = {"text": Field(str)}
+    output_fields = {"sessions": Field(list[dict])}
+
+
+class KeepSignature:
+    input_fields = {"score": Field(int)}
+    output_fields = {"keep": Field(bool)}
+
+
+class MergeSignature:
+    input_fields = {"trace": Field(str), "label": Field(list[str])}
+    output_fields = {"summary": Field(str)}
+
+
+class Module:
+    def __init__(self, signature, fn):
+        self.signature = signature
+        self.fn = fn
+
+    def with_model(self, model):
+        return self
+
+    def __call__(self, **kwargs):
+        return self.fn(kwargs)
+
+
+split = Module(SplitSignature(), lambda kwargs: {
+    "sessions": [
+        {"id": f"{kwargs['text']}-1", "label": "hot", "score": 9},
+        {"id": f"{kwargs['text']}-2", "label": "cold", "score": 2},
+    ]
+})
+keep = Module(KeepSignature(), lambda kwargs: {"keep": kwargs["score"] > 5})
+merge = Module(MergeSignature(), lambda kwargs: {
+    "summary": f"{kwargs['trace']}:{','.join(kwargs['label'])}"
+})
+""",
+        """
+from: ./stages
+lm:
+  default: model
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          expand: split
+          pipeline:
+            - filter: keep
+          reduce: merge
+""",
+        [{"id": "trace-a", "trace": "A", "text": "session"}],
+    )
+
+    run_config(config)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [
+        {"summary": "A:hot", "text": "session", "trace": "A", "id": "trace-a"}
+    ]
+
+
+def test_lm_reduce_by_group_gets_synthetic_parent_key(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class MergeSignature:
+    input_fields = {"kind": Field(str), "value": Field(list[int])}
+    output_fields = {"summary": Field(str)}
+
+
+class MergeModule:
+    signature = MergeSignature()
+    def with_model(self, model):
+        return self
+    def __call__(self, **kwargs):
+        return {"summary": f"{kwargs['kind']}={sum(kwargs['value'])}"}
+
+
+merge = MergeModule()
+""",
+        """
+from: ./stages
+lm:
+  default: model
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          by: kind
+          reduce: merge
+""",
+        [
+            {"id": 1, "kind": "ore", "value": 2},
+            {"id": 2, "kind": "ore", "value": 5},
+        ],
+    )
+
+    run_config(config)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"kind": "ore", "summary": "ore=7"}]
+
+
+def test_lm_invalid_output_flows_through_child_error_policy(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class BadSignature:
+    input_fields = {"text": Field(str)}
+    output_fields = {"label": Field(str)}
+
+
+class BadModule:
+    signature = BadSignature()
+    def with_model(self, model):
+        return self
+    def __call__(self, **kwargs):
+        if kwargs["text"] == "bad":
+            return {}
+        return {"label": kwargs["text"]}
+
+
+def split(record, ctx):
+    for text in record["items"]:
+        ctx.emit({"id": text, "text": text})
+
+
+def merge(children, ctx):
+    return {"labels": [child["label"] for child in children], "failures": len(ctx.failures)}
+
+
+bad = BadModule()
+""",
+        """
+from: ./stages
+lm:
+  default: model
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          expand: split
+          on_child_error: partial
+          pipeline:
+            - map: bad
+          reduce: merge
+""",
+        [{"id": "parent", "items": ["good", "bad"]}],
+    )
+
+    run_config(config)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"failures": 1, "labels": ["good"]}]

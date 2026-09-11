@@ -12,13 +12,14 @@ does not change. `- map: label` is written identically whether `label` is a Pyth
 an LM module.
 
 Everything semantic about the stage lives in the stage. The signature, the instructions, and
-any few-shot demonstrations are all properties of the module in `./stages`. The model id is
-execution policy and belongs in config, because changing from a cheap model to a stronger model
-should not require editing stage code.
+any few-shot demonstrations are all properties of the module in `./stages`. The provider and
+model id are execution policy and belong in config, because changing from a cheap model to a
+stronger model should not require editing stage code. The MVP has a built-in provider and model
+default so a first LM pipeline can run without extra YAML.
 
 This preserves base spec principle 2, config owns the topology. A prompt is not topology, and a
 model id is not topology either. What the config gains is the ability to say "run this declared
-stage with this model," and nothing more in the MVP.
+stage with this provider and model," and nothing more in the MVP.
 
 **Explicitly deferred.** Context window management, folding, and hierarchical reduce are out of
 scope for this amendment. Assume any reduce input fits in one call. The base spec's variable
@@ -32,13 +33,13 @@ without adding a second runtime.
 
 In scope for the LM MVP:
 
-- Duck-typed LM stage detection using an inspectable `signature` with `input_fields` and
+- DSPy-backed LM stages, detected through an inspectable `signature` with `input_fields` and
   `output_fields`.
-- No hard dependency on DSPy in the runtime. DSPy is the reference shape; tests can use a small
-  fake module with the same surface.
+- Duck typing for the signature surface where practical, so tests and small custom modules can
+  use the same contract without invoking DSPy.
 - LM stages in `map`, `filter`, `expand`, and `reduce`.
-- A minimal `lm` config surface for model selection: top-level default model and per-step model
-  override.
+- A minimal `lm` config surface for provider and model selection: built-in OpenRouter/DeepSeek
+  defaults, top-level overrides, and per-step model override.
 - Field mapping, passthrough, and clear missing-field errors.
 - Load-time signature validation for `filter`, `expand`, and `reduce`.
 - Reduce field resolution from gathered children plus parent fields, including synthetic parent
@@ -48,7 +49,7 @@ In scope for the LM MVP:
 
 Post-MVP:
 
-- `lm` config policy beyond model selection, including retries and repair.
+- `lm` config policy beyond provider/model selection, including retries and repair.
 - Record-level caching and module-state hashing.
 - Structured LM invocation tracing.
 - LM-specific concurrency limits.
@@ -74,9 +75,9 @@ label = dspy.Predict(Label)
 - map: label
 ```
 
-DSPy is the reference implementation, not a hard dependency. Detect LM modules by duck typing on
-the presence of an introspectable `signature` attribute exposing `input_fields` and
-`output_fields`, so a custom module class works without modification.
+DSPy is the supported authoring dependency. Detect LM modules by duck typing on the presence of
+an introspectable `signature` attribute exposing `input_fields` and `output_fields`, so a small
+custom module class can still work in tests or local experiments without modification.
 
 ## A3. Amends section 3, stage contract
 
@@ -179,11 +180,21 @@ there is no parent field unless a later config form gives that key a name.
 
 ## A7. Config additions
 
-The only new MVP config surface is model selection.
+The only new MVP config surface is provider and model selection. If `lm` is omitted, Mine Trace
+uses:
 
 ```yaml
 lm:
-  default: openai/gpt-4o
+  provider: openrouter
+  default: deepseek/deepseek-v4.1-flash
+```
+
+The default model id is the OpenRouter slug for DeepSeek V4.1 Flash.
+
+```yaml
+lm:
+  provider: openrouter
+  default: deepseek/deepseek-v4.1-flash
 
 pipelines:
   - in: traces.jsonl
@@ -192,18 +203,18 @@ pipelines:
       - filter: keep
       - map:
           stage: label
-          lm: {model: openai/gpt-4o-mini}
+          lm: {model: openai/gpt-4o}
 ```
 
 The expanded step form, a mapping with `stage:` plus options, must also work for Python stages.
 Do not create two step grammars.
 
-A per-step `lm.model` overrides the top-level `lm.default`.
+A per-step `lm.model` overrides the top-level `lm.default` or built-in default for that stage.
 
-If any LM stage is used, a model must be resolvable from either the per-step `lm.model` or
-top-level `lm.default`; otherwise config loading fails before any input is read. A per-step
-`lm` block on a Python stage is a load error, because model selection only has meaning for LM
-stages.
+If any LM stage is used, a model is resolved from the per-step `lm.model`, top-level
+`lm.default`, or built-in default, in that order. A per-step `lm` block on a Python stage is a
+load error, because model selection only has meaning for LM stages. Providers other than
+OpenRouter are post-MVP and fail at load time.
 
 The resolved model id is passed to the LM adapter/provider. It is not a signature input field
 and is not visible to the module unless the adapter's backend chooses to bind it there.
@@ -212,7 +223,8 @@ Post-MVP, this `lm` block may grow policy fields such as:
 
 ```yaml
 lm:
-  default: openai/gpt-4o
+  provider: openrouter
+  default: deepseek/deepseek-v4.1-flash
   cache: true
   max_concurrent: 32
   retries: 3
@@ -291,8 +303,8 @@ constructors should already be tested before LM stages enter the picture.
 ### LM MVP
 
 1. LM module detection and field mapping, A2 and A4.
-2. Minimal model config: top-level `lm.default`, per-step `lm.model`, and load-time failure when
-   an LM stage has no model.
+2. Minimal model config: built-in OpenRouter/DeepSeek defaults, top-level `lm.provider` and
+   `lm.default`, and per-step `lm.model`.
 3. Expanded step form, shared by Python and LM stages.
 4. LM `map`, including passthrough, output merge, and missing-field errors.
 5. Load-time signature validation for LM `filter`, `expand`, and `reduce`, A5.
@@ -304,7 +316,7 @@ constructors should already be tested before LM stages enter the picture.
 
 1. Structured tracing, A10.
 2. Caching with module-state hashing, A9.
-3. `lm` config policy beyond model selection, including retries and repair, A7 and A8.
+3. `lm` config policy beyond provider/model selection, including retries and repair, A7 and A8.
 4. LM-specific concurrency limits after the base concurrency work exists.
 5. Optimization only as a separate later amendment.
 
@@ -329,35 +341,38 @@ Additive to base spec section 17. Numbering continues from 27.
 33. **Expand without a list output** is a load error.
 34. **Reduce without a list input** is a load error.
 35. **Uninspectable non-callable module** is a load error rather than an LM stage.
-36. **Missing model.** A config that uses an LM stage without top-level `lm.default` or
-    per-step `lm.model` fails at load time.
-37. **Python stage with LM options.** A per-step `lm` block on a Python stage is a load error.
+36. **Built-in LM defaults.** A config that uses an LM stage without an `lm` block resolves to
+    `provider: openrouter` and `default: deepseek/deepseek-v4.1-flash`.
+37. **Unsupported provider.** A provider other than `openrouter` is a load error.
+38. **Python stage with LM options.** A per-step `lm` block on a Python stage is a load error.
 
 **Semantics**
 
-38. **LM expand with variable output.** One trace yields 10 sessions, another yields 30. Both
+39. **LM expand with variable output.** One trace yields 10 sessions, another yields 30. Both
     groups reduce correctly. This is base spec test 1 driven by a model rather than by code.
-39. **LM reduce field resolution.** A parent field and a gathered child field both populate
+40. **LM reduce field resolution.** A parent field and a gathered child field both populate
     correctly.
-40. **Gather order.** With `ordered: true`, the gathered list follows emit path order.
-41. **Mixed pipeline.** Python and LM stages interleave in one pipeline and both work.
-42. **Per-step model override.** The adapter receives the per-step model instead of the top-level
+41. **Gather order.** With `ordered: true`, the gathered list follows emit path order.
+42. **Mixed pipeline.** Python and LM stages interleave in one pipeline and both work.
+43. **Per-step model override.** The adapter receives the per-step model instead of the top-level
     default for that stage.
-43. **`by` synthetic parent.** An LM reduce in a `by` group can receive the named grouping key as
+44. **OpenRouter adapter call.** A non-callable declarative LM stage invokes OpenRouter with the
+    default model and JSON-object response format.
+45. **`by` synthetic parent.** An LM reduce in a `by` group can receive the named grouping key as
     a parent-derived input field.
 
 **Policy**
 
-44. **Invalid output fails through the adapter.** A module missing a required output field raises
+46. **Invalid output fails through the adapter.** A module missing a required output field raises
     with the stage name and missing field.
-45. **Adapter error policy.** Invalid output flows through `on_child_error: partial`, reducing
+47. **Adapter error policy.** Invalid output flows through `on_child_error: partial`, reducing
     over survivors.
 
 ### Post-MVP tests
 
 **Tracing**
 
-46. **Invocation trace.** Every LM call records inputs, outputs, stage name, module hash, emit
+48. **Invocation trace.** Every LM call records inputs, outputs, stage name, module hash, emit
     path, group id, and parent identity.
 
 **Caching**

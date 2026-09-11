@@ -5,6 +5,7 @@ description = "Config-driven map/filter/reduce runtime for variable-size groups.
 readme = "pipeline-spec.md"
 requires-python = ">=3.12"
 dependencies = [
+    "dspy>=3.3.1",
     "PyYAML>=6.0.2",
 ]
 

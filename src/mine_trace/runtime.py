@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, get_origin
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from mine_trace.config import load_config
 from mine_trace.errors import PipelineExecutionError
@@ -83,7 +86,11 @@ class _GroupState:
 
     @property
     def parent_record(self) -> Any:
-        return self.parent_env.record if self.parent_env is not None else None
+        if self.parent_env is not None:
+            return self.parent_env.record
+        if self.spec.kind == "by" and isinstance(self.spec.by, str):
+            return {self.spec.by: self.key}
+        return None
 
     def increment(self, count: int = 1) -> None:
         self.outstanding += count
@@ -261,7 +268,7 @@ class _Runtime:
             try:
                 emitted = self.call_stage_for_env(step.stage, env)
             except Exception as exc:
-                if active_group is None or isinstance(exc, PipelineExecutionError):
+                if active_group is None:
                     raise
                 emitted = active_group.fail_child(env, step.stage.name, exc)
                 failed_under_policy = True
@@ -454,7 +461,9 @@ class _Runtime:
         failures: list[Failure],
     ) -> list[Any]:
         ctx = _CallContext(self, stage.name, source, parent, group_id, key, index, path, depth, failures)
-        result = stage.fn(arg, ctx) if stage.accepts_ctx else stage.fn(arg)
+        if stage.kind == "lm":
+            return self._call_lm_stage(stage, arg, parent, path)
+        result = stage.target(arg, ctx) if stage.accepts_ctx else stage.target(arg)
         if result is not None and ctx.emitted:
             identity = self.record_identity(arg, path)
             raise PipelineExecutionError(f"Stage `{stage.name}` both returned a value and emitted for record {identity}.")
@@ -462,6 +471,98 @@ class _Runtime:
             self.stats.emitted += 1
             return [result]
         return ctx.emitted
+
+    def _call_lm_stage(self, stage: StageRef, arg: Any, parent: Any, path: tuple[int, ...]) -> list[Any]:
+        if stage.lm_signature is None:
+            raise PipelineExecutionError(f"LM stage `{stage.name}` has no signature.")
+        if stage.role == "reduce":
+            kwargs = self._lm_reduce_kwargs(stage, arg, parent, path)
+        else:
+            kwargs = self._lm_record_kwargs(stage, arg, path)
+        prediction = self._invoke_lm(stage, kwargs)
+        outputs = self._lm_outputs(stage, prediction)
+        if stage.role == "map":
+            if not isinstance(arg, dict):
+                raise PipelineExecutionError(f"LM map `{stage.name}` can only merge outputs into dict records.")
+            self.stats.emitted += 1
+            return [{**arg, **outputs}]
+        if stage.role == "filter":
+            keep_field = stage.lm_signature.output_fields[0].name
+            self.stats.emitted += 1 if outputs[keep_field] else 0
+            return [arg] if outputs[keep_field] else []
+        if stage.role == "expand":
+            output_field = stage.lm_signature.output_fields[0].name
+            children = outputs[output_field]
+            if not isinstance(children, list):
+                raise PipelineExecutionError(f"LM expand `{stage.name}` output `{output_field}` must be a list.")
+            self.stats.emitted += len(children)
+            return children
+        if stage.role == "reduce":
+            parent_record = parent if isinstance(parent, dict) else {}
+            self.stats.emitted += 1
+            return [{**parent_record, **outputs}]
+        raise PipelineExecutionError(f"LM stage `{stage.name}` cannot be used as `{stage.role}`.")
+
+    def _lm_record_kwargs(self, stage: StageRef, record: Any, path: tuple[int, ...]) -> dict[str, Any]:
+        if not isinstance(record, dict):
+            raise PipelineExecutionError(f"LM stage `{stage.name}` requires dict records for field mapping.")
+        assert stage.lm_signature is not None
+        kwargs = {}
+        for field in stage.lm_signature.input_fields:
+            if field.name not in record:
+                keys = sorted(str(key) for key in record)
+                raise PipelineExecutionError(
+                    f"LM stage `{stage.name}` missing input field `{field.name}` for "
+                    f"{self.record_identity(record, path)}; record keys: {keys}"
+                )
+            kwargs[field.name] = record[field.name]
+        return kwargs
+
+    def _lm_reduce_kwargs(self, stage: StageRef, children: Any, parent: Any, path: tuple[int, ...]) -> dict[str, Any]:
+        if not isinstance(children, list):
+            raise PipelineExecutionError(f"LM reduce `{stage.name}` expected a list of children.")
+        assert stage.lm_signature is not None
+        list_fields = [field for field in stage.lm_signature.input_fields if _is_list_annotation(field.annotation)]
+        list_field = list_fields[0]
+        parent_record = parent if isinstance(parent, dict) else {}
+        kwargs = {list_field.name: _gather_children(list_field.name, children)}
+        for field in stage.lm_signature.input_fields:
+            if field.name == list_field.name:
+                continue
+            if field.name not in parent_record:
+                keys = sorted(str(key) for key in parent_record)
+                raise PipelineExecutionError(
+                    f"LM reduce `{stage.name}` missing parent field `{field.name}` for path "
+                    f"{'.'.join(str(item) for item in path) or '<root>'}; parent keys: {keys}"
+                )
+            kwargs[field.name] = parent_record[field.name]
+        return kwargs
+
+    def _invoke_lm(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
+        target = stage.target
+        if stage.lm_provider == "openrouter" and _is_dspy_target(target):
+            return _call_openrouter(stage, kwargs)
+        if hasattr(target, "with_model"):
+            target = target.with_model(stage.lm_model)
+        if callable(target):
+            return target(**kwargs)
+        if stage.lm_provider == "openrouter":
+            return _call_openrouter(stage, kwargs)
+        raise PipelineExecutionError(f"Unsupported LM provider `{stage.lm_provider}` for stage `{stage.name}`.")
+
+    def _lm_outputs(self, stage: StageRef, prediction: Any) -> dict[str, Any]:
+        assert stage.lm_signature is not None
+        outputs = {}
+        for field in stage.lm_signature.output_fields:
+            if isinstance(prediction, dict):
+                if field.name not in prediction:
+                    raise PipelineExecutionError(f"LM stage `{stage.name}` missing output field `{field.name}`.")
+                outputs[field.name] = prediction[field.name]
+            elif hasattr(prediction, field.name):
+                outputs[field.name] = getattr(prediction, field.name)
+            else:
+                raise PipelineExecutionError(f"LM stage `{stage.name}` missing output field `{field.name}`.")
+        return outputs
 
     def _assert_emit_count(self, step: Step, env: _Envelope, emitted: list[Any]) -> None:
         if step.kind == "map" and len(emitted) != 1:
@@ -520,3 +621,101 @@ def _hashable_key(value: Any) -> Any:
 
 def _is_scalar(value: Any) -> bool:
     return isinstance(value, str | int | float | bool) and value is not None
+
+
+def _is_list_annotation(annotation: Any) -> bool:
+    if annotation is list or annotation == "list":
+        return True
+    if isinstance(annotation, str):
+        return annotation.startswith("list[") or annotation.startswith("typing.List[")
+    return get_origin(annotation) is list
+
+
+def _gather_children(field_name: str, children: list[Any]) -> list[Any]:
+    if children and all(isinstance(child, dict) and field_name in child for child in children):
+        return [child[field_name] for child in children]
+    return children
+
+
+def _is_dspy_target(target: Any) -> bool:
+    module = getattr(type(target), "__module__", "")
+    return module == "dspy" or module.startswith("dspy.")
+
+
+def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise PipelineExecutionError("OPENROUTER_API_KEY is required for OpenRouter LM stages.")
+    assert stage.lm_signature is not None
+    output_fields = [field.name for field in stage.lm_signature.output_fields]
+    instructions = _lm_instructions(stage.target)
+    body = {
+        "model": stage.lm_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are executing a Mine Trace declarative stage. "
+                    "Return only a JSON object. Include exactly the requested output fields."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "stage": stage.name,
+                        "instructions": instructions,
+                        "inputs": kwargs,
+                        "output_fields": output_fields,
+                    },
+                    sort_keys=True,
+                ),
+            },
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+    }
+    request = Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "X-OpenRouter-Title": "mine-trace",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise PipelineExecutionError(f"OpenRouter request failed for `{stage.name}`: HTTP {exc.code} {detail}") from exc
+    except URLError as exc:
+        raise PipelineExecutionError(f"OpenRouter request failed for `{stage.name}`: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise PipelineExecutionError(f"OpenRouter request timed out for `{stage.name}`.") from exc
+
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` did not contain message content.") from exc
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` was not valid JSON: {content}") from exc
+    if not isinstance(parsed, dict):
+        raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` must be a JSON object.")
+    return parsed
+
+
+def _lm_instructions(target: Any) -> str:
+    instructions = getattr(target, "instructions", None)
+    if instructions:
+        return str(instructions)
+    signature = getattr(target, "signature", None)
+    doc = getattr(signature, "__doc__", None) or getattr(type(signature), "__doc__", None)
+    if doc:
+        return str(doc).strip()
+    doc = getattr(target, "__doc__", None) or getattr(type(target), "__doc__", None)
+    return str(doc).strip() if doc else ""

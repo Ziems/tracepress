@@ -8,15 +8,36 @@ from typing import Any, Callable, Literal
 
 StepKind = Literal["map", "filter", "stage", "tee", "group"]
 GroupKind = Literal["expand", "by", "every"]
+StageKind = Literal["python", "lm"]
 ChildErrorPolicy = Literal["fail", "partial", "skip"]
 IncompletePolicy = Literal["fail", "partial"]
+
+DEFAULT_LM_PROVIDER = "openrouter"
+DEFAULT_LM_MODEL = "deepseek/deepseek-v4.1-flash"
+
+
+@dataclass(frozen=True)
+class LmField:
+    name: str
+    annotation: Any = None
+
+
+@dataclass(frozen=True)
+class LmSignature:
+    input_fields: tuple[LmField, ...]
+    output_fields: tuple[LmField, ...]
 
 
 @dataclass(frozen=True)
 class StageRef:
     name: str
-    fn: Callable[..., Any]
-    accepts_ctx: bool
+    target: Callable[..., Any] | Any
+    kind: StageKind
+    role: str
+    accepts_ctx: bool = False
+    lm_signature: LmSignature | None = None
+    lm_model: str | None = None
+    lm_provider: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +83,8 @@ class Config:
     module: ModuleType
     defaults: Defaults
     id_field: str | None
+    lm_provider: str
+    lm_default_model: str
     pipelines: tuple[PipelineSpec, ...]
 
 
@@ -94,4 +117,3 @@ class RunStats:
 class RunResult:
     stats: RunStats
     manifest: RunManifest
-

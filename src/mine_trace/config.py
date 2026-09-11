@@ -7,15 +7,29 @@ import os
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, get_origin
 
 import yaml
 
 from mine_trace.errors import ConfigError
-from mine_trace.model import Config, Defaults, GroupSpec, PipelineSpec, StageRef, Step
+from mine_trace.model import (
+    DEFAULT_LM_MODEL,
+    DEFAULT_LM_PROVIDER,
+    Config,
+    Defaults,
+    GroupSpec,
+    LmField,
+    LmSignature,
+    PipelineSpec,
+    StageRef,
+    Step,
+)
 
 
-_KNOWN_TOP_LEVEL = {"from", "defaults", "id_field", "pipelines", "concurrency"}
+_KNOWN_TOP_LEVEL = {"from", "defaults", "id_field", "pipelines", "concurrency", "lm"}
+_KNOWN_LM_KEYS = {"default", "provider"}
+_KNOWN_STEP_OPTIONS = {"stage", "lm"}
+_KNOWN_PER_STEP_LM_KEYS = {"model"}
 _KNOWN_DEFAULTS = {"on_child_error", "on_group_incomplete", "ordered"}
 _STEP_KEYS = {"map", "filter", "stage", "tee", "group"}
 _GROUP_KEYS = {
@@ -56,6 +70,7 @@ def load_config(path: str | Path) -> Config:
 
     module = _load_stage_module(raw["from"], base_dir)
     defaults = _parse_defaults(raw.get("defaults", {}))
+    lm_provider, lm_default_model = _parse_lm_config(raw.get("lm"))
     id_field = raw.get("id_field")
     if id_field is not None and not isinstance(id_field, str):
         raise ConfigError("`id_field` must be a string when provided.")
@@ -65,11 +80,11 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError("`pipelines` must be a non-empty list.")
 
     pipelines = tuple(
-        _parse_pipeline(block, i, base_dir, module, defaults)
+        _parse_pipeline(block, i, base_dir, module, defaults, lm_provider, lm_default_model)
         for i, block in enumerate(pipelines_raw)
     )
     pipelines = _sort_pipelines(pipelines)
-    return Config(config_path, base_dir, module, defaults, id_field, pipelines)
+    return Config(config_path, base_dir, module, defaults, id_field, lm_provider, lm_default_model, pipelines)
 
 
 def _parse_defaults(raw: Any) -> Defaults:
@@ -92,12 +107,35 @@ def _parse_defaults(raw: Any) -> Defaults:
     return Defaults(on_child_error, on_group_incomplete, ordered)
 
 
+def _parse_lm_config(raw: Any) -> tuple[str, str]:
+    if raw is None:
+        return DEFAULT_LM_PROVIDER, DEFAULT_LM_MODEL
+    if not isinstance(raw, dict):
+        raise ConfigError("`lm` must be a mapping.")
+    unknown = set(raw) - _KNOWN_LM_KEYS
+    if unknown:
+        raise ConfigError(f"Unsupported post-MVP `lm` key(s): {sorted(unknown)}")
+    provider = raw.get("provider", DEFAULT_LM_PROVIDER)
+    if not isinstance(provider, str):
+        raise ConfigError("`lm.provider` must be a string when provided.")
+    if provider != "openrouter":
+        raise ConfigError("Only `lm.provider: openrouter` is supported in the LM MVP.")
+    default = raw.get("default")
+    if default is None:
+        default = DEFAULT_LM_MODEL
+    if default is not None and not isinstance(default, str):
+        raise ConfigError("`lm.default` must be a string when provided.")
+    return provider, default
+
+
 def _parse_pipeline(
     raw: Any,
     source_index: int,
     base_dir: Path,
     module: ModuleType,
     defaults: Defaults,
+    lm_provider: str,
+    lm_default_model: str,
 ) -> PipelineSpec:
     if not isinstance(raw, dict):
         raise ConfigError(f"Pipeline {source_index + 1} must be a mapping.")
@@ -115,7 +153,7 @@ def _parse_pipeline(
         raise ConfigError(f"Pipeline {source_index + 1} must have at least one input.")
     inputs = tuple(_normalize_path(item, base_dir, f"pipeline {source_index + 1} input") for item in input_items)
     output = _normalize_path(raw["out"], base_dir, f"pipeline {source_index + 1} output")
-    steps = _parse_steps(raw["pipeline"], base_dir, module, defaults, f"pipeline {source_index + 1}")
+    steps = _parse_steps(raw["pipeline"], base_dir, module, defaults, lm_provider, lm_default_model, f"pipeline {source_index + 1}")
     return PipelineSpec(inputs, output, steps, source_index)
 
 
@@ -124,6 +162,8 @@ def _parse_steps(
     base_dir: Path,
     module: ModuleType,
     defaults: Defaults,
+    lm_provider: str,
+    lm_default_model: str,
     where: str,
 ) -> tuple[Step, ...]:
     if not isinstance(raw, list):
@@ -136,11 +176,16 @@ def _parse_steps(
         if key not in _STEP_KEYS:
             raise ConfigError(f"Unknown step key `{key}` in {where} step {idx}.")
         if key in {"map", "filter", "stage"}:
-            steps.append(Step(kind=key, stage=_resolve_stage(value, module)))
+            steps.append(Step(kind=key, stage=_resolve_stage(value, module, lm_provider, lm_default_model, role=key)))
         elif key == "tee":
             steps.append(Step(kind="tee", path=_normalize_path(value, base_dir, f"{where} tee")))
         else:
-            steps.append(Step(kind="group", group=_parse_group(value, base_dir, module, defaults, f"{where} group step {idx}")))
+            steps.append(
+                Step(
+                    kind="group",
+                    group=_parse_group(value, base_dir, module, defaults, lm_provider, lm_default_model, f"{where} group step {idx}"),
+                )
+            )
     return tuple(steps)
 
 
@@ -149,6 +194,8 @@ def _parse_group(
     base_dir: Path,
     module: ModuleType,
     defaults: Defaults,
+    lm_provider: str,
+    lm_default_model: str,
     where: str,
 ) -> GroupSpec:
     if not isinstance(raw, dict):
@@ -175,42 +222,148 @@ def _parse_group(
         raise ConfigError(f"{where} `ordered` must be a boolean.")
 
     kind = present_forms[0]
-    expand = _resolve_stage(raw["expand"], module) if kind == "expand" else None
+    expand = _resolve_stage(raw["expand"], module, lm_provider, lm_default_model, role="expand") if kind == "expand" else None
     by: str | StageRef | None = None
     every: int | None = None
     if kind == "by":
-        if not isinstance(raw["by"], str):
+        if isinstance(raw["by"], dict):
+            by = _resolve_stage(raw["by"], module, lm_provider, lm_default_model, role="by")
+        elif not isinstance(raw["by"], str):
             raise ConfigError(f"{where} `by` must be a field or stage name.")
-        by = _resolve_stage(raw["by"], module, missing_ok=True) or raw["by"]
+        else:
+            by = _resolve_stage(raw["by"], module, lm_provider, lm_default_model, role="by", missing_ok=True) or raw["by"]
     elif kind == "every":
         every = raw["every"]
         if not isinstance(every, int) or every <= 0:
             raise ConfigError(f"{where} `every` must be a positive integer.")
 
-    child_steps = _parse_steps(raw.get("pipeline", []), base_dir, module, defaults, where)
-    reduce = _resolve_stage(raw["reduce"], module)
+    child_steps = _parse_steps(raw.get("pipeline", []), base_dir, module, defaults, lm_provider, lm_default_model, where)
+    reduce = _resolve_stage(raw["reduce"], module, lm_provider, lm_default_model, role="reduce")
     return GroupSpec(kind, expand, by, every, child_steps, reduce, on_child_error, on_group_incomplete, ordered)
 
 
-def _resolve_stage(raw: Any, module: ModuleType, missing_ok: bool = False) -> StageRef | None:
-    if not isinstance(raw, str):
-        raise ConfigError("Stage names must be strings.")
-    if not hasattr(module, raw):
+def _resolve_stage(
+    raw: Any,
+    module: ModuleType,
+    lm_provider: str,
+    lm_default_model: str,
+    role: str,
+    missing_ok: bool = False,
+) -> StageRef | None:
+    name, step_model = _parse_stage_selector(raw)
+    if not hasattr(module, name):
         if missing_ok:
             return None
-        raise ConfigError(f"Unknown stage `{raw}`.")
-    fn = getattr(module, raw)
+        raise ConfigError(f"Unknown stage `{name}`.")
+    fn = getattr(module, name)
+    lm_signature = _lm_signature(fn)
+    if lm_signature is not None:
+        model = step_model or lm_default_model
+        _validate_lm_stage(name, role, lm_signature)
+        return StageRef(name, fn, kind="lm", role=role, lm_signature=lm_signature, lm_model=model, lm_provider=lm_provider)
+    if step_model is not None:
+        raise ConfigError(f"Python stage `{name}` cannot declare `lm` options.")
     if not callable(fn):
-        raise ConfigError(f"Stage `{raw}` is not callable.")
+        raise ConfigError(f"Stage `{name}` is not callable.")
     if inspect.isgeneratorfunction(fn) or inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn):
-        raise ConfigError(f"Stage `{raw}` uses a post-MVP callable shape.")
+        raise ConfigError(f"Stage `{name}` uses a post-MVP callable shape.")
 
     sig = inspect.signature(fn)
     one_arg = _binds(sig, object())
     two_arg = _binds(sig, object(), object())
     if not one_arg and not two_arg:
-        raise ConfigError(f"Stage `{raw}` cannot be called as (record) or (record, ctx): {sig}")
-    return StageRef(raw, fn, accepts_ctx=two_arg)
+        raise ConfigError(f"Stage `{name}` cannot be called as (record) or (record, ctx): {sig}")
+    return StageRef(name, fn, kind="python", role=role, accepts_ctx=two_arg)
+
+
+def _parse_stage_selector(raw: Any) -> tuple[str, str | None]:
+    if isinstance(raw, str):
+        return raw, None
+    if not isinstance(raw, dict):
+        raise ConfigError("Stage names must be strings or mappings with `stage`.")
+    unknown = set(raw) - _KNOWN_STEP_OPTIONS
+    if unknown:
+        raise ConfigError(f"Unknown stage option(s): {sorted(unknown)}")
+    if "stage" not in raw:
+        raise ConfigError("Expanded stage form must include `stage`.")
+    name = raw["stage"]
+    if not isinstance(name, str):
+        raise ConfigError("`stage` must be a string.")
+    lm_raw = raw.get("lm")
+    if lm_raw is None:
+        return name, None
+    if not isinstance(lm_raw, dict):
+        raise ConfigError("Per-step `lm` must be a mapping.")
+    unknown_lm = set(lm_raw) - _KNOWN_PER_STEP_LM_KEYS
+    if unknown_lm:
+        raise ConfigError(f"Unsupported post-MVP per-step `lm` key(s): {sorted(unknown_lm)}")
+    model = lm_raw.get("model")
+    if not isinstance(model, str):
+        raise ConfigError("Per-step `lm.model` must be a string.")
+    return name, model
+
+
+def _lm_signature(target: Any) -> LmSignature | None:
+    signature = getattr(target, "signature", None)
+    if signature is None or not hasattr(signature, "input_fields") or not hasattr(signature, "output_fields"):
+        return None
+    return LmSignature(
+        input_fields=_lm_fields(signature, "input_fields"),
+        output_fields=_lm_fields(signature, "output_fields"),
+    )
+
+
+def _lm_fields(signature: Any, attribute: str) -> tuple[LmField, ...]:
+    raw_fields = getattr(signature, attribute)
+    annotations = getattr(signature, "annotations", None) or getattr(signature, "__annotations__", {})
+    fields: list[LmField] = []
+    if isinstance(raw_fields, dict):
+        iterable = raw_fields.items()
+    else:
+        iterable = [(None, item) for item in raw_fields]
+    for fallback_name, field in iterable:
+        name = fallback_name if fallback_name is not None else getattr(field, "name", field)
+        if not isinstance(name, str):
+            raise ConfigError(f"LM signature `{attribute}` contains a field without a string name.")
+        annotation = (
+            getattr(field, "annotation", None)
+            or getattr(field, "type", None)
+            or getattr(field, "annotation_", None)
+            or annotations.get(name)
+        )
+        fields.append(LmField(name, annotation))
+    return tuple(fields)
+
+
+def _validate_lm_stage(name: str, role: str, signature: LmSignature) -> None:
+    if role == "stage":
+        raise ConfigError(f"LM stage `{name}` cannot be used with `stage`; use map, filter, expand, or reduce.")
+    if role == "filter":
+        bool_outputs = [field for field in signature.output_fields if _is_bool_annotation(field.annotation)]
+        if len(bool_outputs) != 1 or len(signature.output_fields) != 1:
+            raise ConfigError(f"LM filter `{name}` must have exactly one bool output field.")
+    elif role == "expand":
+        list_outputs = [field for field in signature.output_fields if _is_list_annotation(field.annotation)]
+        if len(list_outputs) != 1 or len(signature.output_fields) != 1:
+            raise ConfigError(f"LM expand `{name}` must have exactly one list output field.")
+    elif role == "reduce":
+        list_inputs = [field for field in signature.input_fields if _is_list_annotation(field.annotation)]
+        if len(list_inputs) != 1:
+            raise ConfigError(f"LM reduce `{name}` must have exactly one list input field.")
+    elif role == "by":
+        raise ConfigError(f"LM stage `{name}` cannot be used as `by`; use a Python key stage.")
+
+
+def _is_bool_annotation(annotation: Any) -> bool:
+    return annotation is bool or annotation == "bool"
+
+
+def _is_list_annotation(annotation: Any) -> bool:
+    if annotation is list or annotation == "list":
+        return True
+    if isinstance(annotation, str):
+        return annotation.startswith("list[") or annotation.startswith("typing.List[")
+    return get_origin(annotation) is list
 
 
 def _binds(sig: inspect.Signature, *args: object) -> bool:
@@ -313,4 +466,3 @@ def _collect_tee_paths(steps: tuple[Step, ...]) -> tuple[Path, ...]:
         elif step.kind == "group" and step.group is not None:
             paths.extend(_collect_tee_paths(step.group.pipeline))
     return tuple(paths)
-
