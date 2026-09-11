@@ -40,3 +40,15 @@ label_reading = dspy.Predict(LabelReading)
 ```
 
 The surrounding pipeline still owns trace identity and grouping.
+
+There is also a one-record trajectory example using `input/harbor-trajectories.jsonl`:
+
+```bash
+export OPENROUTER_API_KEY=...
+uv run mine-trace examples/lm/harbor_pipeline.yaml --manifest examples/lm/output/harbor_manifest.json
+```
+
+That pipeline keeps one selected JSONL line, expands the trajectory into steps, maps each step
+through an LM for a one-sentence summary, then reduces those summaries into both a failure
+diagnosis and a one-sentence trajectory summary. It writes
+`examples/lm/output/harbor_one_summary.jsonl`.
