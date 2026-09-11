@@ -55,3 +55,28 @@ diagnosis and a one-sentence trajectory summary. It writes
 
 The harbor example sets `lm.max_concurrent: 4`, so the per-step LM summaries can run in
 parallel without sending the whole trajectory at once.
+
+## Streaming harbor trajectories
+
+You can also simulate trajectories arriving over time. First prepare an empty live input file:
+
+```bash
+uv run python examples/lm/simulate_harbor_stream.py --reset-only
+```
+
+Then, in one terminal, start the streaming runtime:
+
+```bash
+export OPENROUTER_API_KEY=...
+uv run mine-trace stream examples/lm/harbor_stream_pipeline.yaml --reset-checkpoint --progress
+```
+
+In another terminal, append trajectories from the fixture into the live input file:
+
+```bash
+uv run python examples/lm/simulate_harbor_stream.py --limit 1 --interval 3
+```
+
+The stream reads `examples/lm/input/harbor-live.jsonl` and appends summaries to
+`examples/lm/output/harbor_stream_summaries.jsonl`. Increase `--limit` to replay more
+trajectories; use `--limit 0` to replay the whole fixture.

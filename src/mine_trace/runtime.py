@@ -939,7 +939,7 @@ class _ProgressTask:
             disable=self.disable,
             leave=True,
             ncols=_PROGRESS_NCOLS,
-            ascii=True,
+            ascii=False,
             bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}",
             unit="record",
         )
@@ -972,6 +972,7 @@ class _ExecutionJournal:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def append(self, event: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, sort_keys=True, separators=(",", ":")))
             handle.write("\n")

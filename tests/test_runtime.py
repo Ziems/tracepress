@@ -129,6 +129,7 @@ pipelines:
     assert "2/2" in stream.getvalue()
     lines = [line for chunk in stream.getvalue().split("\r") for line in chunk.splitlines() if line]
     assert max(len(line) for line in lines) <= 120
+    assert "#" not in stream.getvalue()
 
 
 def test_progress_bar_reports_reduce_progress(tmp_path: Path) -> None:
@@ -195,6 +196,34 @@ pipelines:
     assert len(checkpoints) == 1
     checkpoint = json.loads(checkpoints[0].read_text(encoding="utf-8"))
     assert checkpoint["inputs"][str(tmp_path / "input.jsonl")]["offset"] == (tmp_path / "input.jsonl").stat().st_size
+
+
+def test_stream_recreates_missing_journal_parent_before_commit(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+from pathlib import Path
+import shutil
+
+def remove_journal_parent(record):
+    shutil.rmtree(Path(__file__).parent / ".mine-trace" / "runs")
+    return record
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: remove_journal_parent
+""",
+        [{"id": "a"}],
+    )
+
+    run_stream(config, max_records=1, poll_interval=0.01, progress=False)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a"}]
+    assert list((tmp_path / ".mine-trace" / "runs").glob("*/journal.jsonl"))
 
 
 def test_stream_ignores_partial_line_until_newline(tmp_path: Path) -> None:

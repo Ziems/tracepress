@@ -9,6 +9,7 @@
 .pyre/
 .coverage
 htmlcov/
+.mine-trace/
 
 __pycache__/
 *.py[cod]
@@ -19,3 +20,5 @@ dist/
 
 examples/**/output/
 examples/**/harbor-trajectories.jsonl
+examples/**/input/*-live.jsonl
+!examples/lm/input/harbor-live.jsonl
