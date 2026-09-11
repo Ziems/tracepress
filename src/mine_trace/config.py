@@ -14,6 +14,7 @@ import yaml
 from mine_trace.errors import ConfigError
 from mine_trace.model import (
     DEFAULT_LM_MODEL,
+    DEFAULT_LM_MAX_CONCURRENT,
     DEFAULT_LM_PROVIDER,
     Config,
     Defaults,
@@ -27,7 +28,7 @@ from mine_trace.model import (
 
 
 _KNOWN_TOP_LEVEL = {"from", "defaults", "id_field", "pipelines", "concurrency", "lm"}
-_KNOWN_LM_KEYS = {"default", "provider"}
+_KNOWN_LM_KEYS = {"default", "max_concurrent", "provider"}
 _KNOWN_STEP_OPTIONS = {"stage", "lm"}
 _KNOWN_PER_STEP_LM_KEYS = {"model"}
 _KNOWN_DEFAULTS = {"on_child_error", "on_group_incomplete", "ordered"}
@@ -70,7 +71,7 @@ def load_config(path: str | Path) -> Config:
 
     module = _load_stage_module(raw["from"], base_dir)
     defaults = _parse_defaults(raw.get("defaults", {}))
-    lm_provider, lm_default_model = _parse_lm_config(raw.get("lm"))
+    lm_provider, lm_default_model, lm_max_concurrent = _parse_lm_config(raw.get("lm"))
     id_field = raw.get("id_field")
     if id_field is not None and not isinstance(id_field, str):
         raise ConfigError("`id_field` must be a string when provided.")
@@ -84,7 +85,17 @@ def load_config(path: str | Path) -> Config:
         for i, block in enumerate(pipelines_raw)
     )
     pipelines = _sort_pipelines(pipelines)
-    return Config(config_path, base_dir, module, defaults, id_field, lm_provider, lm_default_model, pipelines)
+    return Config(
+        config_path,
+        base_dir,
+        module,
+        defaults,
+        id_field,
+        lm_provider,
+        lm_default_model,
+        lm_max_concurrent,
+        pipelines,
+    )
 
 
 def _parse_defaults(raw: Any) -> Defaults:
@@ -107,9 +118,9 @@ def _parse_defaults(raw: Any) -> Defaults:
     return Defaults(on_child_error, on_group_incomplete, ordered)
 
 
-def _parse_lm_config(raw: Any) -> tuple[str, str]:
+def _parse_lm_config(raw: Any) -> tuple[str, str, int]:
     if raw is None:
-        return DEFAULT_LM_PROVIDER, DEFAULT_LM_MODEL
+        return DEFAULT_LM_PROVIDER, DEFAULT_LM_MODEL, DEFAULT_LM_MAX_CONCURRENT
     if not isinstance(raw, dict):
         raise ConfigError("`lm` must be a mapping.")
     unknown = set(raw) - _KNOWN_LM_KEYS
@@ -125,7 +136,10 @@ def _parse_lm_config(raw: Any) -> tuple[str, str]:
         default = DEFAULT_LM_MODEL
     if default is not None and not isinstance(default, str):
         raise ConfigError("`lm.default` must be a string when provided.")
-    return provider, default
+    max_concurrent = raw.get("max_concurrent", DEFAULT_LM_MAX_CONCURRENT)
+    if not isinstance(max_concurrent, int) or max_concurrent <= 0:
+        raise ConfigError("`lm.max_concurrent` must be a positive integer when provided.")
+    return provider, default, max_concurrent
 
 
 def _parse_pipeline(
@@ -265,7 +279,7 @@ def _resolve_stage(
         raise ConfigError(f"Python stage `{name}` cannot declare `lm` options.")
     if not callable(fn):
         raise ConfigError(f"Stage `{name}` is not callable.")
-    if inspect.isgeneratorfunction(fn) or inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn):
+    if inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn):
         raise ConfigError(f"Stage `{name}` uses a post-MVP callable shape.")
 
     sig = inspect.signature(fn)
@@ -273,7 +287,7 @@ def _resolve_stage(
     two_arg = _binds(sig, object(), object())
     if not one_arg and not two_arg:
         raise ConfigError(f"Stage `{name}` cannot be called as (record) or (record, ctx): {sig}")
-    return StageRef(name, fn, kind="python", role=role, accepts_ctx=two_arg)
+    return StageRef(name, fn, kind="python", role=role, accepts_ctx=two_arg, is_async=inspect.iscoroutinefunction(fn))
 
 
 def _parse_stage_selector(raw: Any) -> tuple[str, str | None]:

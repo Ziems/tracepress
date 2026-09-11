@@ -46,13 +46,13 @@ In scope for the LM MVP:
   fields for `by` groups.
 - Mixed Python and LM stages in one pipeline.
 - Invalid LM outputs raise from the adapter and flow through the base `on_child_error` policy.
+- Bounded concurrent LM invocation with `lm.max_concurrent`.
 
 Post-MVP:
 
 - `lm` config policy beyond provider/model selection, including retries and repair.
 - Record-level caching and module-state hashing.
 - Structured LM invocation tracing.
-- LM-specific concurrency limits.
 - Optimization/compilation workflows. These need their own later amendment if they still feel
   worth doing.
 
@@ -187,6 +187,7 @@ uses:
 lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
+  max_concurrent: 8
 ```
 
 The default model id is the OpenRouter slug for DeepSeek V4.1 Flash.
@@ -195,6 +196,7 @@ The default model id is the OpenRouter slug for DeepSeek V4.1 Flash.
 lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
+  max_concurrent: 8
 
 pipelines:
   - in: traces.jsonl
@@ -216,6 +218,9 @@ If any LM stage is used, a model is resolved from the per-step `lm.model`, top-l
 load error, because model selection only has meaning for LM stages. Providers other than
 OpenRouter are post-MVP and fail at load time.
 
+`lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 8 and must be a
+positive integer.
+
 The resolved model id is passed to the LM adapter/provider. It is not a signature input field
 and is not visible to the module unless the adapter's backend chooses to bind it there.
 
@@ -226,14 +231,14 @@ lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
   cache: true
-  max_concurrent: 32
   retries: 3
   on_invalid: repair        # repair | fail
 ```
 
-`max_concurrent` is a sub-limit within the base spec's `max_in_flight` from section 7. It never
-raises the global bound. Reduce slots are unaffected, and the deadlock analysis in section 7
-holds unchanged, since an LM reduce still draws from `reduce_slots`.
+`max_concurrent` is a sub-limit within the eventual base spec's `max_in_flight` from section 7.
+Until global backpressure exists, it only limits simultaneous LM provider calls. Reduce slots
+are unaffected, and the deadlock analysis in section 7 holds unchanged, since an LM reduce still
+draws from `reduce_slots` once that pool exists.
 
 ## A8. Failure handling
 
@@ -310,14 +315,15 @@ constructors should already be tested before LM stages enter the picture.
 5. Load-time signature validation for LM `filter`, `expand`, and `reduce`, A5.
 6. LM `filter` and `expand`, adapted onto the existing emit-count behavior.
 7. LM `reduce` field resolution, including synthetic parent fields for `by` groups, A6.
-8. Mixed Python and LM stages, with adapter-raised errors flowing through `on_child_error`.
+8. Bounded concurrent LM invocation with `lm.max_concurrent`.
+9. Mixed Python and LM stages, with adapter-raised errors flowing through `on_child_error`.
 
 ### Post-MVP
 
 1. Structured tracing, A10.
 2. Caching with module-state hashing, A9.
 3. `lm` config policy beyond provider/model selection, including retries and repair, A7 and A8.
-4. LM-specific concurrency limits after the base concurrency work exists.
+4. Global concurrency/backpressure after async execution is stable.
 5. Optimization only as a separate later amendment.
 
 ## A13. Tests

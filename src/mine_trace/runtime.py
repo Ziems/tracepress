@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, get_origin
+from typing import Any, Iterable, TextIO, get_origin
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from tqdm.auto import tqdm
 
 from mine_trace.config import load_config
 from mine_trace.errors import PipelineExecutionError
@@ -21,6 +25,9 @@ from mine_trace.model import (
     StageRef,
     Step,
 )
+
+
+_PROGRESS_NCOLS = 120
 
 
 @dataclass
@@ -83,6 +90,7 @@ class _GroupState:
     children: list[_Envelope] = field(default_factory=list)
     failures: list[Failure] = field(default_factory=list)
     reduce_outputs: list[_Envelope] = field(default_factory=list)
+    reduce_progress: _ProgressTask | None = None
 
     @property
     def parent_record(self) -> Any:
@@ -95,32 +103,32 @@ class _GroupState:
     def increment(self, count: int = 1) -> None:
         self.outstanding += count
 
-    def decrement(self, count: int = 1) -> None:
+    async def decrement(self, count: int = 1) -> None:
         self.outstanding -= count
         if self.outstanding < 0:
             raise PipelineExecutionError(f"Group {self.group_id} accounting went negative.")
         if self.outstanding == 0:
-            self.reduce()
+            await self.reduce()
 
-    def adjust_for_outputs(self, count: int) -> None:
+    async def adjust_for_outputs(self, count: int) -> None:
         if count == 0:
-            self.decrement()
+            await self.decrement()
         elif count > 1:
             self.increment(count - 1)
 
-    def adjust_for_replacement(self, input_count: int, output_count: int) -> None:
+    async def adjust_for_replacement(self, input_count: int, output_count: int) -> None:
         delta = output_count - input_count
         if delta > 0:
             self.increment(delta)
         elif delta < 0:
-            self.decrement(-delta)
+            await self.decrement(-delta)
 
-    def arrive(self, env: _Envelope) -> None:
+    async def arrive(self, env: _Envelope) -> None:
         self.children.append(env)
         self.runtime.stats.retired += 1
-        self.decrement()
+        await self.decrement()
 
-    def fail_child(self, env: _Envelope, stage_name: str, error: BaseException) -> list[_Envelope]:
+    async def fail_child(self, env: _Envelope, stage_name: str, error: BaseException) -> list[_Envelope]:
         self.runtime.stats.failed += 1
         identity = self.runtime.record_identity(env.record, env.path)
         failure = Failure(stage_name, identity, self.group_id, str(error))
@@ -131,7 +139,7 @@ class _GroupState:
         if self.spec.on_child_error == "partial":
             self.failures.append(failure)
             self.runtime.stats.retired += 1
-            self.decrement()
+            await self.decrement()
             return []
         self.skip(failure)
         raise _GroupSkipped()
@@ -155,10 +163,10 @@ class _GroupState:
             }
         )
 
-    def close_producer(self) -> None:
-        self.decrement()
+    async def close_producer(self) -> None:
+        await self.decrement()
 
-    def reduce(self) -> None:
+    async def reduce(self) -> None:
         if self.fired:
             return
         self.fired = True
@@ -169,7 +177,9 @@ class _GroupState:
             children = sorted(children, key=lambda env: env.path)
         child_records = [env.record for env in children]
         ctx_path = self.parent_env.path if self.parent_env is not None else ()
-        outputs = self.runtime.call_stage(
+        if self.reduce_progress is not None:
+            self.reduce_progress.open()
+        outputs = await self.runtime.call_stage(
             self.spec.reduce,
             child_records,
             source=self.parent_env,
@@ -187,29 +197,33 @@ class _GroupState:
             for i, record in enumerate(outputs, start=1)
         ]
         self.runtime.stats.groups_reduced += 1
+        if self.reduce_progress is not None:
+            self.reduce_progress.advance()
 
 
 class _Runtime:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, progress: bool | None = False, progress_stream: TextIO | None = None):
         self.config = config
         self.stats = RunStats()
         self.manifest = RunManifest()
         self._group_counter = 0
         self._root_counter = 0
         self._open_groups: list[_GroupState] = []
+        self._lm_semaphore: asyncio.Semaphore | None = None
+        self.progress = _ProgressReporter(progress, progress_stream)
 
-    def run(self) -> RunResult:
+    async def run(self) -> RunResult:
         for pipeline in self.config.pipelines:
-            self._run_pipeline(pipeline)
+            await self._run_pipeline(pipeline)
         leaks = [group for group in self._open_groups if not group.fired]
         if leaks:
             details = ", ".join(f"{group.group_id} count={group.outstanding}" for group in leaks)
             raise PipelineExecutionError(f"Open groups remain at shutdown: {details}")
         return RunResult(self.stats, self.manifest)
 
-    def _run_pipeline(self, pipeline: PipelineSpec) -> None:
+    async def _run_pipeline(self, pipeline: PipelineSpec) -> None:
         envelopes = list(self._read_inputs(pipeline.inputs))
-        outputs = self.apply_steps(envelopes, pipeline.steps, active_group=None)
+        outputs = await self.apply_steps(envelopes, pipeline.steps, active_group=None)
         self._write_jsonl(pipeline.output, [env.record for env in outputs])
         self.stats.retired += len(outputs)
 
@@ -233,7 +247,7 @@ class _Runtime:
                 handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
                 handle.write("\n")
 
-    def apply_steps(
+    async def apply_steps(
         self,
         envelopes: list[_Envelope],
         steps: tuple[Step, ...],
@@ -244,18 +258,18 @@ class _Runtime:
             if active_group is not None and active_group.skipped:
                 raise _GroupSkipped()
             if step.kind in {"map", "filter", "stage"}:
-                current = self._apply_stage_step(current, step, active_group)
+                current = await self._apply_stage_step(current, step, active_group)
             elif step.kind == "tee":
                 assert step.path is not None
                 self._append_jsonl(step.path, [env.record for env in current])
             elif step.kind == "group":
                 assert step.group is not None
-                current = self._apply_group_step(current, step.group, active_group)
+                current = await self._apply_group_step(current, step.group, active_group)
             else:
                 raise AssertionError(f"Unhandled step kind: {step.kind}")
         return current
 
-    def _apply_stage_step(
+    async def _apply_stage_step(
         self,
         envelopes: list[_Envelope],
         step: Step,
@@ -263,55 +277,97 @@ class _Runtime:
     ) -> list[_Envelope]:
         assert step.stage is not None
         output: list[_Envelope] = []
-        for env in envelopes:
-            failed_under_policy = False
-            try:
-                emitted = self.call_stage_for_env(step.stage, env)
-            except Exception as exc:
-                if active_group is None:
-                    raise
-                emitted = active_group.fail_child(env, step.stage.name, exc)
-                failed_under_policy = True
-            if failed_under_policy:
-                continue
-            self._assert_emit_count(step, env, emitted)
-            if active_group is not None:
-                active_group.adjust_for_outputs(len(emitted))
-            if not emitted:
-                if active_group is None:
-                    self.stats.dropped += 1
+        task = self.progress.start(f"{step.kind}: {step.stage.name}", len(envelopes))
+        if step.stage.kind == "lm" or step.stage.is_async:
+            results = await asyncio.gather(
+                *(self._call_stage_for_env_result(step.stage, env, task) for env in envelopes)
+            )
+        else:
+            results = []
+            for env in envelopes:
+                results.append(await self._call_stage_for_env_result(step.stage, env, task))
+        try:
+            for env, result in results:
+                failed_under_policy = False
+                if isinstance(result, Exception):
+                    if active_group is None:
+                        raise result
+                    emitted = await active_group.fail_child(env, step.stage.name, result)
+                    failed_under_policy = True
                 else:
+                    emitted = result
+                if failed_under_policy:
+                    continue
+                self._assert_emit_count(step, env, emitted)
+                if active_group is not None:
+                    await active_group.adjust_for_outputs(len(emitted))
+                if not emitted:
                     self.stats.dropped += 1
-                continue
-            for i, record in enumerate(emitted, start=1):
-                output.append(_Envelope(record, env.path + (i,), active_group))
-        return output
+                    continue
+                for i, record in enumerate(emitted, start=1):
+                    output.append(_Envelope(record, env.path + (i,), active_group))
+            return output
+        finally:
+            task.close()
 
-    def _apply_group_step(
+    async def _call_stage_for_env_result(
+        self,
+        stage: StageRef,
+        env: _Envelope,
+        task: _ProgressTask,
+    ) -> tuple[_Envelope, list[Any] | Exception]:
+        try:
+            return env, await self.call_stage_for_env(stage, env)
+        except Exception as exc:
+            return env, exc
+        finally:
+            task.advance()
+
+    async def _apply_group_step(
         self,
         envelopes: list[_Envelope],
         spec: GroupSpec,
         active_group: _GroupState | None,
     ) -> list[_Envelope]:
         if spec.kind == "expand":
+            task = self.progress.start(
+                f"reduce: {spec.reduce.name}",
+                len(envelopes),
+                display_immediately=False,
+                close_after_advance=True,
+            )
             outputs = []
-            for env in envelopes:
-                nested_outputs = self._process_expand_group(spec, env, depth=self._depth_for(active_group))
-                if active_group is not None:
-                    active_group.adjust_for_outputs(len(nested_outputs))
-                outputs.extend(_Envelope(out.record, out.path, active_group) for out in nested_outputs)
-            return outputs
+            try:
+                for env in envelopes:
+                    nested_outputs = await self._process_expand_group(
+                        spec,
+                        env,
+                        depth=self._depth_for(active_group),
+                        reduce_progress=task,
+                    )
+                    if active_group is not None:
+                        await active_group.adjust_for_outputs(len(nested_outputs))
+                    outputs.extend(_Envelope(out.record, out.path, active_group) for out in nested_outputs)
+                return outputs
+            finally:
+                task.close()
         if spec.kind == "by":
-            return self._process_by_groups(spec, envelopes, active_group)
+            return await self._process_by_groups(spec, envelopes, active_group)
         if spec.kind == "every":
-            return self._process_every_groups(spec, envelopes, active_group)
+            return await self._process_every_groups(spec, envelopes, active_group)
         raise AssertionError(f"Unhandled group kind: {spec.kind}")
 
-    def _process_expand_group(self, spec: GroupSpec, env: _Envelope, depth: int) -> list[_Envelope]:
-        group = self._open_group(spec, env, key=None, depth=depth)
+    async def _process_expand_group(
+        self,
+        spec: GroupSpec,
+        env: _Envelope,
+        depth: int,
+        reduce_progress: _ProgressTask | None,
+    ) -> list[_Envelope]:
+        group = self._open_group(spec, env, key=None, depth=depth, reduce_progress=reduce_progress)
         try:
             assert spec.expand is not None
-            emitted = self.call_stage_for_env(
+            emitted = await self.call_stage_for_env(
                 spec.expand,
                 env,
                 parent=env.record,
@@ -324,10 +380,10 @@ class _Runtime:
             for i, record in enumerate(emitted, start=1):
                 group.increment()
                 child_envs.append(_Envelope(record, env.path + (i,), group))
-            group.close_producer()
+            await group.close_producer()
             if group.skipped:
                 return []
-            self._run_group_children(group, child_envs)
+            await self._run_group_children(group, child_envs)
         except _GroupSkipped:
             return []
         except Exception as exc:
@@ -338,7 +394,7 @@ class _Runtime:
             ) from exc
         return group.reduce_outputs
 
-    def _process_by_groups(
+    async def _process_by_groups(
         self,
         spec: GroupSpec,
         envelopes: list[_Envelope],
@@ -347,32 +403,41 @@ class _Runtime:
         grouped: dict[Any, list[_Envelope]] = {}
         order: list[Any] = []
         for env in envelopes:
-            key = self._group_key(spec, env)
+            key = await self._group_key(spec, env)
             if key not in grouped:
                 grouped[key] = []
                 order.append(key)
             grouped[key].append(env)
 
         outputs: list[_Envelope] = []
-        for key in order:
-            group = self._open_group(spec, None, key=key, depth=self._depth_for(active_group))
-            child_envs: list[_Envelope] = []
-            for i, env in enumerate(grouped[key], start=1):
-                group.increment()
-                child_envs.append(_Envelope(env.record, env.path + (i,), group))
-            group.close_producer()
-            try:
-                self._run_group_children(group, child_envs)
-            except _GroupSkipped:
-                nested_outputs = []
-            else:
-                nested_outputs = group.reduce_outputs
-            outputs.extend(_Envelope(out.record, out.path, active_group) for out in nested_outputs)
-        if active_group is not None:
-            active_group.adjust_for_replacement(len(envelopes), len(outputs))
-        return outputs
+        task = self.progress.start(
+            f"reduce: {spec.reduce.name}",
+            len(order),
+            display_immediately=False,
+            close_after_advance=True,
+        )
+        try:
+            for key in order:
+                group = self._open_group(spec, None, key=key, depth=self._depth_for(active_group), reduce_progress=task)
+                child_envs: list[_Envelope] = []
+                for i, env in enumerate(grouped[key], start=1):
+                    group.increment()
+                    child_envs.append(_Envelope(env.record, env.path + (i,), group))
+                await group.close_producer()
+                try:
+                    await self._run_group_children(group, child_envs)
+                except _GroupSkipped:
+                    nested_outputs = []
+                else:
+                    nested_outputs = group.reduce_outputs
+                outputs.extend(_Envelope(out.record, out.path, active_group) for out in nested_outputs)
+            if active_group is not None:
+                await active_group.adjust_for_replacement(len(envelopes), len(outputs))
+            return outputs
+        finally:
+            task.close()
 
-    def _process_every_groups(
+    async def _process_every_groups(
         self,
         spec: GroupSpec,
         envelopes: list[_Envelope],
@@ -380,37 +445,53 @@ class _Runtime:
     ) -> list[_Envelope]:
         assert spec.every is not None
         outputs: list[_Envelope] = []
-        for start in range(0, len(envelopes), spec.every):
-            window = envelopes[start : start + spec.every]
-            group = self._open_group(spec, None, key=start // spec.every + 1, depth=self._depth_for(active_group))
-            child_envs = []
-            for i, env in enumerate(window, start=1):
-                group.increment()
-                child_envs.append(_Envelope(env.record, env.path + (i,), group))
-            group.close_producer()
-            try:
-                self._run_group_children(group, child_envs)
-            except _GroupSkipped:
-                nested_outputs = []
-            else:
-                nested_outputs = group.reduce_outputs
-            outputs.extend(_Envelope(out.record, out.path, active_group) for out in nested_outputs)
-        if active_group is not None:
-            active_group.adjust_for_replacement(len(envelopes), len(outputs))
-        return outputs
+        total = (len(envelopes) + spec.every - 1) // spec.every
+        task = self.progress.start(
+            f"reduce: {spec.reduce.name}",
+            total,
+            display_immediately=False,
+            close_after_advance=True,
+        )
+        try:
+            for start in range(0, len(envelopes), spec.every):
+                window = envelopes[start : start + spec.every]
+                group = self._open_group(
+                    spec,
+                    None,
+                    key=start // spec.every + 1,
+                    depth=self._depth_for(active_group),
+                    reduce_progress=task,
+                )
+                child_envs = []
+                for i, env in enumerate(window, start=1):
+                    group.increment()
+                    child_envs.append(_Envelope(env.record, env.path + (i,), group))
+                await group.close_producer()
+                try:
+                    await self._run_group_children(group, child_envs)
+                except _GroupSkipped:
+                    nested_outputs = []
+                else:
+                    nested_outputs = group.reduce_outputs
+                outputs.extend(_Envelope(out.record, out.path, active_group) for out in nested_outputs)
+            if active_group is not None:
+                await active_group.adjust_for_replacement(len(envelopes), len(outputs))
+            return outputs
+        finally:
+            task.close()
 
-    def _run_group_children(self, group: _GroupState, child_envs: list[_Envelope]) -> None:
+    async def _run_group_children(self, group: _GroupState, child_envs: list[_Envelope]) -> None:
         if group.fired:
             return
-        outputs = self.apply_steps(child_envs, group.spec.pipeline, active_group=group)
+        outputs = await self.apply_steps(child_envs, group.spec.pipeline, active_group=group)
         for env in outputs:
             if group.skipped:
                 raise _GroupSkipped()
-            group.arrive(env)
+            await group.arrive(env)
 
-    def _group_key(self, spec: GroupSpec, env: _Envelope) -> Any:
+    async def _group_key(self, spec: GroupSpec, env: _Envelope) -> Any:
         if isinstance(spec.by, StageRef):
-            emitted = self.call_stage_for_env(spec.by, env)
+            emitted = await self.call_stage_for_env(spec.by, env)
             if len(emitted) != 1:
                 raise PipelineExecutionError(
                     f"`by` stage `{spec.by.name}` must emit exactly one key for record "
@@ -423,7 +504,7 @@ class _Runtime:
             f"Record {self.record_identity(env.record, env.path)} has no grouping field `{spec.by}`."
         )
 
-    def call_stage_for_env(
+    async def call_stage_for_env(
         self,
         stage: StageRef,
         env: _Envelope,
@@ -434,7 +515,7 @@ class _Runtime:
         failures: list[Failure] | None = None,
     ) -> list[Any]:
         source_group = env.group
-        return self.call_stage(
+        return await self.call_stage(
             stage,
             env.record,
             source=env,
@@ -447,7 +528,7 @@ class _Runtime:
             failures=failures if failures is not None else (source_group.failures if source_group else []),
         )
 
-    def call_stage(
+    async def call_stage(
         self,
         stage: StageRef,
         arg: Any,
@@ -462,8 +543,10 @@ class _Runtime:
     ) -> list[Any]:
         ctx = _CallContext(self, stage.name, source, parent, group_id, key, index, path, depth, failures)
         if stage.kind == "lm":
-            return self._call_lm_stage(stage, arg, parent, path)
+            return await self._call_lm_stage(stage, arg, parent, path)
         result = stage.target(arg, ctx) if stage.accepts_ctx else stage.target(arg)
+        if stage.is_async or inspect.isawaitable(result):
+            result = await result
         if result is not None and ctx.emitted:
             identity = self.record_identity(arg, path)
             raise PipelineExecutionError(f"Stage `{stage.name}` both returned a value and emitted for record {identity}.")
@@ -472,14 +555,14 @@ class _Runtime:
             return [result]
         return ctx.emitted
 
-    def _call_lm_stage(self, stage: StageRef, arg: Any, parent: Any, path: tuple[int, ...]) -> list[Any]:
+    async def _call_lm_stage(self, stage: StageRef, arg: Any, parent: Any, path: tuple[int, ...]) -> list[Any]:
         if stage.lm_signature is None:
             raise PipelineExecutionError(f"LM stage `{stage.name}` has no signature.")
         if stage.role == "reduce":
             kwargs = self._lm_reduce_kwargs(stage, arg, parent, path)
         else:
             kwargs = self._lm_record_kwargs(stage, arg, path)
-        prediction = self._invoke_lm(stage, kwargs)
+        prediction = await self._invoke_lm(stage, kwargs)
         outputs = self._lm_outputs(stage, prediction)
         if stage.role == "map":
             if not isinstance(arg, dict):
@@ -538,17 +621,26 @@ class _Runtime:
             kwargs[field.name] = parent_record[field.name]
         return kwargs
 
-    def _invoke_lm(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
+    async def _invoke_lm(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
         target = stage.target
         if stage.lm_provider == "openrouter" and _is_dspy_target(target):
-            return _call_openrouter(stage, kwargs)
+            return await self._call_openrouter_async(stage, kwargs)
         if hasattr(target, "with_model"):
             target = target.with_model(stage.lm_model)
         if callable(target):
-            return target(**kwargs)
+            prediction = target(**kwargs)
+            if inspect.isawaitable(prediction):
+                return await prediction
+            return prediction
         if stage.lm_provider == "openrouter":
-            return _call_openrouter(stage, kwargs)
+            return await self._call_openrouter_async(stage, kwargs)
         raise PipelineExecutionError(f"Unsupported LM provider `{stage.lm_provider}` for stage `{stage.name}`.")
+
+    async def _call_openrouter_async(self, stage: StageRef, kwargs: dict[str, Any]) -> dict[str, Any]:
+        if self._lm_semaphore is None:
+            self._lm_semaphore = asyncio.Semaphore(self.config.lm_max_concurrent)
+        async with self._lm_semaphore:
+            return await asyncio.to_thread(_call_openrouter, stage, kwargs)
 
     def _lm_outputs(self, stage: StageRef, prediction: Any) -> dict[str, Any]:
         assert stage.lm_signature is not None
@@ -583,9 +675,16 @@ class _Runtime:
                 handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
                 handle.write("\n")
 
-    def _open_group(self, spec: GroupSpec, parent_env: _Envelope | None, key: Any, depth: int) -> _GroupState:
+    def _open_group(
+        self,
+        spec: GroupSpec,
+        parent_env: _Envelope | None,
+        key: Any,
+        depth: int,
+        reduce_progress: _ProgressTask | None = None,
+    ) -> _GroupState:
         self._group_counter += 1
-        group = _GroupState(self, spec, parent_env, key, depth, f"g{self._group_counter}")
+        group = _GroupState(self, spec, parent_env, key, depth, f"g{self._group_counter}", reduce_progress=reduce_progress)
         self.stats.groups_opened += 1
         self._open_groups.append(group)
         return group
@@ -606,9 +705,109 @@ class _Runtime:
         return ".".join(str(item) for item in path) if path else "<root>"
 
 
-def run_config(config_or_path: Config | str | Path) -> RunResult:
+class _ProgressReporter:
+    def __init__(self, enabled: bool | None, stream: TextIO | None = None):
+        self.stream = stream
+        self.enabled = enabled
+
+    def start(
+        self,
+        label: str,
+        total: int,
+        display_immediately: bool = True,
+        close_after_advance: bool = False,
+    ) -> _ProgressTask:
+        disable = None if self.enabled is None else not self.enabled
+        return _ProgressTask(
+            label,
+            total,
+            self.stream,
+            disable if total > 0 else True,
+            display_immediately,
+            close_after_advance,
+        )
+
+
+class _ProgressTask:
+    def __init__(
+        self,
+        label: str,
+        total: int,
+        stream: TextIO | None,
+        disable: bool | None,
+        display_immediately: bool,
+        close_after_advance: bool,
+    ):
+        self.label = label
+        self.total = total
+        self.stream = stream
+        self.disable = disable
+        self.close_after_advance = close_after_advance
+        self.current = 0
+        self._bar: tqdm | None = None
+        self._closed = False
+        if display_immediately:
+            self.open()
+
+    def open(self) -> None:
+        if self._bar is not None or self._closed:
+            return
+        self._bar = tqdm(
+            total=self.total,
+            initial=self.current,
+            desc=f"[mine-trace] {self.label}",
+            file=self.stream,
+            disable=self.disable,
+            leave=True,
+            ncols=_PROGRESS_NCOLS,
+            ascii=True,
+            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}",
+            unit="record",
+        )
+
+    def advance(self) -> None:
+        if self._closed:
+            return
+        self.open()
+        if self._bar is not None:
+            self._bar.update(1)
+        self.current += 1
+        if self.close_after_advance:
+            self._close_bar()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._close_bar()
+        self._closed = True
+
+    def _close_bar(self) -> None:
+        if self._bar is not None:
+            self._bar.close()
+            self._bar = None
+
+
+async def run_config_async(
+    config_or_path: Config | str | Path,
+    *,
+    progress: bool | None = False,
+    progress_stream: TextIO | None = None,
+) -> RunResult:
     config = load_config(config_or_path) if not isinstance(config_or_path, Config) else config_or_path
-    return _Runtime(config).run()
+    return await _Runtime(config, progress=progress, progress_stream=progress_stream).run()
+
+
+def run_config(
+    config_or_path: Config | str | Path,
+    *,
+    progress: bool | None = False,
+    progress_stream: TextIO | None = None,
+) -> RunResult:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(run_config_async(config_or_path, progress=progress, progress_stream=progress_stream))
+    raise PipelineExecutionError("`run_config` cannot be called from a running event loop; use `run_config_async`.")
 
 
 def _hashable_key(value: Any) -> Any:

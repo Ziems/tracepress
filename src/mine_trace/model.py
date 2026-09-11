@@ -14,6 +14,7 @@ IncompletePolicy = Literal["fail", "partial"]
 
 DEFAULT_LM_PROVIDER = "openrouter"
 DEFAULT_LM_MODEL = "deepseek/deepseek-v4.1-flash"
+DEFAULT_LM_MAX_CONCURRENT = 8
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class StageRef:
     kind: StageKind
     role: str
     accepts_ctx: bool = False
+    is_async: bool = False
     lm_signature: LmSignature | None = None
     lm_model: str | None = None
     lm_provider: str | None = None
@@ -85,6 +87,7 @@ class Config:
     id_field: str | None
     lm_provider: str
     lm_default_model: str
+    lm_max_concurrent: int
     pipelines: tuple[PipelineSpec, ...]
 
 

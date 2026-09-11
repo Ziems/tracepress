@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
 from mine_trace.config import load_config
 from mine_trace.errors import ConfigError, PipelineExecutionError
 from mine_trace.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER
-from mine_trace.runtime import run_config
+from mine_trace.runtime import run_config, run_config_async
 
 
 def write_jsonl(path: Path, records: list[object]) -> None:
@@ -63,6 +67,96 @@ pipelines:
 
     assert read_jsonl(tmp_path / "kept.jsonl") == [{"id": "a", "keep": True, "value": 2}]
     assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "value": 5}]
+
+
+def test_async_python_stages_and_async_entrypoint(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+async def keep(record):
+    return record if record["keep"] else None
+
+async def label(record, ctx):
+    ctx.emit({"id": record["id"], "value": record["value"] * 2})
+
+async def add_one(record):
+    return {**record, "value": record["value"] + 1}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - filter: keep
+      - map: label
+      - stage: add_one
+""",
+        [
+            {"id": "a", "keep": True, "value": 2},
+            {"id": "b", "keep": False, "value": 9},
+        ],
+    )
+
+    result = asyncio.run(run_config_async(config))
+
+    assert result.stats.emitted == 3
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "value": 5}]
+
+
+def test_progress_bar_reports_stage_progress(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def double(record):
+    return {**record, "value": record["value"] * 2}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: double
+""",
+        [{"id": "a", "value": 2}, {"id": "b", "value": 3}],
+    )
+    stream = io.StringIO()
+
+    run_config(config, progress=True, progress_stream=stream)
+
+    assert "[mine-trace] map: double" in stream.getvalue()
+    assert "2/2" in stream.getvalue()
+    lines = [line for chunk in stream.getvalue().split("\r") for line in chunk.splitlines() if line]
+    assert max(len(line) for line in lines) <= 120
+
+
+def test_progress_bar_reports_reduce_progress(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def merge(children):
+    return {"count": len(children)}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          every: 2
+          pipeline: []
+          reduce: merge
+""",
+        [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+    )
+    stream = io.StringIO()
+
+    run_config(config, progress=True, progress_stream=stream)
+
+    assert "[mine-trace] reduce: merge" in stream.getvalue()
+    assert "2/2" in stream.getvalue()
 
 
 def test_expand_group_handles_varying_sizes_and_empty_groups(tmp_path: Path) -> None:
@@ -709,6 +803,63 @@ pipelines:
         "output_fields": ["label"],
         "stage": "label",
     }
+
+
+def test_lm_map_runs_concurrently_with_configured_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = write_project(
+        tmp_path,
+        """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class LabelSignature:
+    input_fields = {"text": Field(str)}
+    output_fields = {"label": Field(str)}
+
+
+class LabelModule:
+    signature = LabelSignature()
+
+
+label = LabelModule()
+""",
+        """
+from: ./stages
+lm:
+  max_concurrent: 2
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": str(i), "text": f"item-{i}"} for i in range(5)],
+    )
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_openrouter(stage, kwargs):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.02)
+        with lock:
+            active -= 1
+        return {"label": kwargs["text"].upper()}
+
+    monkeypatch.setattr("mine_trace.runtime._call_openrouter", fake_openrouter)
+
+    run_config(config)
+
+    assert max_active == 2
+    assert read_jsonl(tmp_path / "output.jsonl") == [
+        {"id": str(i), "label": f"ITEM-{i}", "text": f"item-{i}"}
+        for i in range(5)
+    ]
 
 
 def test_lm_missing_input_field_has_clear_error(tmp_path: Path) -> None:

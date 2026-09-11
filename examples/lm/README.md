@@ -52,3 +52,6 @@ That pipeline keeps one selected JSONL line, expands the trajectory into steps, 
 through an LM for a one-sentence summary, then reduces those summaries into both a failure
 diagnosis and a one-sentence trajectory summary. It writes
 `examples/lm/output/harbor_one_summary.jsonl`.
+
+The harbor example sets `lm.max_concurrent: 4`, so the per-step LM summaries can run in
+parallel without sending the whole trajectory at once.

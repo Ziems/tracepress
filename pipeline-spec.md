@@ -22,13 +22,13 @@ In scope for MVP:
 - Linear JSONL pipelines with `map`, `filter`, `stage`, and `tee`.
 - All three group constructors: `expand`, `by`, and `every`.
 - Nested groups and deterministic reduce ordering by emit path.
-- Sync stage functions using return values or `ctx.emit`.
+- Sync and async stage functions using return values or `ctx.emit`.
 - `on_child_error: fail`, `partial`, and `skip`, including the skip manifest.
 - Basic diagnostics for stuck groups and accounting totals.
 
 Post-MVP:
 
-- Generator, async, and async-generator stage shapes.
+- Generator and async-generator stage shapes.
 - Full concurrency and backpressure controls.
 - Side channels.
 - Timestamp-based resumability.
@@ -147,14 +147,15 @@ If a stage both calls `emit` and returns non-`None`, raise. Returning `None` aft
 
 ### Callable shapes
 
-The runtime design supports four callable shapes, dispatched by inspection at load time. MVP supports sync functions only.
+The runtime design supports four callable shapes, dispatched by inspection at load time. MVP
+supports sync and async functions.
 
 
 | Shape              | Phase    | Detected by                   | Output                             |
 | ------------------ | -------- | ----------------------------- | ---------------------------------- |
 | sync function      | MVP      | default                       | `return` or `ctx.emit`             |
 | generator function | post-MVP | `inspect.isgeneratorfunction` | each `yield` is one emit           |
-| async function     | post-MVP | `inspect.iscoroutinefunction` | `return` or `ctx.emit`, awaited    |
+| async function     | MVP      | `inspect.iscoroutinefunction` | `return` or `ctx.emit`, awaited    |
 | async generator    | post-MVP | `inspect.isasyncgenfunction`  | each `yield` is one emit, iterated |
 
 
@@ -167,7 +168,9 @@ def split_sessions(trace, ctx):
 
 ```
 
-`ctx.emit` remains the primitive. In MVP it is synchronous. Post-MVP async stages may require an awaitable emit path once backpressure exists; do not make that API promise until the async runtime is being built.
+`ctx.emit` remains the primitive. It is synchronous even inside async stages. Post-MVP
+backpressure may require an awaitable emit path; do not make that API promise until global
+backpressure is being built.
 
 ## 4. Context object
 
@@ -391,7 +394,7 @@ Do not add rollback or compensating actions for `skip`. Section 8 defines what i
 ### MVP
 
 1. Config parse and validation. Stage resolution, signature binding, path normalization, cycle detection, all at load time.
-2. Linear pipelines, no groups. `map`, `filter`, `stage`, `tee`. Sync functions only.
+2. Linear pipelines, no groups. `map`, `filter`, `stage`, `tee`. Sync and async functions.
 3. Group accounting with `expand`, single level, sequential execution. Build the section 14 diagnostics here.
 4. Ordering by emit path.
 5. Nesting.
@@ -402,7 +405,7 @@ Do not add rollback or compensating actions for `skip`. Section 8 defines what i
 
 1. Generator stage shape, including streaming `expand`.
 2. Concurrency and backpressure, including reserved reduce slots. Then run the determinism tests under pressure.
-3. Async and async-generator stage shapes.
+3. Async-generator stage shape.
 4. Side channels.
 5. Resumability.
 
@@ -434,9 +437,10 @@ The implementation is correct when these pass.
 
 1. **Arity.** One-argument and two-argument sync stages both work.
 2. **Bad signature.** A stage with a required third argument fails at load time, not on the first record.
-3. **Return a list.** Emitted as one record, not fanned out.
-4. **Return and emit.** Raises.
-5. **Emit-count assertions.** A `map` that emits twice fails with a useful message. A `filter` that emits twice fails.
+3. **Async function.** Async one-argument and two-argument stages both work.
+4. **Return a list.** Emitted as one record, not fanned out.
+5. **Return and emit.** Raises.
+6. **Emit-count assertions.** A `map` that emits twice fails with a useful message. A `filter` that emits twice fails.
 
 **Failure**
 
@@ -458,7 +462,7 @@ The implementation is correct when these pass.
 
 1. **Generator shape.** A sync generator produces the same output as an equivalent `ctx.emit` stage.
 2. **Streaming expand.** A producer that yields slowly. The barrier does not fire until the producer is exhausted, even when all previously emitted children have completed.
-3. **Async shapes.** Async and async-generator stages produce identical output for equivalent sync logic.
+3. **Async-generator shape.** Async-generator stages produce identical output for equivalent `ctx.emit` logic.
 
 **Concurrency**
 
