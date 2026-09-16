@@ -113,3 +113,77 @@ The streaming progress line reports:
 | `retired` | Input records fully processed and safe to checkpoint past. |
 | `failed` | Records or groups that failed during execution. |
 | `groups_open` | Groups/windows still waiting to reduce or flush. |
+
+## PII detection demo
+
+The PII example is batch-only. It reads three slim harbor copies in
+`input/pii-trajectories.jsonl` (fake SSN, fake phone, clean), maps each step through an LM
+detector, and reduces the labels into one finding record per trajectory.
+
+```bash
+export OPENROUTER_API_KEY=...
+uv run mine-trace examples/lm/pii_pipeline.yaml --manifest examples/lm/output/pii_manifest.json
+```
+
+Inspect `examples/lm/output/pii_findings.jsonl`. Each line looks like:
+
+```json
+{
+  "session_id": "...",
+  "trajectory_path": "...",
+  "has_pii": true,
+  "findings": [
+    {"step_index": 2, "pii_kind": "ssn", "evidence": "123-45-6789"}
+  ]
+}
+```
+
+## Harbor category demo
+
+The category example is batch-only. It reads three slim harbor trajectories in
+`input/category-trajectories.jsonl` (bioinformatics failed, systems failed, data-processing
+passed), summarizes each step, and reduces those summaries into a domain, outcome, and
+one-sentence trajectory summary.
+
+```bash
+export OPENROUTER_API_KEY=...
+uv run mine-trace examples/lm/category_pipeline.yaml --manifest examples/lm/output/category_manifest.json
+```
+
+Inspect `examples/lm/output/category_findings.jsonl`. Each line looks like:
+
+```json
+{
+  "session_id": "...",
+  "trajectory_path": "...",
+  "task_name": "...",
+  "domain": "bioinformatics",
+  "outcome": "wrong_output",
+  "trajectory_summary": "..."
+}
+```
+
+## Frustration detection demo
+
+Terminal-bench traces rarely contain real user emotion, so this batch example uses three slim
+copies in `input/frustration-trajectories.jsonl` (frustrated user turn, impatient user turn,
+calm control). It maps each step through an LM detector and reduces the labels into one finding
+record per trajectory.
+
+```bash
+export OPENROUTER_API_KEY=...
+uv run mine-trace examples/lm/frustration_pipeline.yaml --manifest examples/lm/output/frustration_manifest.json
+```
+
+Inspect `examples/lm/output/frustration_findings.jsonl`. Each line looks like:
+
+```json
+{
+  "session_id": "...",
+  "trajectory_path": "...",
+  "has_frustration": true,
+  "findings": [
+    {"step_index": 5, "frustration_kind": "frustrated", "evidence": "This is taking forever"}
+  ]
+}
+```

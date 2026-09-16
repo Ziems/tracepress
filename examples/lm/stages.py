@@ -137,6 +137,133 @@ def compact_harbor_summary(record):
     }
 
 
+class CategorizeHarborTrajectory(dspy.Signature):
+    """Categorize one terminal-bench trajectory from one-sentence step summaries and metadata."""
+
+    trajectory_path: str = dspy.InputField()
+    benchmark: str = dspy.InputField()
+    task_name: str = dspy.InputField()
+    trial_id: str = dspy.InputField()
+    reported_passed: bool = dspy.InputField()
+    verifier_summary: str = dspy.InputField()
+    task: str = dspy.InputField()
+    final_response: str = dspy.InputField()
+    step_count: int = dspy.InputField()
+    agent_model: str = dspy.InputField()
+    step_summary: list[str] = dspy.InputField()
+
+    domain: str = dspy.OutputField(
+        desc="Task domain. One of: bioinformatics, systems, data_processing, other."
+    )
+    outcome: str = dspy.OutputField(
+        desc="Outcome. One of: passed, wrong_output, env_setup, incomplete, other."
+    )
+    trajectory_summary: str = dspy.OutputField(
+        desc="One short sentence, at most 30 words, ending with a single period. No second sentence."
+    )
+
+
+categorize_harbor_trajectory = dspy.Predict(CategorizeHarborTrajectory)
+
+
+def compact_harbor_category(record):
+    return {
+        "session_id": record.get("session_id"),
+        "trajectory_path": record["trajectory_path"],
+        "task_name": record["task_name"],
+        "domain": record["domain"],
+        "outcome": record["outcome"],
+        "trajectory_summary": _one_sentence(record.get("trajectory_summary", "")),
+    }
+
+
+class DetectPiiInStep(dspy.Signature):
+    """Detect personally identifiable information in one agent trajectory step.
+
+    Look for Social Security numbers, phone numbers, email addresses, and similar
+    personal identifiers. Ignore genomic IDs, file paths, UUIDs, hashes, and other
+    technical identifiers.
+    """
+
+    step_index: int = dspy.InputField()
+    source: str = dspy.InputField()
+    model_name: str = dspy.InputField()
+    message: str = dspy.InputField()
+    tool_calls: list[str] = dspy.InputField()
+    observation: str = dspy.InputField()
+
+    has_pii: bool = dspy.OutputField(desc="True if this step contains personal identifiers.")
+    pii_kind: str = dspy.OutputField(desc="One of: ssn, phone, email, other, or none.")
+    evidence: str = dspy.OutputField(desc="Short quote of the PII span, or empty if none.")
+
+
+detect_pii_in_step = dspy.Predict(DetectPiiInStep)
+
+
+def aggregate_pii_findings(steps, ctx):
+    findings = [
+        {
+            "step_index": step["step_index"],
+            "pii_kind": step["pii_kind"],
+            "evidence": step["evidence"],
+        }
+        for step in steps
+        if step["has_pii"]
+    ]
+    return {
+        "session_id": ctx.parent["session_id"],
+        "trajectory_path": ctx.parent.get("_path", ""),
+        "has_pii": bool(findings),
+        "findings": findings,
+    }
+
+
+class DetectFrustrationInStep(dspy.Signature):
+    """Detect whether a human user is unhappy or frustrated in one agent trajectory step.
+
+    Only flag dissatisfaction in user messages. Ignore failing tests, stack traces,
+    missing packages, agent self-corrections, and other technical errors.
+    """
+
+    step_index: int = dspy.InputField()
+    source: str = dspy.InputField()
+    model_name: str = dspy.InputField()
+    message: str = dspy.InputField()
+    tool_calls: list[str] = dspy.InputField()
+    observation: str = dspy.InputField()
+
+    has_frustration: bool = dspy.OutputField(
+        desc="True if a human user expresses frustration, impatience, or dissatisfaction."
+    )
+    frustration_kind: str = dspy.OutputField(
+        desc="One of: frustrated, impatient, annoyed, or none. Never null."
+    )
+    evidence: str = dspy.OutputField(
+        desc="Short user quote if frustrated, otherwise an empty string. Never null. Never explain."
+    )
+
+
+detect_frustration_in_step = dspy.Predict(DetectFrustrationInStep)
+
+
+def aggregate_frustration_findings(steps, ctx):
+    findings = [
+        {
+            "step_index": step["step_index"],
+            "frustration_kind": step["frustration_kind"],
+            "evidence": step["evidence"],
+        }
+        for step in steps
+        if step["has_frustration"]
+    ]
+    return {
+        "session_id": ctx.parent["session_id"],
+        "trajectory_path": ctx.parent.get("_path", ""),
+        "has_frustration": bool(findings),
+        "findings": findings,
+    }
+
+
 def _tool_call_names(step):
     calls = step.get("tool_calls") or []
     return [call.get("function_name", "") for call in calls[:8] if call.get("function_name")]
@@ -171,3 +298,12 @@ def _verifier_summary(eval_info):
 def _clip(text, limit):
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _one_sentence(text):
+    text = " ".join(str(text).split()).strip()
+    for ending in (". ", "! ", "? "):
+        head, sep, rest = text.partition(ending)
+        if sep:
+            return head.rstrip() + ending[0]
+    return text

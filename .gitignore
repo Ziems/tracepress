@@ -20,5 +20,6 @@ dist/
 
 examples/**/output/
 examples/**/harbor-trajectories.jsonl
+examples/**/niah_trajectories.jsonl
 examples/**/input/*-live.jsonl
 !examples/lm/input/harbor-live.jsonl

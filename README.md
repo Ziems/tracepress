@@ -35,6 +35,8 @@ lm:
   default: deepseek/deepseek-v4.1-flash
 ```
 
+
+
 ## Run A Basic Batch Pipeline
 
 ```bash
@@ -46,6 +48,8 @@ Inspect:
 - `examples/basic/output/overviews.jsonl`
 - `examples/basic/output/kept.jsonl`
 - `examples/basic/output/manifest.json`
+
+
 
 ## Run The Harbor LM Example
 
@@ -65,6 +69,8 @@ Inspect:
 
 - `examples/lm/output/harbor_one_summary.jsonl`
 - `examples/lm/output/harbor_manifest.json`
+
+
 
 ### Streaming Run
 
@@ -103,13 +109,65 @@ remove the output JSONL between experiments when you want a fresh result file.
 
 The streaming progress line reports:
 
-| Counter | Meaning |
-| --- | --- |
-| `records` | Complete input JSONL records read from root input files. |
-| `emitted` | Records emitted by pipeline stages and reducers. |
-| `retired` | Input records fully processed and safe to checkpoint past. |
-| `failed` | Records or groups that failed during execution. |
-| `groups_open` | Groups/windows still waiting to reduce or flush. |
+
+| Counter       | Meaning                                                    |
+| ------------- | ---------------------------------------------------------- |
+| `records`     | Complete input JSONL records read from root input files.   |
+| `emitted`     | Records emitted by pipeline stages and reducers.           |
+| `retired`     | Input records fully processed and safe to checkpoint past. |
+| `failed`      | Records or groups that failed during execution.            |
+| `groups_open` | Groups/windows still waiting to reduce or flush.           |
+
+
+
+## Run The PII Detection Demo
+
+This batch example expands three slim harbor trajectories into steps, asks an LM whether each
+step contains PII, then reduces those labels into one JSON finding per trace. The fixture has a
+trace with a fake SSN, a trace with a fake phone number, and a clean control.
+
+```bash
+export OPENROUTER_API_KEY=...
+uv run mine-trace examples/lm/pii_pipeline.yaml --manifest examples/lm/output/pii_manifest.json
+```
+
+Inspect:
+
+- `examples/lm/output/pii_findings.jsonl`
+- `examples/lm/output/pii_manifest.json`
+
+
+## Run The Harbor Category Demo
+
+This batch example expands three slim harbor trajectories into steps, summarizes each step, then
+reduces those summaries into a domain, an outcome, and a one-sentence trajectory summary.
+
+```bash
+export OPENROUTER_API_KEY=...
+uv run mine-trace examples/lm/category_pipeline.yaml --manifest examples/lm/output/category_manifest.json
+```
+
+Inspect:
+
+- `examples/lm/output/category_findings.jsonl`
+- `examples/lm/output/category_manifest.json`
+
+
+## Run The Frustration Detection Demo
+
+Terminal-bench traces rarely contain real user emotion, so this fixture injects a frustrated
+user turn into one copy, an impatient turn into another, and leaves a calm control. The pipeline
+labels each step and reduces to one JSON finding per trace.
+
+```bash
+export OPENROUTER_API_KEY=...
+uv run mine-trace examples/lm/frustration_pipeline.yaml --manifest examples/lm/output/frustration_manifest.json
+```
+
+Inspect:
+
+- `examples/lm/output/frustration_findings.jsonl`
+- `examples/lm/output/frustration_manifest.json`
 
 ## Config Shape
 
@@ -153,3 +211,4 @@ there is a close condition for unbounded streams.
 - `lm-pipeline.md` describes the DSPy/OpenRouter language-model stage support.
 - `streaming-amendment.md` describes the stream-friendly WAL/checkpoint design.
 - `examples/basic/README.md` and `examples/lm/README.md` contain example-specific notes.
+

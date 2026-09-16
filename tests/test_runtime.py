@@ -1064,6 +1064,17 @@ pipelines:
     }
 
 
+def test_parse_lm_json_repairs_python_style_escapes() -> None:
+    from mine_trace.runtime import _parse_lm_json
+
+    content = r'{"has_frustration": false, "frustration_kind": null, "evidence": "No module named \'Bio\'"}'
+    assert _parse_lm_json(content) == {
+        "has_frustration": False,
+        "frustration_kind": None,
+        "evidence": "No module named 'Bio'",
+    }
+
+
 def test_lm_map_runs_concurrently_with_configured_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = write_project(
         tmp_path,

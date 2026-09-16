@@ -1499,12 +1499,22 @@ def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> dict[str, Any]:
     except (KeyError, IndexError, TypeError) as exc:
         raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` did not contain message content.") from exc
     try:
-        parsed = json.loads(content)
+        parsed = _parse_lm_json(content)
     except json.JSONDecodeError as exc:
         raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` was not valid JSON: {content}") from exc
     if not isinstance(parsed, dict):
         raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` must be a JSON object.")
     return parsed
+
+
+def _parse_lm_json(content: str) -> Any:
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        repaired = content.replace("\\'", "'")
+        if repaired == content:
+            raise
+        return json.loads(repaired)
 
 
 def _lm_instructions(target: Any) -> str:
