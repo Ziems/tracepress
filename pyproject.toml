@@ -1,14 +1,19 @@
 [project]
 name = "trace-miner"
 version = "0.1.0"
-description = "Config-driven map/filter/reduce runtime for variable-size groups."
+description = "Config-driven map/filter/reduce for language model data pipelines"
 readme = "README.md"
+authors = [{ name = "Noah Ziems" }]
 requires-python = ">=3.12"
 dependencies = [
     "dspy>=3.3.1",
     "PyYAML>=6.0.2",
     "tqdm>=4.70.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Ziems/trace-miner"
+Repository = "https://github.com/Ziems/trace-miner.git"
 
 [project.scripts]
 trace-miner = "trace_miner.cli:main"

@@ -14,12 +14,23 @@ It is built for runs like:
 
 ## Setup
 
-Use `uv` from the repository root:
+From the repository root:
 
 ```bash
 uv sync
 uv run trace-miner --help
 ```
+
+To install the CLI onto your PATH without publishing to PyPI:
+
+```bash
+uv tool install git+https://github.com/Ziems/trace-miner.git
+trace-miner --help
+```
+
+The GitHub repo is private, so that command needs credentials that can clone it.
+From a local checkout, `uv tool install .` works without GitHub access. After a
+later PyPI publish, the public form is `uv tool install trace-miner`.
 
 Language-model examples use OpenRouter:
 
