@@ -5,12 +5,13 @@ id_field: session_id
 lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
-  max_concurrent: 128
+  max_concurrent: 16
 
 pipelines:
-  - in: input/harbor-live.jsonl
-    out: output/harbor_stream_summaries.jsonl
+  - in: input/trajectories.jsonl
+    out: output/one_summary.jsonl
     pipeline:
+      - filter: selected_harbor_trajectory
       - map: prepare_harbor_trajectory
       - group:
           expand: split_harbor_steps

@@ -8,8 +8,8 @@ lm:
   max_concurrent: 16
 
 pipelines:
-  - in: input/frustration-trajectories.jsonl
-    out: output/frustration_findings.jsonl
+  - in: input/trajectories.jsonl
+    out: output/findings.jsonl
     pipeline:
       - group:
           expand: split_harbor_steps

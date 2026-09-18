@@ -10,13 +10,13 @@ def main() -> int:
     parser.add_argument(
         "--source",
         type=Path,
-        default=Path(__file__).parent / "input" / "harbor-trajectories.jsonl",
+        default=Path(__file__).parent / "input" / "trajectories.jsonl",
         help="Source JSONL file to replay.",
     )
     parser.add_argument(
         "--target",
         type=Path,
-        default=Path(__file__).parent / "input" / "harbor-live.jsonl",
+        default=Path(__file__).parent / "input" / "live.jsonl",
         help="Live JSONL file to append to.",
     )
     parser.add_argument("--interval", type=float, default=3.0, help="Seconds to wait between appended records.")

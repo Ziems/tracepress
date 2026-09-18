@@ -35,7 +35,18 @@ lm:
   default: deepseek/deepseek-v4.1-flash
 ```
 
+## Examples
 
+Each directory under `examples/` is a self-contained demo (`pipeline.yaml`, `stages.py`, `input/`).
+
+| Demo | What it shows | Run |
+| --- | --- | --- |
+| [`examples/basic`](examples/basic/README.md) | Python-only map/filter/reduce | `uv run mine-trace examples/basic/pipeline.yaml --manifest examples/basic/output/manifest.json` |
+| [`examples/lm`](examples/lm/README.md) | DSPy LM stage on mine-sensor readings | `uv run mine-trace examples/lm/pipeline.yaml --manifest examples/lm/output/manifest.json` |
+| [`examples/harbor`](examples/harbor/README.md) | Trajectory step summaries, batch or stream | `uv run mine-trace examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json` |
+| [`examples/pii`](examples/pii/README.md) | PII detection over slim harbor traces | `uv run mine-trace examples/pii/pipeline.yaml --manifest examples/pii/output/manifest.json` |
+| [`examples/category`](examples/category/README.md) | Domain/outcome labeling | `uv run mine-trace examples/category/pipeline.yaml --manifest examples/category/output/manifest.json` |
+| [`examples/frustration`](examples/frustration/README.md) | User-frustration detection | `uv run mine-trace examples/frustration/pipeline.yaml --manifest examples/frustration/output/manifest.json` |
 
 ## Run A Basic Batch Pipeline
 
@@ -49,12 +60,11 @@ Inspect:
 - `examples/basic/output/kept.jsonl`
 - `examples/basic/output/manifest.json`
 
-
-
 ## Run The Harbor LM Example
 
 The harbor example summarizes a trajectory by mapping over each step, producing one-sentence step
-summaries, then reducing those into a failure diagnosis and a compact trajectory summary.
+summaries, then reducing those into a failure diagnosis and a compact trajectory summary. See
+[`examples/harbor/README.md`](examples/harbor/README.md) for the full walkthrough.
 
 ### Batch Run
 
@@ -62,15 +72,13 @@ This reads a fixed fixture file and processes one selected trajectory:
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run mine-trace examples/lm/harbor_pipeline.yaml --manifest examples/lm/output/harbor_manifest.json
+uv run mine-trace examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json
 ```
 
 Inspect:
 
-- `examples/lm/output/harbor_one_summary.jsonl`
-- `examples/lm/output/harbor_manifest.json`
-
-
+- `examples/harbor/output/one_summary.jsonl`
+- `examples/harbor/output/manifest.json`
 
 ### Streaming Run
 
@@ -80,35 +88,34 @@ appended.
 First prepare an empty live input file:
 
 ```bash
-uv run python examples/lm/simulate_harbor_stream.py --reset-only
+uv run python examples/harbor/simulate_stream.py --reset-only
 ```
 
 In one terminal, start the stream:
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run mine-trace stream examples/lm/harbor_stream_pipeline.yaml --reset-checkpoint --progress
+uv run mine-trace stream examples/harbor/stream.yaml --reset-checkpoint --progress
 ```
 
 In another terminal, replay fixture trajectories into the live input file:
 
 ```bash
-uv run python examples/lm/simulate_harbor_stream.py --limit 1 --interval 3
+uv run python examples/harbor/simulate_stream.py --limit 1 --interval 3
 ```
 
 `--interval` is the simulator delay between appended records. Increase `--limit` to replay more
 trajectories; use `--limit 0` to replay the whole fixture.
 
-The stream reads `examples/lm/input/harbor-live.jsonl` and appends summaries to:
+The stream reads `examples/harbor/input/live.jsonl` and appends summaries to:
 
-- `examples/lm/output/harbor_stream_summaries.jsonl`
+- `examples/harbor/output/stream_summaries.jsonl`
 
 Stream checkpoint and journal state lives under `.mine-trace/` beside the config and is ignored by
 git. Use `--reset-checkpoint` to start reading from byte 0 again. Stream outputs are append-only, so
 remove the output JSONL between experiments when you want a fresh result file.
 
 The streaming progress line reports:
-
 
 | Counter       | Meaning                                                    |
 | ------------- | ---------------------------------------------------------- |
@@ -117,57 +124,6 @@ The streaming progress line reports:
 | `retired`     | Input records fully processed and safe to checkpoint past. |
 | `failed`      | Records or groups that failed during execution.            |
 | `groups_open` | Groups/windows still waiting to reduce or flush.           |
-
-
-
-## Run The PII Detection Demo
-
-This batch example expands three slim harbor trajectories into steps, asks an LM whether each
-step contains PII, then reduces those labels into one JSON finding per trace. The fixture has a
-trace with a fake SSN, a trace with a fake phone number, and a clean control.
-
-```bash
-export OPENROUTER_API_KEY=...
-uv run mine-trace examples/lm/pii_pipeline.yaml --manifest examples/lm/output/pii_manifest.json
-```
-
-Inspect:
-
-- `examples/lm/output/pii_findings.jsonl`
-- `examples/lm/output/pii_manifest.json`
-
-
-## Run The Harbor Category Demo
-
-This batch example expands three slim harbor trajectories into steps, summarizes each step, then
-reduces those summaries into a domain, an outcome, and a one-sentence trajectory summary.
-
-```bash
-export OPENROUTER_API_KEY=...
-uv run mine-trace examples/lm/category_pipeline.yaml --manifest examples/lm/output/category_manifest.json
-```
-
-Inspect:
-
-- `examples/lm/output/category_findings.jsonl`
-- `examples/lm/output/category_manifest.json`
-
-
-## Run The Frustration Detection Demo
-
-Terminal-bench traces rarely contain real user emotion, so this fixture injects a frustrated
-user turn into one copy, an impatient turn into another, and leaves a calm control. The pipeline
-labels each step and reduces to one JSON finding per trace.
-
-```bash
-export OPENROUTER_API_KEY=...
-uv run mine-trace examples/lm/frustration_pipeline.yaml --manifest examples/lm/output/frustration_manifest.json
-```
-
-Inspect:
-
-- `examples/lm/output/frustration_findings.jsonl`
-- `examples/lm/output/frustration_manifest.json`
 
 ## Config Shape
 
@@ -210,5 +166,4 @@ there is a close condition for unbounded streams.
 - `pipeline-spec.md` describes the core runtime model.
 - `lm-pipeline.md` describes the DSPy/OpenRouter language-model stage support.
 - `streaming-amendment.md` describes the stream-friendly WAL/checkpoint design.
-- `examples/basic/README.md` and `examples/lm/README.md` contain example-specific notes.
-
+- Example-specific notes live in each demo's `README.md`.
