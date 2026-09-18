@@ -18,7 +18,7 @@ live record is intended to be processed.
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run trace-miner examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json
+uv run trace-miner examples/harbor/pipeline.yaml
 ```
 
 That pipeline keeps one selected JSONL line, expands the trajectory into steps, maps each step

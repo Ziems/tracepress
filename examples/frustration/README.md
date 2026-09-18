@@ -7,7 +7,7 @@ trajectory.
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run trace-miner examples/frustration/pipeline.yaml --manifest examples/frustration/output/manifest.json
+uv run trace-miner examples/frustration/pipeline.yaml
 ```
 
 Inspect `examples/frustration/output/findings.jsonl`. Each line looks like:

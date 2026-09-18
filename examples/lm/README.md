@@ -5,13 +5,12 @@ first:
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run trace-miner examples/lm/pipeline.yaml --manifest examples/lm/output/manifest.json
+uv run trace-miner examples/lm/pipeline.yaml
 ```
 
 Then inspect:
 
 - `examples/lm/output/trace_overviews.jsonl`
-- `examples/lm/output/manifest.json`
 
 The config spells out the MVP default provider and model explicitly:
 

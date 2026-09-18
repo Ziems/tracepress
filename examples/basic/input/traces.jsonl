@@ -1,4 +1,0 @@
-{"id":"trace-a","enabled":true,"samples":[4,9,16]}
-{"id":"trace-b","enabled":false,"samples":[100]}
-{"id":"trace-c","enabled":true,"samples":[1,-5,25]}
-

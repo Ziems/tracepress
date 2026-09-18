@@ -52,24 +52,11 @@ Each directory under `examples/` is a self-contained demo (`pipeline.yaml`, `sta
 
 | Demo | What it shows | Run |
 | --- | --- | --- |
-| [`examples/basic`](examples/basic/README.md) | Python-only map/filter/reduce | `uv run trace-miner examples/basic/pipeline.yaml --manifest examples/basic/output/manifest.json` |
-| [`examples/lm`](examples/lm/README.md) | DSPy LM stage on mine-sensor readings | `uv run trace-miner examples/lm/pipeline.yaml --manifest examples/lm/output/manifest.json` |
-| [`examples/harbor`](examples/harbor/README.md) | Trajectory step summaries, batch or stream | `uv run trace-miner examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json` |
-| [`examples/pii`](examples/pii/README.md) | PII detection over slim harbor traces | `uv run trace-miner examples/pii/pipeline.yaml --manifest examples/pii/output/manifest.json` |
-| [`examples/category`](examples/category/README.md) | Domain/outcome labeling | `uv run trace-miner examples/category/pipeline.yaml --manifest examples/category/output/manifest.json` |
-| [`examples/frustration`](examples/frustration/README.md) | User-frustration detection | `uv run trace-miner examples/frustration/pipeline.yaml --manifest examples/frustration/output/manifest.json` |
-
-## Run A Basic Batch Pipeline
-
-```bash
-uv run trace-miner examples/basic/pipeline.yaml --manifest examples/basic/output/manifest.json
-```
-
-Inspect:
-
-- `examples/basic/output/overviews.jsonl`
-- `examples/basic/output/kept.jsonl`
-- `examples/basic/output/manifest.json`
+| [`examples/lm`](examples/lm/README.md) | DSPy LM stage on mine-sensor readings | `uv run trace-miner examples/lm/pipeline.yaml` |
+| [`examples/harbor`](examples/harbor/README.md) | Trajectory step summaries, batch or stream | `uv run trace-miner examples/harbor/pipeline.yaml` |
+| [`examples/pii`](examples/pii/README.md) | PII detection over slim harbor traces | `uv run trace-miner examples/pii/pipeline.yaml` |
+| [`examples/category`](examples/category/README.md) | Domain/outcome labeling | `uv run trace-miner examples/category/pipeline.yaml` |
+| [`examples/frustration`](examples/frustration/README.md) | User-frustration detection | `uv run trace-miner examples/frustration/pipeline.yaml` |
 
 ## Run The Harbor LM Example
 
@@ -83,13 +70,12 @@ This reads a fixed fixture file and processes one selected trajectory:
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run trace-miner examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json
+uv run trace-miner examples/harbor/pipeline.yaml
 ```
 
 Inspect:
 
 - `examples/harbor/output/one_summary.jsonl`
-- `examples/harbor/output/manifest.json`
 
 ### Streaming Run
 
