@@ -1,6 +1,6 @@
-# Mine Trace
+# Trace Miner
 
-Mine Trace is a config-driven JSONL pipeline runtime for map/filter/reduce workflows where groups
+Trace Miner is a config-driven JSONL pipeline runtime for map/filter/reduce workflows where groups
 can have variable size. Pipeline topology lives in YAML; stage logic lives in ordinary Python
 functions.
 
@@ -18,7 +18,7 @@ Use `uv` from the repository root:
 
 ```bash
 uv sync
-uv run mine-trace --help
+uv run trace-miner --help
 ```
 
 Language-model examples use OpenRouter:
@@ -41,17 +41,17 @@ Each directory under `examples/` is a self-contained demo (`pipeline.yaml`, `sta
 
 | Demo | What it shows | Run |
 | --- | --- | --- |
-| [`examples/basic`](examples/basic/README.md) | Python-only map/filter/reduce | `uv run mine-trace examples/basic/pipeline.yaml --manifest examples/basic/output/manifest.json` |
-| [`examples/lm`](examples/lm/README.md) | DSPy LM stage on mine-sensor readings | `uv run mine-trace examples/lm/pipeline.yaml --manifest examples/lm/output/manifest.json` |
-| [`examples/harbor`](examples/harbor/README.md) | Trajectory step summaries, batch or stream | `uv run mine-trace examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json` |
-| [`examples/pii`](examples/pii/README.md) | PII detection over slim harbor traces | `uv run mine-trace examples/pii/pipeline.yaml --manifest examples/pii/output/manifest.json` |
-| [`examples/category`](examples/category/README.md) | Domain/outcome labeling | `uv run mine-trace examples/category/pipeline.yaml --manifest examples/category/output/manifest.json` |
-| [`examples/frustration`](examples/frustration/README.md) | User-frustration detection | `uv run mine-trace examples/frustration/pipeline.yaml --manifest examples/frustration/output/manifest.json` |
+| [`examples/basic`](examples/basic/README.md) | Python-only map/filter/reduce | `uv run trace-miner examples/basic/pipeline.yaml --manifest examples/basic/output/manifest.json` |
+| [`examples/lm`](examples/lm/README.md) | DSPy LM stage on mine-sensor readings | `uv run trace-miner examples/lm/pipeline.yaml --manifest examples/lm/output/manifest.json` |
+| [`examples/harbor`](examples/harbor/README.md) | Trajectory step summaries, batch or stream | `uv run trace-miner examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json` |
+| [`examples/pii`](examples/pii/README.md) | PII detection over slim harbor traces | `uv run trace-miner examples/pii/pipeline.yaml --manifest examples/pii/output/manifest.json` |
+| [`examples/category`](examples/category/README.md) | Domain/outcome labeling | `uv run trace-miner examples/category/pipeline.yaml --manifest examples/category/output/manifest.json` |
+| [`examples/frustration`](examples/frustration/README.md) | User-frustration detection | `uv run trace-miner examples/frustration/pipeline.yaml --manifest examples/frustration/output/manifest.json` |
 
 ## Run A Basic Batch Pipeline
 
 ```bash
-uv run mine-trace examples/basic/pipeline.yaml --manifest examples/basic/output/manifest.json
+uv run trace-miner examples/basic/pipeline.yaml --manifest examples/basic/output/manifest.json
 ```
 
 Inspect:
@@ -72,7 +72,7 @@ This reads a fixed fixture file and processes one selected trajectory:
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run mine-trace examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json
+uv run trace-miner examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json
 ```
 
 Inspect:
@@ -95,7 +95,7 @@ In one terminal, start the stream:
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run mine-trace stream examples/harbor/stream.yaml --reset-checkpoint --progress
+uv run trace-miner stream examples/harbor/stream.yaml --reset-checkpoint --progress
 ```
 
 In another terminal, replay fixture trajectories into the live input file:
@@ -111,7 +111,7 @@ The stream reads `examples/harbor/input/live.jsonl` and appends summaries to:
 
 - `examples/harbor/output/stream_summaries.jsonl`
 
-Stream checkpoint and journal state lives under `.mine-trace/` beside the config and is ignored by
+Stream checkpoint and journal state lives under `.trace-miner/` beside the config and is ignored by
 git. Use `--reset-checkpoint` to start reading from byte 0 again. Stream outputs are append-only, so
 remove the output JSONL between experiments when you want a fresh result file.
 

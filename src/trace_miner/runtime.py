@@ -16,9 +16,9 @@ from urllib.request import Request, urlopen
 
 from tqdm.auto import tqdm
 
-from mine_trace.config import load_config
-from mine_trace.errors import PipelineExecutionError
-from mine_trace.model import (
+from trace_miner.config import load_config
+from trace_miner.errors import PipelineExecutionError
+from trace_miner.model import (
     Config,
     Failure,
     GroupSpec,
@@ -103,7 +103,7 @@ class _Logger:
     group_id: str | None
 
     def info(self, message: str) -> None:
-        print(f"[mine-trace] {self.stage_name} {self.group_id or '-'}: {message}")
+        print(f"[trace-miner] {self.stage_name} {self.group_id or '-'}: {message}")
 
 
 class _GroupSkipped(Exception):
@@ -934,7 +934,7 @@ class _ProgressTask:
         self._bar = tqdm(
             total=self.total,
             initial=self.current,
-            desc=f"[mine-trace] {self.label}",
+            desc=f"[trace-miner] {self.label}",
             file=self.stream,
             disable=self.disable,
             leave=True,
@@ -1226,7 +1226,7 @@ class _StreamProgress:
         groups_open = stats.groups_opened - stats.groups_reduced - stats.groups_skipped
         self.stream.write(
             "\r"
-            f"[mine-trace] stream: records={stats.records_read} emitted={stats.emitted} "
+            f"[trace-miner] stream: records={stats.records_read} emitted={stats.emitted} "
             f"retired={stats.retired} failed={stats.failed} groups_open={groups_open}"
         )
         self.stream.flush()
@@ -1287,11 +1287,11 @@ def _read_available_jsonl(path: Path, offset: int) -> Iterable[_JsonlLine]:
 
 def _default_checkpoint_path(config: Config) -> Path:
     digest = hashlib.sha256(str(config.config_path).encode("utf-8")).hexdigest()[:16]
-    return config.base_dir / ".mine-trace" / "checkpoints" / f"{digest}.json"
+    return config.base_dir / ".trace-miner" / "checkpoints" / f"{digest}.json"
 
 
 def _default_journal_path(config: Config, run_id: str) -> Path:
-    return config.base_dir / ".mine-trace" / "runs" / run_id / "journal.jsonl"
+    return config.base_dir / ".trace-miner" / "runs" / run_id / "journal.jsonl"
 
 
 def _install_stop_event() -> asyncio.Event:
@@ -1453,7 +1453,7 @@ def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> dict[str, Any]:
             {
                 "role": "system",
                 "content": (
-                    "You are executing a Mine Trace declarative stage. "
+                    "You are executing a Trace Miner declarative stage. "
                     "Return only a JSON object. Include exactly the requested output fields."
                 ),
             },
@@ -1479,7 +1479,7 @@ def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "X-OpenRouter-Title": "mine-trace",
+            "X-OpenRouter-Title": "trace-miner",
         },
         method="POST",
     )

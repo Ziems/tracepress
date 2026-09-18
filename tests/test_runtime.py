@@ -9,10 +9,10 @@ import time
 
 import pytest
 
-from mine_trace.config import load_config
-from mine_trace.errors import ConfigError, PipelineExecutionError
-from mine_trace.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER
-from mine_trace.runtime import run_config, run_config_async, run_stream, run_stream_async
+from trace_miner.config import load_config
+from trace_miner.errors import ConfigError, PipelineExecutionError
+from trace_miner.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER
+from trace_miner.runtime import run_config, run_config_async, run_stream, run_stream_async
 
 
 def write_jsonl(path: Path, records: list[object]) -> None:
@@ -125,7 +125,7 @@ pipelines:
 
     run_config(config, progress=True, progress_stream=stream)
 
-    assert "[mine-trace] map: double" in stream.getvalue()
+    assert "[trace-miner] map: double" in stream.getvalue()
     assert "2/2" in stream.getvalue()
     lines = [line for chunk in stream.getvalue().split("\r") for line in chunk.splitlines() if line]
     assert max(len(line) for line in lines) <= 120
@@ -156,7 +156,7 @@ pipelines:
 
     run_config(config, progress=True, progress_stream=stream)
 
-    assert "[mine-trace] reduce: merge" in stream.getvalue()
+    assert "[trace-miner] reduce: merge" in stream.getvalue()
     assert "2/2" in stream.getvalue()
 
 
@@ -192,7 +192,7 @@ pipelines:
         {"id": "a", "value": 4},
         {"id": "b", "value": 6},
     ]
-    checkpoints = list((tmp_path / ".mine-trace" / "checkpoints").glob("*.json"))
+    checkpoints = list((tmp_path / ".trace-miner" / "checkpoints").glob("*.json"))
     assert len(checkpoints) == 1
     checkpoint = json.loads(checkpoints[0].read_text(encoding="utf-8"))
     assert checkpoint["inputs"][str(tmp_path / "input.jsonl")]["offset"] == (tmp_path / "input.jsonl").stat().st_size
@@ -206,7 +206,7 @@ from pathlib import Path
 import shutil
 
 def remove_journal_parent(record):
-    shutil.rmtree(Path(__file__).parent / ".mine-trace" / "runs")
+    shutil.rmtree(Path(__file__).parent / ".trace-miner" / "runs")
     return record
 """,
         """
@@ -223,7 +223,7 @@ pipelines:
     run_stream(config, max_records=1, poll_interval=0.01, progress=False)
 
     assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a"}]
-    assert list((tmp_path / ".mine-trace" / "runs").glob("*/journal.jsonl"))
+    assert list((tmp_path / ".trace-miner" / "runs").glob("*/journal.jsonl"))
 
 
 def test_stream_ignores_partial_line_until_newline(tmp_path: Path) -> None:
@@ -1047,7 +1047,7 @@ pipelines:
         return Response()
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setattr("mine_trace.runtime.urlopen", fake_urlopen)
+    monkeypatch.setattr("trace_miner.runtime.urlopen", fake_urlopen)
 
     run_config(config)
 
@@ -1065,7 +1065,7 @@ pipelines:
 
 
 def test_parse_lm_json_repairs_python_style_escapes() -> None:
-    from mine_trace.runtime import _parse_lm_json
+    from trace_miner.runtime import _parse_lm_json
 
     content = r'{"has_frustration": false, "frustration_kind": null, "evidence": "No module named \'Bio\'"}'
     assert _parse_lm_json(content) == {
@@ -1121,7 +1121,7 @@ pipelines:
             active -= 1
         return {"label": kwargs["text"].upper()}
 
-    monkeypatch.setattr("mine_trace.runtime._call_openrouter", fake_openrouter)
+    monkeypatch.setattr("trace_miner.runtime._call_openrouter", fake_openrouter)
 
     run_config(config)
 

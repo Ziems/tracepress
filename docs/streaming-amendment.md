@@ -3,7 +3,7 @@
 An amendment to [`pipeline-spec.md`](pipeline-spec.md). Read that first. This document adds a long-running
 execution mode that follows append-only JSONL inputs and processes records as they are written.
 
-The goal is not to turn Mine Trace into a queue, scheduler, or distributed stream processor.
+The goal is not to turn Trace Miner into a queue, scheduler, or distributed stream processor.
 The goal is a practical local command that can sit next to a growing `.jsonl` file and keep the
 declared pipelines moving.
 
@@ -12,13 +12,13 @@ declared pipelines moving.
 Batch mode stays the default:
 
 ```bash
-uv run mine-trace pipeline.yaml
+uv run trace-miner pipeline.yaml
 ```
 
 Streaming mode is explicit:
 
 ```bash
-uv run mine-trace stream pipeline.yaml
+uv run trace-miner stream pipeline.yaml
 ```
 
 `stream` watches root input files, reads complete appended JSONL lines, runs the configured
@@ -32,7 +32,7 @@ runtime's read/write policy, not the shape of the graph.
 
 In scope for streaming MVP:
 
-- A new CLI subcommand, `mine-trace stream CONFIG`.
+- A new CLI subcommand, `trace-miner stream CONFIG`.
 - Follow append-only root input files.
 - Treat a newline-terminated JSONL line as the unit of ingestion.
 - Ignore partial trailing lines until the newline arrives.
@@ -64,7 +64,7 @@ Explicitly deferred:
 groups. In streaming mode, there may never be an end-of-file, so a `by` group would either stay
 open forever or require a new completion rule.
 
-For the streaming MVP, reject configs that contain `by` groups when running `mine-trace stream`,
+For the streaming MVP, reject configs that contain `by` groups when running `trace-miner stream`,
 with a clear error:
 
 ```text
@@ -105,7 +105,7 @@ The runtime records one byte offset per root input path. On startup:
 - A `--reset-checkpoint` flag deletes the saved offsets before starting.
 
 Only complete lines are processed. If the writer appends half a JSON object and flushes without
-a newline, Mine Trace waits. When the newline appears, it parses the full line.
+a newline, Trace Miner waits. When the newline appears, it parses the full line.
 
 Invalid JSON is a run error by default. Later, we can add a dead-letter file, but for MVP a bad
 line should stop loudly rather than silently corrupting the stream.
@@ -126,7 +126,7 @@ boundary.
 Default journal location:
 
 ```text
-.mine-trace/runs/<run-id>/journal.jsonl
+.trace-miner/runs/<run-id>/journal.jsonl
 ```
 
 Each journal line is a small JSON object. MVP event types:
@@ -158,7 +158,7 @@ behavior instead of hiding the edge case inside a checkpoint file.
 Checkpoint state lives next to the config by default:
 
 ```text
-.mine-trace/checkpoints/<config-hash>.json
+.trace-miner/checkpoints/<config-hash>.json
 ```
 
 The checkpoint is a compact snapshot derived from the journal:
@@ -167,7 +167,7 @@ The checkpoint is a compact snapshot derived from the journal:
 {
   "version": 1,
   "config": "/abs/path/pipeline.yaml",
-  "journal": "/abs/path/.mine-trace/runs/<run-id>/journal.jsonl",
+  "journal": "/abs/path/.trace-miner/runs/<run-id>/journal.jsonl",
   "inputs": {
     "/abs/path/events.jsonl": {
       "offset": 12345
@@ -263,7 +263,7 @@ ongoing counters rather than a percentage.
 MVP display:
 
 ```text
-[mine-trace] stream: records=128 emitted=256 retired=256 failed=0 groups_open=0
+[trace-miner] stream: records=128 emitted=256 retired=256 failed=0 groups_open=0
 ```
 
 Update the display periodically, not on every record. A one-second interval is enough.
@@ -291,7 +291,7 @@ If `--progress` is disabled, do not print periodic status. Errors still go to st
    - Sleep briefly when no complete line is available.
    - Handle truncation by failing loudly in MVP.
 
-4. Add `mine-trace stream`.
+4. Add `trace-miner stream`.
    - Parse `--from-start`, `--from-end`, `--reset-checkpoint`, `--checkpoint`, `--poll-interval`,
      `--progress`, and `--no-progress`.
    - Reuse config validation.

@@ -5,8 +5,8 @@ import json
 import sys
 from pathlib import Path
 
-from mine_trace.errors import MineTraceError
-from mine_trace.runtime import run_config, run_stream
+from trace_miner.errors import TraceMinerError
+from trace_miner.runtime import run_config, run_stream
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -17,7 +17,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _batch(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="mine-trace")
+    parser = argparse.ArgumentParser(prog="trace-miner")
     parser.add_argument("config", type=Path)
     parser.add_argument("--manifest", type=Path, help="Write the run manifest as JSON.")
     progress = parser.add_mutually_exclusive_group()
@@ -28,8 +28,8 @@ def _batch(argv: list[str]) -> int:
 
     try:
         result = run_config(args.config, progress=args.progress)
-    except MineTraceError as exc:
-        print(f"mine-trace: {exc}", file=sys.stderr)
+    except TraceMinerError as exc:
+        print(f"trace-miner: {exc}", file=sys.stderr)
         return 1
 
     if args.manifest:
@@ -50,7 +50,7 @@ def _batch(argv: list[str]) -> int:
 
 
 def _stream(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="mine-trace stream")
+    parser = argparse.ArgumentParser(prog="trace-miner stream")
     parser.add_argument("config", type=Path)
     parser.add_argument("--checkpoint", type=Path, help="Override the checkpoint path.")
     start = parser.add_mutually_exclusive_group()
@@ -76,8 +76,8 @@ def _stream(argv: list[str]) -> int:
         )
     except KeyboardInterrupt:
         return 130
-    except MineTraceError as exc:
-        print(f"mine-trace: {exc}", file=sys.stderr)
+    except TraceMinerError as exc:
+        print(f"trace-miner: {exc}", file=sys.stderr)
         return 1
     return 0
 

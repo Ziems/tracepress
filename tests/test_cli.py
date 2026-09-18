@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mine_trace.cli import main
+from trace_miner.cli import main
 
 
 def test_stream_rejects_conflicting_start_modes(capsys: pytest.CaptureFixture[str]) -> None:

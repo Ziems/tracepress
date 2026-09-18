@@ -9,7 +9,7 @@
 .pyre/
 .coverage
 htmlcov/
-.mine-trace/
+.trace-miner/
 
 __pycache__/
 *.py[cod]

@@ -6,7 +6,7 @@ reduces those summaries into a domain, outcome, and one-sentence trajectory summ
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run mine-trace examples/category/pipeline.yaml --manifest examples/category/output/manifest.json
+uv run trace-miner examples/category/pipeline.yaml --manifest examples/category/output/manifest.json
 ```
 
 Inspect `examples/category/output/findings.jsonl`. Each line looks like:

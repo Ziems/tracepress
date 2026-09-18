@@ -180,7 +180,7 @@ there is no parent field unless a later config form gives that key a name.
 
 ## A7. Config additions
 
-The only new MVP config surface is provider and model selection. If `lm` is omitted, Mine Trace
+The only new MVP config surface is provider and model selection. If `lm` is omitted, Trace Miner
 uses:
 
 ```yaml

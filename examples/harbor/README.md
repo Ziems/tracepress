@@ -18,7 +18,7 @@ live record is intended to be processed.
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run mine-trace examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json
+uv run trace-miner examples/harbor/pipeline.yaml --manifest examples/harbor/output/manifest.json
 ```
 
 That pipeline keeps one selected JSONL line, expands the trajectory into steps, maps each step
@@ -41,7 +41,7 @@ Then, in one terminal, start the streaming runtime:
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run mine-trace stream examples/harbor/stream.yaml --reset-checkpoint --progress
+uv run trace-miner stream examples/harbor/stream.yaml --reset-checkpoint --progress
 ```
 
 In another terminal, append trajectories from the fixture into the live input file:
@@ -54,10 +54,10 @@ The stream reads `examples/harbor/input/live.jsonl` and appends summaries to
 `examples/harbor/output/stream_summaries.jsonl`. Increase `--limit` to replay more
 trajectories; use `--limit 0` to replay the whole fixture.
 
-`--interval` belongs to the simulator, not the Mine Trace runtime. It is the number of seconds to
+`--interval` belongs to the simulator, not the Trace Miner runtime. It is the number of seconds to
 wait between appending fixture records into `live.jsonl`.
 
-Streaming writes checkpoint and journal state under `.mine-trace/` beside the config. That state is
+Streaming writes checkpoint and journal state under `.trace-miner/` beside the config. That state is
 ignored by git. Use `--reset-checkpoint` when you want the stream to start reading from byte 0 again.
 Outputs are append-only in stream mode, so remove `examples/harbor/output/stream_summaries.jsonl`
 between experiments if you want a fresh output file.

@@ -1,11 +1,11 @@
-# LM Mine Trace Example
+# LM Trace Miner Example
 
 This example uses a DSPy-backed declarative LM stage. It calls OpenRouter, so set an API key
 first:
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run mine-trace examples/lm/pipeline.yaml --manifest examples/lm/output/manifest.json
+uv run trace-miner examples/lm/pipeline.yaml --manifest examples/lm/output/manifest.json
 ```
 
 Then inspect:

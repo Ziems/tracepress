@@ -1,5 +1,5 @@
 [project]
-name = "mine-trace"
+name = "trace-miner"
 version = "0.1.0"
 description = "Config-driven map/filter/reduce runtime for variable-size groups."
 readme = "README.md"
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mine-trace = "mine_trace.cli:main"
+trace-miner = "trace_miner.cli:main"
 
 [dependency-groups]
 dev = [

@@ -6,7 +6,7 @@ record per trajectory.
 
 ```bash
 export OPENROUTER_API_KEY=...
-uv run mine-trace examples/pii/pipeline.yaml --manifest examples/pii/output/manifest.json
+uv run trace-miner examples/pii/pipeline.yaml --manifest examples/pii/output/manifest.json
 ```
 
 Inspect `examples/pii/output/findings.jsonl`. Each line looks like:

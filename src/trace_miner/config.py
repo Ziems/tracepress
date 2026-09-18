@@ -11,8 +11,8 @@ from typing import Any, get_origin
 
 import yaml
 
-from mine_trace.errors import ConfigError
-from mine_trace.model import (
+from trace_miner.errors import ConfigError
+from trace_miner.model import (
     DEFAULT_LM_MODEL,
     DEFAULT_LM_MAX_CONCURRENT,
     DEFAULT_LM_PROVIDER,
@@ -409,7 +409,7 @@ def _load_stage_module(raw: Any, base_dir: Path) -> ModuleType:
 
 
 def _module_from_file(path: Path) -> ModuleType:
-    module_name = f"mine_trace_user_{abs(hash(path))}"
+    module_name = f"trace_miner_user_{abs(hash(path))}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ConfigError(f"Cannot load stage module from {path}.")
