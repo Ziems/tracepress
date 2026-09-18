@@ -1,6 +1,6 @@
 # Amendment: LM-Backed Stages
 
-An amendment to `pipeline-spec.md`. Read that first. This document adds one capability: a stage
+An amendment to [`pipeline-spec.md`](pipeline-spec.md). Read that first. This document adds one capability: a stage
 may be a declarative language model module instead of a Python function.
 
 Section numbers below refer to the base spec.

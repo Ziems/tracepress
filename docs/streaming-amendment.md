@@ -1,6 +1,6 @@
 # Amendment: Streaming Runs
 
-An amendment to `pipeline-spec.md`. Read that first. This document adds a long-running
+An amendment to [`pipeline-spec.md`](pipeline-spec.md). Read that first. This document adds a long-running
 execution mode that follows append-only JSONL inputs and processes records as they are written.
 
 The goal is not to turn Mine Trace into a queue, scheduler, or distributed stream processor.

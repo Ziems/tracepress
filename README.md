@@ -163,7 +163,10 @@ there is a close condition for unbounded streams.
 
 ## More Detail
 
-- `pipeline-spec.md` describes the core runtime model.
-- `lm-pipeline.md` describes the DSPy/OpenRouter language-model stage support.
-- `streaming-amendment.md` describes the stream-friendly WAL/checkpoint design.
-- Example-specific notes live in each demo's `README.md`.
+Design specs live in [`docs/`](docs/):
+
+- [`docs/pipeline-spec.md`](docs/pipeline-spec.md) describes the core runtime model.
+- [`docs/lm-pipeline.md`](docs/lm-pipeline.md) describes the DSPy/OpenRouter language-model stage support.
+- [`docs/streaming-amendment.md`](docs/streaming-amendment.md) describes the stream-friendly WAL/checkpoint design.
+
+Example-specific notes live in each demo's `README.md`.
