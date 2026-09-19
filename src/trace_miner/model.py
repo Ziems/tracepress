@@ -15,7 +15,7 @@ IncompletePolicy = Literal["fail", "partial"]
 DEFAULT_LM_PROVIDER = "openrouter"
 DEFAULT_LM_MODEL = "deepseek/deepseek-v4.1-flash"
 DEFAULT_LM_MAX_CONCURRENT = 64
-DEFAULT_LM_CACHE = False
+DEFAULT_LM_CACHE = True
 
 
 @dataclass(frozen=True)

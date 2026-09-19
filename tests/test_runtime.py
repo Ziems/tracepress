@@ -1011,7 +1011,7 @@ pipelines:
     assert stage is not None
     assert stage.lm_provider == DEFAULT_LM_PROVIDER
     assert stage.lm_model == DEFAULT_LM_MODEL
-    assert loaded.lm_cache is False
+    assert loaded.lm_cache is True
 
     python_lm = write_project(
         tmp_path / "python-lm",
@@ -1110,7 +1110,7 @@ pipelines:
     lm = FakeLM.instances[0]
     assert lm.model == f"openrouter/{DEFAULT_LM_MODEL}"
     assert lm.api_key == "test-key"
-    assert lm.cache is False
+    assert lm.cache is True
     assert lm.extra_body == {"usage": {"include": True}}
     assert result.stats.elapsed_s > 0
     assert result.stats.lm_calls == 1
@@ -1119,7 +1119,7 @@ pipelines:
     assert result.stats.lm_cost_usd == 0.0021
 
 
-def test_lm_cache_can_be_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lm_cache_can_be_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = write_project(
         tmp_path,
         """
@@ -1136,7 +1136,7 @@ label = dspy.Predict(Label)
         """
 from: ./stages
 lm:
-  cache: true
+  cache: false
 pipelines:
   - in: input.jsonl
     out: output.jsonl
@@ -1149,9 +1149,9 @@ pipelines:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     loaded = load_config(config)
-    assert loaded.lm_cache is True
+    assert loaded.lm_cache is False
     run_config(loaded)
-    assert FakeLM.instances[0].cache is True
+    assert FakeLM.instances[0].cache is False
 
 
 def test_lm_cache_must_be_boolean(tmp_path: Path) -> None:

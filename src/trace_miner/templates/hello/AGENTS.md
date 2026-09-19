@@ -90,8 +90,8 @@ Rules:
 - `id_field` is for error messages, not grouping.
 - `lm.max_concurrent` caps simultaneous OpenRouter calls. Keep it at least 64
   unless the user asks otherwise.
-- `lm.cache` defaults to false. Set `cache: true` to turn on DSPy's request
-  cache. Reruns then reuse identical LM calls.
+- `lm.cache` defaults to true and uses DSPy's request cache. Set
+  `cache: false` to force a fresh call every time.
 - Override a model on one step with `lm: {model: ...}` only on LM stages.
 
 ### Step forms

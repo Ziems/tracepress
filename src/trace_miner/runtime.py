@@ -1540,7 +1540,7 @@ def _is_dspy_target(target: Any) -> bool:
     return module == "dspy" or module.startswith("dspy.")
 
 
-def _openrouter_lm(model: str, api_key: str, cache: bool = False) -> Any:
+def _openrouter_lm(model: str, api_key: str, cache: bool = True) -> Any:
     import dspy
 
     lm = dspy.LM(
