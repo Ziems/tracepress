@@ -939,9 +939,6 @@ class _ProgressTask:
             disable=self.disable,
             leave=True,
             ncols=_PROGRESS_NCOLS,
-            ascii=False,
-            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}",
-            unit="record",
         )
 
     def advance(self) -> None:

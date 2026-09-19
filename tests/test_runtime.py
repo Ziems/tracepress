@@ -129,7 +129,6 @@ pipelines:
     assert "2/2" in stream.getvalue()
     lines = [line for chunk in stream.getvalue().split("\r") for line in chunk.splitlines() if line]
     assert max(len(line) for line in lines) <= 120
-    assert "#" not in stream.getvalue()
 
 
 def test_progress_bar_reports_reduce_progress(tmp_path: Path) -> None:

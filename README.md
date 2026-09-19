@@ -14,6 +14,8 @@ It is built for things like:
 - finding behavioral differences in model performance across agents or versions
 - and much much more...
 
+
+
 ## Setup
 
 ```bash
@@ -22,6 +24,27 @@ trace-miner --help
 ```
 
 The GitHub repo is private, so that command needs credentials that can clone it.
+
+## Start a Project
+
+`init` writes a hello-world project with shared LM stages and four pipelines:
+
+```bash
+export OPENROUTER_API_KEY=...
+trace-miner init my-traces
+cd my-traces
+trace-miner summarize.yaml
+```
+
+That scaffolds `stages.py`, three example harbor traces, and `summarize.yaml` /
+`pii.yaml` / `frustration.yaml` / `category.yaml`. The summarize pipeline summarizes each step and diagnoses the trajectory, same shape as `examples/harbor`. The traces include a fake SSN, a fake phone number, and a
+frustrated user turn so the other pipelines have something to find. Open
+`output/summaries.jsonl` when it finishes, then read the generated `README.md`.
+
+`trace-miner init` without a name prompts for one and defaults to `hello-world`.
+Use `--force` to replace an existing scaffold.
+
+## Language-Model Examples
 
 Language-model examples use OpenRouter:
 
@@ -37,8 +60,6 @@ lm:
   default: deepseek/deepseek-v4.1-flash
 ```
 
-## Examples
-
 Each directory under `examples/` is a self-contained demo (`pipeline.yaml`, `stages.py`, `input/`).
 
 
@@ -48,6 +69,8 @@ Each directory under `examples/` is a self-contained demo (`pipeline.yaml`, `sta
 | `[examples/pii](examples/pii/README.md)`                 | PII detection over slim harbor traces | `trace-miner examples/pii/pipeline.yaml`         |
 | `[examples/category](examples/category/README.md)`       | Domain/outcome labeling               | `trace-miner examples/category/pipeline.yaml`    |
 | `[examples/frustration](examples/frustration/README.md)` | User-frustration detection            | `trace-miner examples/frustration/pipeline.yaml` |
+
+
 
 
 ## Run The Harbor LM Example
@@ -67,6 +90,8 @@ trace-miner examples/harbor/pipeline.yaml
 Inspect:
 
 - `examples/harbor/output/one_summary.jsonl`
+
+
 
 ### Streaming Run
 
@@ -114,6 +139,8 @@ The streaming progress line reports:
 | `groups_open` | Groups/windows still waiting to reduce or flush.           |
 
 
+
+
 ## Config Shape
 
 A pipeline config names a stage module and a set of file-based pipelines. Comments below mark
@@ -136,11 +163,10 @@ pipelines:
       - group:                     # one barrier: wait for all children, then reduce
           expand: split_steps      # Python stage: one parent -> many children
           pipeline:
-            - map: detect_failure      # LM stage: same config form as Python
+            - map: detect_failure      # LM stage: fires for every item in the group
           reduce: diagnose_trajectory  # LM stage: fires once the group closes
 ```
 
-  
 Stage names resolve to either a Python function or a DSPy module. The config does not change.
 
 ```python
