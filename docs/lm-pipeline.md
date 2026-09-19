@@ -192,6 +192,7 @@ lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
   max_concurrent: 64
+  cache: false
 ```
 
 The default model id is the OpenRouter slug for DeepSeek V4.1 Flash.
@@ -225,6 +226,9 @@ OpenRouter are post-MVP and fail at load time.
 `lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 64 and must be a
 positive integer.
 
+`lm.cache` enables DSPy's LM request cache. It defaults to `false`. Set it to `true` to reuse
+identical provider calls. This is not the post-MVP record-level pipeline cache.
+
 The resolved model id is passed to the LM adapter/provider. It is not a signature input field
 and is not visible to the module unless the adapter's backend chooses to bind it there.
 
@@ -234,7 +238,6 @@ Post-MVP, this `lm` block may grow policy fields such as:
 lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
-  cache: true
   retries: 3
   on_invalid: repair        # repair | fail
 ```

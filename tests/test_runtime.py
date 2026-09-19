@@ -32,8 +32,14 @@ def install_fake_lm(
     sleep: float = 0.0,
     prompt_tokens: int = 12,
     completion_tokens: int = 4,
-    cost: float = 0.0021,
+    cost: float | list[float] = 0.0021,
 ) -> type[dspy.BaseLM]:
+    from trace_miner.model import LmUsage
+    from trace_miner.runtime import _note_lm_usage
+
+    costs = list(cost) if isinstance(cost, list) else None
+    cost_lock = threading.Lock()
+
     class FakeLM(dspy.BaseLM):
         instances: list[FakeLM] = []
         context_lms: list[object] = []
@@ -52,10 +58,15 @@ def install_fake_lm(
             content = (completions or {}).get(self.model)
             if content is None:
                 content = (completions or {}).get("*", "")
+            with cost_lock:
+                this_cost = costs.pop(0) if costs else cost
+            _note_lm_usage(
+                LmUsage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=this_cost)
+            )
             self.history.append(
                 {
                     "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
-                    "cost": cost,
+                    "cost": this_cost,
                 }
             )
             return [content]
@@ -1000,6 +1011,7 @@ pipelines:
     assert stage is not None
     assert stage.lm_provider == DEFAULT_LM_PROVIDER
     assert stage.lm_model == DEFAULT_LM_MODEL
+    assert loaded.lm_cache is False
 
     python_lm = write_project(
         tmp_path / "python-lm",
@@ -1105,6 +1117,79 @@ pipelines:
     assert result.stats.lm_prompt_tokens == 12
     assert result.stats.lm_completion_tokens == 4
     assert result.stats.lm_cost_usd == 0.0021
+
+
+def test_lm_cache_can_be_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label = dspy.Predict(Label)
+""",
+        """
+from: ./stages
+lm:
+  cache: true
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    FakeLM = install_fake_lm(monkeypatch, {"*": chat_completion(label="ORE")})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    loaded = load_config(config)
+    assert loaded.lm_cache is True
+    run_config(loaded)
+    assert FakeLM.instances[0].cache is True
+
+
+def test_lm_cache_must_be_boolean(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class LabelSignature:
+    input_fields = {"text": Field(str)}
+    output_fields = {"label": Field(str)}
+
+
+class LabelModule:
+    signature = LabelSignature()
+    def __call__(self, **kwargs):
+        return {"label": kwargs["text"]}
+
+
+label = LabelModule()
+""",
+        """
+from: ./stages
+lm:
+  cache: 1
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    with pytest.raises(ConfigError, match="lm.cache"):
+        load_config(config)
 
 
 def test_lm_pydantic_output_is_structured_and_jsonl_writable(
@@ -1252,6 +1337,62 @@ pipelines:
     from dspy.dsp.utils.settings import main_thread_config
 
     assert main_thread_config.get("lm") is None
+
+
+def test_lm_overlapping_same_model_costs_are_summed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label = dspy.Predict(Label)
+""",
+        """
+from: ./stages
+lm:
+  max_concurrent: 2
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}, {"id": "b", "text": "coal"}],
+    )
+    install_fake_lm(
+        monkeypatch,
+        {"*": chat_completion(label="ORE")},
+        sleep=0.03,
+        cost=[0.001, 0.004],
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    result = run_config(config)
+
+    assert result.stats.lm_calls == 2
+    assert result.stats.lm_cost_usd == pytest.approx(0.005)
+
+
+def test_usage_from_lm_response_reads_openrouter_cost() -> None:
+    from types import SimpleNamespace
+
+    from trace_miner.runtime import _usage_from_lm_response
+
+    usage = _usage_from_lm_response(
+        SimpleNamespace(
+            cost=None,
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.0015},
+        )
+    )
+    assert usage.prompt_tokens == 100
+    assert usage.completion_tokens == 20
+    assert usage.cost_usd == 0.0015
 
 
 def test_python_stage_that_invokes_dspy_names_the_stage(tmp_path: Path) -> None:

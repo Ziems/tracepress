@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ from trace_miner.model import (
 
 
 _PROGRESS_NCOLS = 120
+_lm_usage_tls = threading.local()
 
 
 @dataclass
@@ -826,7 +828,7 @@ class _Runtime:
         api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:
             raise PipelineExecutionError("OPENROUTER_API_KEY is required for OpenRouter LM stages.")
-        self._dspy_lms = {model: _openrouter_lm(model, api_key) for model in models}
+        self._dspy_lms = {model: _openrouter_lm(model, api_key, self.config.lm_cache) for model in models}
 
     def _lm_slot(self) -> asyncio.Semaphore:
         if self._lm_semaphore is None:
@@ -1538,27 +1540,86 @@ def _is_dspy_target(target: Any) -> bool:
     return module == "dspy" or module.startswith("dspy.")
 
 
-def _openrouter_lm(model: str, api_key: str) -> Any:
+def _openrouter_lm(model: str, api_key: str, cache: bool = False) -> Any:
     import dspy
 
-    return dspy.LM(
+    lm = dspy.LM(
         f"openrouter/{model}",
         api_key=api_key,
-        cache=False,
+        cache=cache,
         extra_body={"usage": {"include": True}},
     )
+    _install_usage_probe(lm)
+    return lm
+
+
+def _install_usage_probe(lm: Any) -> None:
+    finalize = getattr(lm, "_finalize_lm_response", None)
+    if finalize is None:
+        return
+
+    def probed(request: Any, response: Any) -> Any:
+        result = finalize(request, response)
+        _note_lm_usage(_usage_from_lm_response(result))
+        return result
+
+    lm._finalize_lm_response = probed
 
 
 def _invoke_dspy_sync(target: Any, kwargs: dict[str, Any], lm: Any) -> tuple[Any, LmUsage]:
     import dspy
 
+    _begin_lm_usage()
     with dspy.context(lm=lm):
         with dspy.track_usage() as tracker:
             prediction = target(**kwargs)
     return prediction, _lm_usage_from_dspy(lm, tracker)
 
 
-def _lm_usage_from_dspy(lm: Any, tracker: Any) -> LmUsage:
+def _begin_lm_usage() -> None:
+    _lm_usage_tls.entries = []
+
+
+def _note_lm_usage(usage: LmUsage) -> None:
+    entries = getattr(_lm_usage_tls, "entries", None)
+    if entries is None:
+        entries = []
+        _lm_usage_tls.entries = entries
+    entries.append(usage)
+
+
+def _take_lm_usage() -> tuple[LmUsage, int]:
+    entries = getattr(_lm_usage_tls, "entries", None) or []
+    _lm_usage_tls.entries = []
+    return (
+        LmUsage(
+            prompt_tokens=sum(entry.prompt_tokens for entry in entries),
+            completion_tokens=sum(entry.completion_tokens for entry in entries),
+            cost_usd=sum(entry.cost_usd for entry in entries),
+        ),
+        len(entries),
+    )
+
+
+def _usage_from_lm_response(response: Any) -> LmUsage:
+    usage = getattr(response, "usage", None)
+    if hasattr(usage, "model_dump"):
+        usage_dict = usage.model_dump()
+    elif isinstance(usage, dict):
+        usage_dict = usage
+    else:
+        usage_dict = {}
+    cost = _as_float(getattr(response, "cost", None))
+    if cost == 0.0:
+        cost = _as_float(usage_dict.get("cost") or usage_dict.get("response_cost"))
+    return LmUsage(
+        prompt_tokens=_as_int(usage_dict.get("prompt_tokens") or usage_dict.get("input_tokens")),
+        completion_tokens=_as_int(usage_dict.get("completion_tokens") or usage_dict.get("output_tokens")),
+        cost_usd=cost,
+    )
+
+
+def _usage_from_tracker(tracker: Any) -> LmUsage:
     prompt = 0
     completion = 0
     cost = 0.0
@@ -1569,17 +1630,34 @@ def _lm_usage_from_dspy(lm: Any, tracker: Any) -> LmUsage:
         prompt += _as_int(entry.get("prompt_tokens") or entry.get("input_tokens"))
         completion += _as_int(entry.get("completion_tokens") or entry.get("output_tokens"))
         cost += _as_float(entry.get("cost") or entry.get("response_cost"))
-    history = getattr(lm, "history", None) or []
-    if history:
-        last = history[-1]
-        usage = last.get("usage") if hasattr(last, "get") else getattr(last, "usage", None)
-        if prompt == 0 and completion == 0 and isinstance(usage, dict):
-            prompt = _as_int(usage.get("prompt_tokens") or usage.get("input_tokens"))
-            completion = _as_int(usage.get("completion_tokens") or usage.get("output_tokens"))
-        if cost == 0.0:
-            raw_cost = last.get("cost") if hasattr(last, "get") else getattr(last, "cost", None)
-            cost = _as_float(raw_cost)
     return LmUsage(prompt_tokens=prompt, completion_tokens=completion, cost_usd=cost)
+
+
+def _lm_usage_from_dspy(lm: Any, tracker: Any) -> LmUsage:
+    noted, noted_calls = _take_lm_usage()
+    tracked = _usage_from_tracker(tracker)
+    if noted_calls:
+        return LmUsage(
+            prompt_tokens=noted.prompt_tokens or tracked.prompt_tokens,
+            completion_tokens=noted.completion_tokens or tracked.completion_tokens,
+            cost_usd=noted.cost_usd or tracked.cost_usd,
+        )
+    history = getattr(lm, "history", None) or []
+    if not history:
+        return tracked
+    last = history[-1]
+    usage = last.get("usage") if hasattr(last, "get") else getattr(last, "usage", None)
+    prompt = tracked.prompt_tokens
+    completion = tracked.completion_tokens
+    if isinstance(usage, dict):
+        prompt = prompt or _as_int(usage.get("prompt_tokens") or usage.get("input_tokens"))
+        completion = completion or _as_int(usage.get("completion_tokens") or usage.get("output_tokens"))
+    raw_cost = last.get("cost") if hasattr(last, "get") else getattr(last, "cost", None)
+    return LmUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        cost_usd=tracked.cost_usd or _as_float(raw_cost),
+    )
 
 
 def _is_unconfigured_dspy(exc: BaseException) -> bool:

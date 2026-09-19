@@ -157,6 +157,7 @@ lm:                             # optional LM defaults
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
   max_concurrent: 64            # concurrent LM calls inside this run
+  cache: false                  # set true to enable DSPy's request cache
 
 pipelines:
   - in: input/trajectories.jsonl   # JSONL source

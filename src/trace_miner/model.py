@@ -15,6 +15,7 @@ IncompletePolicy = Literal["fail", "partial"]
 DEFAULT_LM_PROVIDER = "openrouter"
 DEFAULT_LM_MODEL = "deepseek/deepseek-v4.1-flash"
 DEFAULT_LM_MAX_CONCURRENT = 64
+DEFAULT_LM_CACHE = False
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,7 @@ class Config:
     lm_provider: str
     lm_default_model: str
     lm_max_concurrent: int
+    lm_cache: bool
     pipelines: tuple[PipelineSpec, ...]
 
 

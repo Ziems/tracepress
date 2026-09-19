@@ -13,6 +13,7 @@ import yaml
 
 from trace_miner.errors import ConfigError
 from trace_miner.model import (
+    DEFAULT_LM_CACHE,
     DEFAULT_LM_MODEL,
     DEFAULT_LM_MAX_CONCURRENT,
     DEFAULT_LM_PROVIDER,
@@ -28,7 +29,7 @@ from trace_miner.model import (
 
 
 _KNOWN_TOP_LEVEL = {"from", "defaults", "id_field", "pipelines", "concurrency", "lm"}
-_KNOWN_LM_KEYS = {"default", "max_concurrent", "provider"}
+_KNOWN_LM_KEYS = {"cache", "default", "max_concurrent", "provider"}
 _KNOWN_STEP_OPTIONS = {"stage", "lm"}
 _KNOWN_PER_STEP_LM_KEYS = {"model"}
 _KNOWN_DEFAULTS = {"on_child_error", "on_group_incomplete", "ordered"}
@@ -71,7 +72,7 @@ def load_config(path: str | Path) -> Config:
 
     module = _load_stage_module(raw["from"], base_dir)
     defaults = _parse_defaults(raw.get("defaults", {}))
-    lm_provider, lm_default_model, lm_max_concurrent = _parse_lm_config(raw.get("lm"))
+    lm_provider, lm_default_model, lm_max_concurrent, lm_cache = _parse_lm_config(raw.get("lm"))
     id_field = raw.get("id_field")
     if id_field is not None and not isinstance(id_field, str):
         raise ConfigError("`id_field` must be a string when provided.")
@@ -94,6 +95,7 @@ def load_config(path: str | Path) -> Config:
         lm_provider,
         lm_default_model,
         lm_max_concurrent,
+        lm_cache,
         pipelines,
     )
 
@@ -118,9 +120,9 @@ def _parse_defaults(raw: Any) -> Defaults:
     return Defaults(on_child_error, on_group_incomplete, ordered)
 
 
-def _parse_lm_config(raw: Any) -> tuple[str, str, int]:
+def _parse_lm_config(raw: Any) -> tuple[str, str, int, bool]:
     if raw is None:
-        return DEFAULT_LM_PROVIDER, DEFAULT_LM_MODEL, DEFAULT_LM_MAX_CONCURRENT
+        return DEFAULT_LM_PROVIDER, DEFAULT_LM_MODEL, DEFAULT_LM_MAX_CONCURRENT, DEFAULT_LM_CACHE
     if not isinstance(raw, dict):
         raise ConfigError("`lm` must be a mapping.")
     unknown = set(raw) - _KNOWN_LM_KEYS
@@ -139,7 +141,10 @@ def _parse_lm_config(raw: Any) -> tuple[str, str, int]:
     max_concurrent = raw.get("max_concurrent", DEFAULT_LM_MAX_CONCURRENT)
     if not isinstance(max_concurrent, int) or max_concurrent <= 0:
         raise ConfigError("`lm.max_concurrent` must be a positive integer when provided.")
-    return provider, default, max_concurrent
+    cache = raw.get("cache", DEFAULT_LM_CACHE)
+    if not isinstance(cache, bool):
+        raise ConfigError("`lm.cache` must be a boolean when provided.")
+    return provider, default, max_concurrent, cache
 
 
 def _parse_pipeline(
