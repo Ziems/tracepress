@@ -11,11 +11,11 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, TextIO, get_args, get_origin
+from typing import Any, Iterable, TextIO, get_origin
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 from rich.console import Console
 from rich.markup import escape
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TaskID, TextColumn, TimeElapsedColumn
@@ -257,6 +257,7 @@ class _Runtime:
         self._root_counter = 0
         self._open_groups: list[_GroupState] = []
         self._lm_semaphore: asyncio.Semaphore | None = None
+        self._dspy_lms: dict[str, Any] = {}
         self.progress = _ProgressReporter(progress, progress_stream)
         self.append_outputs = append_outputs
         self.capture_writes = capture_writes
@@ -264,6 +265,7 @@ class _Runtime:
         self.completed_stream_tokens: list[_StreamToken] = []
         self.stream_every: dict[tuple[int, tuple[int, ...]], _StreamEveryState] = {}
         self.held_stream_tokens: set[_StreamToken] = set()
+        self._prepare_dspy_lms()
 
     async def run(self) -> RunResult:
         started = time.perf_counter()
@@ -544,15 +546,22 @@ class _Runtime:
         group = self._open_group(spec, env, key=None, depth=depth, reduce_progress=reduce_progress)
         try:
             assert spec.expand is not None
-            emitted = await self.call_stage_for_env(
-                spec.expand,
-                env,
-                parent=env.record,
-                group_id=group.group_id,
-                key=None,
-                depth=depth,
-                failures=group.failures,
-            )
+            try:
+                emitted = await self.call_stage_for_env(
+                    spec.expand,
+                    env,
+                    parent=env.record,
+                    group_id=group.group_id,
+                    key=None,
+                    depth=depth,
+                    failures=group.failures,
+                )
+            except Exception as exc:
+                if isinstance(exc, (_GroupSkipped, PipelineExecutionError)):
+                    raise
+                raise PipelineExecutionError(
+                    f"Group {group.group_id} expand stage `{spec.expand.name}` failed: {exc}"
+                ) from exc
             child_envs = []
             for i, record in enumerate(emitted, start=1):
                 group.increment()
@@ -563,12 +572,6 @@ class _Runtime:
             await self._run_group_children(group, child_envs)
         except _GroupSkipped:
             return []
-        except Exception as exc:
-            if isinstance(exc, PipelineExecutionError):
-                raise
-            raise PipelineExecutionError(
-                f"Group {group.group_id} expand stage `{spec.expand.name if spec.expand else '<unknown>'}` failed: {exc}"
-            ) from exc
         return group.reduce_outputs
 
     async def _process_by_groups(
@@ -723,9 +726,16 @@ class _Runtime:
         ctx = _CallContext(self, stage.name, source, parent, group_id, key, index, path, depth, failures)
         if stage.kind == "lm":
             return await self._call_lm_stage(stage, arg, parent, path)
-        result = stage.target(arg, ctx) if stage.accepts_ctx else stage.target(arg)
-        if stage.is_async or inspect.isawaitable(result):
-            result = await result
+        try:
+            result = stage.target(arg, ctx) if stage.accepts_ctx else stage.target(arg)
+            if stage.is_async or inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            if _is_unconfigured_dspy(exc):
+                raise PipelineExecutionError(
+                    f"Stage `{stage.name}` invoked DSPy without a configured language model."
+                ) from exc
+            raise
         if result is not None and ctx.emitted:
             identity = self.record_identity(arg, path)
             raise PipelineExecutionError(f"Stage `{stage.name}` both returned a value and emitted for record {identity}.")
@@ -800,10 +810,33 @@ class _Runtime:
             kwargs[field.name] = parent_record[field.name]
         return kwargs
 
+    def _prepare_dspy_lms(self) -> None:
+        models = {
+            stage.lm_model
+            for stage in _iter_stages(self.config)
+            if (
+                stage.kind == "lm"
+                and stage.lm_provider == "openrouter"
+                and stage.lm_model
+                and _is_dspy_target(stage.target)
+            )
+        }
+        if not models:
+            return
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise PipelineExecutionError("OPENROUTER_API_KEY is required for OpenRouter LM stages.")
+        self._dspy_lms = {model: _openrouter_lm(model, api_key) for model in models}
+
+    def _lm_slot(self) -> asyncio.Semaphore:
+        if self._lm_semaphore is None:
+            self._lm_semaphore = asyncio.Semaphore(self.config.lm_max_concurrent)
+        return self._lm_semaphore
+
     async def _invoke_lm(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
         target = stage.target
         if stage.lm_provider == "openrouter" and _is_dspy_target(target):
-            return await self._call_openrouter_async(stage, kwargs)
+            return await self._invoke_dspy(stage, kwargs)
         if hasattr(target, "with_model"):
             target = target.with_model(stage.lm_model)
         if callable(target):
@@ -816,10 +849,16 @@ class _Runtime:
             return await self._call_openrouter_async(stage, kwargs)
         raise PipelineExecutionError(f"Unsupported LM provider `{stage.lm_provider}` for stage `{stage.name}`.")
 
+    async def _invoke_dspy(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
+        assert stage.lm_model is not None
+        lm = self._dspy_lms[stage.lm_model]
+        async with self._lm_slot():
+            prediction, usage = await asyncio.to_thread(_invoke_dspy_sync, stage.target, kwargs, lm)
+        self.stats.record_lm(usage)
+        return prediction
+
     async def _call_openrouter_async(self, stage: StageRef, kwargs: dict[str, Any]) -> dict[str, Any]:
-        if self._lm_semaphore is None:
-            self._lm_semaphore = asyncio.Semaphore(self.config.lm_max_concurrent)
-        async with self._lm_semaphore:
+        async with self._lm_slot():
             result = await asyncio.to_thread(_call_openrouter, stage, kwargs)
         prediction, usage = _unpack_openrouter_result(result)
         self.stats.record_lm(usage)
@@ -832,11 +871,9 @@ class _Runtime:
             if isinstance(prediction, dict):
                 if field.name not in prediction:
                     raise PipelineExecutionError(f"LM stage `{stage.name}` missing output field `{field.name}`.")
-                outputs[field.name] = _coerce_lm_output(stage.name, field.name, field.annotation, prediction[field.name])
+                outputs[field.name] = prediction[field.name]
             elif hasattr(prediction, field.name):
-                outputs[field.name] = _coerce_lm_output(
-                    stage.name, field.name, field.annotation, getattr(prediction, field.name)
-                )
+                outputs[field.name] = getattr(prediction, field.name)
             else:
                 raise PipelineExecutionError(f"LM stage `{stage.name}` missing output field `{field.name}`.")
         return outputs
@@ -859,7 +896,7 @@ class _Runtime:
         mode = "a" if append else "w"
         with path.open(mode, encoding="utf-8") as handle:
             for record in records:
-                handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
+                handle.write(json.dumps(record, sort_keys=True, separators=(",", ":"), default=_json_default))
                 handle.write("\n")
             handle.flush()
 
@@ -1478,43 +1515,81 @@ def _gather_children(field_name: str, children: list[Any]) -> list[Any]:
     return children
 
 
+def _iter_stages(config: Config) -> Iterable[StageRef]:
+    def walk(steps: tuple[Step, ...]) -> Iterable[StageRef]:
+        for step in steps:
+            if step.stage is not None:
+                yield step.stage
+            if step.group is None:
+                continue
+            if step.group.expand is not None:
+                yield step.group.expand
+            if isinstance(step.group.by, StageRef):
+                yield step.group.by
+            yield step.group.reduce
+            yield from walk(step.group.pipeline)
+
+    for pipeline in config.pipelines:
+        yield from walk(pipeline.steps)
+
+
 def _is_dspy_target(target: Any) -> bool:
     module = getattr(type(target), "__module__", "")
     return module == "dspy" or module.startswith("dspy.")
 
 
-def _is_pydantic_model(annotation: Any) -> bool:
-    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
+def _openrouter_lm(model: str, api_key: str) -> Any:
+    import dspy
+
+    return dspy.LM(
+        f"openrouter/{model}",
+        api_key=api_key,
+        cache=False,
+        extra_body={"usage": {"include": True}},
+    )
 
 
-def _is_structured_annotation(annotation: Any) -> bool:
-    if _is_pydantic_model(annotation):
-        return True
-    origin = get_origin(annotation)
-    if origin is None:
-        return False
-    return any(_is_structured_annotation(arg) for arg in get_args(annotation) if arg is not type(None))
+def _invoke_dspy_sync(target: Any, kwargs: dict[str, Any], lm: Any) -> tuple[Any, LmUsage]:
+    import dspy
+
+    with dspy.context(lm=lm):
+        with dspy.track_usage() as tracker:
+            prediction = target(**kwargs)
+    return prediction, _lm_usage_from_dspy(lm, tracker)
 
 
-def _annotation_json_schema(annotation: Any) -> dict[str, Any]:
-    if annotation is None:
-        return {}
-    try:
-        return TypeAdapter(annotation).json_schema()
-    except Exception:
-        return {"type": str(annotation)}
+def _lm_usage_from_dspy(lm: Any, tracker: Any) -> LmUsage:
+    prompt = 0
+    completion = 0
+    cost = 0.0
+    totals = tracker.get_total_tokens() if tracker is not None else {}
+    for entry in totals.values():
+        if not isinstance(entry, dict):
+            continue
+        prompt += _as_int(entry.get("prompt_tokens") or entry.get("input_tokens"))
+        completion += _as_int(entry.get("completion_tokens") or entry.get("output_tokens"))
+        cost += _as_float(entry.get("cost") or entry.get("response_cost"))
+    history = getattr(lm, "history", None) or []
+    if history:
+        last = history[-1]
+        usage = last.get("usage") if hasattr(last, "get") else getattr(last, "usage", None)
+        if prompt == 0 and completion == 0 and isinstance(usage, dict):
+            prompt = _as_int(usage.get("prompt_tokens") or usage.get("input_tokens"))
+            completion = _as_int(usage.get("completion_tokens") or usage.get("output_tokens"))
+        if cost == 0.0:
+            raw_cost = last.get("cost") if hasattr(last, "get") else getattr(last, "cost", None)
+            cost = _as_float(raw_cost)
+    return LmUsage(prompt_tokens=prompt, completion_tokens=completion, cost_usd=cost)
 
 
-def _coerce_lm_output(stage_name: str, field_name: str, annotation: Any, value: Any) -> Any:
-    if not _is_structured_annotation(annotation):
-        return value
-    try:
-        adapter = TypeAdapter(annotation)
-        return adapter.dump_python(adapter.validate_python(value), mode="json")
-    except Exception as exc:
-        raise PipelineExecutionError(
-            f"LM stage `{stage_name}` output `{field_name}` did not match {annotation}: {exc}"
-        ) from exc
+def _is_unconfigured_dspy(exc: BaseException) -> bool:
+    return isinstance(exc, ValueError) and str(exc).startswith("No LM is loaded")
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> tuple[dict[str, Any], LmUsage]:
@@ -1522,9 +1597,7 @@ def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> tuple[dict[str,
     if not api_key:
         raise PipelineExecutionError("OPENROUTER_API_KEY is required for OpenRouter LM stages.")
     assert stage.lm_signature is not None
-    output_fields = {
-        field.name: _annotation_json_schema(field.annotation) for field in stage.lm_signature.output_fields
-    }
+    output_fields = [field.name for field in stage.lm_signature.output_fields]
     instructions = _lm_instructions(stage.target)
     body = {
         "model": stage.lm_model,
@@ -1533,8 +1606,7 @@ def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> tuple[dict[str,
                 "role": "system",
                 "content": (
                     "You are executing a Trace Miner declarative stage. "
-                    "Return only a JSON object. Include exactly the requested output fields "
-                    "and match each field's JSON schema."
+                    "Return only a JSON object with the requested output fields."
                 ),
             },
             {

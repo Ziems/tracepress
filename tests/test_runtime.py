@@ -7,12 +7,61 @@ from pathlib import Path
 import threading
 import time
 
+import dspy
 import pytest
 
 from trace_miner.config import load_config
 from trace_miner.errors import ConfigError, PipelineExecutionError
 from trace_miner.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER, RunStats, format_run_profile
 from trace_miner.runtime import run_config, run_config_async, run_stream, run_stream_async
+
+
+def chat_completion(**fields: object) -> str:
+    parts = []
+    for name, value in fields.items():
+        rendered = value if isinstance(value, str) else json.dumps(value)
+        parts.append(f"[[ ## {name} ## ]]\n{rendered}")
+    parts.append("[[ ## completed ## ]]")
+    return "\n\n".join(parts)
+
+
+def install_fake_lm(
+    monkeypatch: pytest.MonkeyPatch,
+    completions: dict[str, str] | None = None,
+    *,
+    sleep: float = 0.0,
+    prompt_tokens: int = 12,
+    completion_tokens: int = 4,
+    cost: float = 0.0021,
+) -> type[dspy.BaseLM]:
+    class FakeLM(dspy.BaseLM):
+        instances: list[FakeLM] = []
+        context_lms: list[object] = []
+
+        def __init__(self, model: str, api_key=None, cache=False, extra_body=None, **kwargs):
+            super().__init__(model=model, cache=cache)
+            self.api_key = api_key
+            self.extra_body = extra_body
+            self.init_kwargs = kwargs
+            type(self).instances.append(self)
+
+        def __call__(self, *args, **kwargs):
+            type(self).context_lms.append(dspy.settings.lm)
+            if sleep:
+                time.sleep(sleep)
+            content = (completions or {}).get(self.model)
+            if content is None:
+                content = (completions or {}).get("*", "")
+            self.history.append(
+                {
+                    "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+                    "cost": cost,
+                }
+            )
+            return [content]
+
+    monkeypatch.setattr(dspy, "LM", FakeLM)
+    return FakeLM
 
 
 def write_jsonl(path: Path, records: list[object]) -> None:
@@ -1036,51 +1085,21 @@ pipelines:
 """,
         [{"id": "a", "text": "ore"}],
     )
-    captured = {}
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return json.dumps(
-                {
-                    "choices": [{"message": {"content": json.dumps({"label": "ORE"})}}],
-                    "usage": {
-                        "prompt_tokens": 12,
-                        "completion_tokens": 4,
-                        "total_tokens": 16,
-                        "cost": 0.0021,
-                    },
-                }
-            ).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["timeout"] = timeout
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        return Response()
-
+    FakeLM = install_fake_lm(
+        monkeypatch,
+        {"*": chat_completion(label="ORE")},
+    )
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setattr("trace_miner.runtime.urlopen", fake_urlopen)
 
     result = run_config(config)
 
     assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "label": "ORE", "text": "ore"}]
-    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
-    assert captured["timeout"] == 60
-    assert captured["body"]["model"] == DEFAULT_LM_MODEL
-    assert captured["body"]["usage"] == {"include": True}
-    assert captured["body"]["messages"][1]["role"] == "user"
-    assert json.loads(captured["body"]["messages"][1]["content"]) == {
-        "inputs": {"text": "ore"},
-        "instructions": "Return a concise material label.",
-        "output_fields": {"label": {"type": "string"}},
-        "stage": "label",
-    }
+    assert len(FakeLM.instances) == 1
+    lm = FakeLM.instances[0]
+    assert lm.model == f"openrouter/{DEFAULT_LM_MODEL}"
+    assert lm.api_key == "test-key"
+    assert lm.cache is False
+    assert lm.extra_body == {"usage": {"include": True}}
     assert result.stats.elapsed_s > 0
     assert result.stats.lm_calls == 1
     assert result.stats.lm_prompt_tokens == 12
@@ -1088,12 +1107,15 @@ pipelines:
     assert result.stats.lm_cost_usd == 0.0021
 
 
-def test_lm_pydantic_output_is_validated_and_schema_is_sent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lm_pydantic_output_is_structured_and_jsonl_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = write_project(
         tmp_path,
         """
 from typing import Literal
 
+import dspy
 from pydantic import BaseModel, Field as PydField
 
 
@@ -1102,21 +1124,14 @@ class Finding(BaseModel):
     evidence: str = PydField(description="Quoted span.")
 
 
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+class Detect(dspy.Signature):
+    \"\"\"Detect identifiers.\"\"\"
+
+    text: str = dspy.InputField()
+    findings: list[Finding] = dspy.OutputField()
 
 
-class DetectSignature:
-    input_fields = {"text": Field(str)}
-    output_fields = {"findings": Field(list[Finding])}
-
-
-class DetectModule:
-    signature = DetectSignature()
-
-
-detect = DetectModule()
+detect = dspy.Predict(Detect)
 """,
         """
 from: ./stages
@@ -1128,80 +1143,34 @@ pipelines:
 """,
         [{"id": "a", "text": "ssn 123-45-6789"}],
     )
-    captured = {}
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return json.dumps(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": json.dumps(
-                                    {"findings": [{"kind": "ssn", "evidence": "123-45-6789"}]}
-                                )
-                            }
-                        }
-                    ]
-                }
-            ).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        return Response()
-
+    install_fake_lm(
+        monkeypatch,
+        {"*": chat_completion(findings=[{"kind": "ssn", "evidence": "123-45-6789"}])},
+    )
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setattr("trace_miner.runtime.urlopen", fake_urlopen)
 
     run_config(config)
 
     assert read_jsonl(tmp_path / "output.jsonl") == [
         {"findings": [{"evidence": "123-45-6789", "kind": "ssn"}], "id": "a", "text": "ssn 123-45-6789"}
     ]
-    prompt = json.loads(captured["body"]["messages"][1]["content"])
-    schema = prompt["output_fields"]["findings"]
-    assert schema["type"] == "array"
-    encoded = json.dumps(schema)
-    assert "ssn" in encoded
-    assert "phone" in encoded
-    assert "evidence" in encoded
 
 
-def test_lm_pydantic_output_rejects_invalid_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lm_openrouter_missing_api_key_fails_before_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = write_project(
         tmp_path,
         """
-from typing import Literal
-
-from pydantic import BaseModel
+import dspy
 
 
-class Finding(BaseModel):
-    kind: Literal["ssn", "phone"]
-    evidence: str
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
 
 
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
-
-
-class DetectSignature:
-    input_fields = {"text": Field(str)}
-    output_fields = {"findings": Field(list[Finding])}
-
-
-class DetectModule:
-    signature = DetectSignature()
-
-
-detect = DetectModule()
+label = dspy.Predict(Label)
 """,
         """
 from: ./stages
@@ -1209,28 +1178,128 @@ pipelines:
   - in: input.jsonl
     out: output.jsonl
     pipeline:
-      - map: detect
+      - map: label
 """,
-        [{"id": "a", "text": "hello"}],
+        [{"id": "a", "text": "ore"}],
+    )
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    with pytest.raises(PipelineExecutionError, match="OPENROUTER_API_KEY is required"):
+        run_config(config)
+
+
+def test_lm_per_step_models_use_separate_context_lms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+class Score(dspy.Signature):
+    text: str = dspy.InputField()
+    score: float = dspy.OutputField()
+
+
+label = dspy.Predict(Label)
+score = dspy.Predict(Score)
+""",
+        """
+from: ./stages
+lm:
+  max_concurrent: 2
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map:
+          stage: label
+          lm:
+            model: cheap-model
+      - map:
+          stage: score
+          lm:
+            model: strong-model
+""",
+        [{"id": "a", "text": "ore"}, {"id": "b", "text": "coal"}],
+    )
+    FakeLM = install_fake_lm(
+        monkeypatch,
+        {
+            "openrouter/cheap-model": chat_completion(label="ORE"),
+            "openrouter/strong-model": chat_completion(score=0.9),
+        },
+        sleep=0.02,
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    run_config(config)
+
+    models = sorted(lm.model for lm in FakeLM.instances)
+    assert models == ["openrouter/cheap-model", "openrouter/strong-model"]
+    assert len({id(lm) for lm in FakeLM.instances}) == 2
+    assert all(isinstance(observed, FakeLM) for observed in FakeLM.context_lms)
+    assert {observed.model for observed in FakeLM.context_lms} == {
+        "openrouter/cheap-model",
+        "openrouter/strong-model",
+    }
+    from dspy.dsp.utils.settings import main_thread_config
+
+    assert main_thread_config.get("lm") is None
+
+
+def test_python_stage_that_invokes_dspy_names_the_stage(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+_label = dspy.Predict(Label)
+
+
+def split(record, ctx):
+    ctx.emit({"id": record["id"], "text": record["text"]})
+
+
+def wrap_label(record):
+    pred = _label(text=record["text"])
+    return {**record, "label": pred.label}
+
+
+def merge(children, ctx):
+    return {"labels": [child.get("label") for child in children]}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          expand: split
+          pipeline:
+            - map: wrap_label
+          reduce: merge
+""",
+        [{"id": "a", "text": "ore"}],
     )
 
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return json.dumps(
-                {"choices": [{"message": {"content": json.dumps({"findings": [{"kind": "email", "evidence": "x"}]})}}]}
-            ).encode("utf-8")
-
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setattr("trace_miner.runtime.urlopen", lambda request, timeout: Response())
-
-    with pytest.raises(PipelineExecutionError, match="did not match"):
+    with pytest.raises(PipelineExecutionError, match="Stage `wrap_label` invoked DSPy") as exc_info:
         run_config(config)
+    assert "expand stage" not in str(exc_info.value)
+    assert "split" not in str(exc_info.value)
 
 
 def test_lm_openrouter_missing_usage_still_counts_the_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

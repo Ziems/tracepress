@@ -162,9 +162,9 @@ Useful `ctx` fields: `emit`, `parent`, `group_id`, `key`, `index`, `path`,
 ### LM stages
 
 A DSPy signature is an LM stage. Config still says `- map: detect_pii_in_step`.
-Annotate outputs with Pydantic models when you want nested structure; the
-runtime sends that JSON schema to the model and stores validated JSON on the
-record.
+Do not wrap `Predict` in a Python function unless you need `ctx`. The module
+name in YAML is enough; DSPy executes it. Annotate outputs with Pydantic
+models when you want nested structure.
 
 ```python
 from typing import Literal
@@ -190,8 +190,8 @@ detect_pii_in_step = dspy.Predict(DetectPiiInStep)
 - Input field names are record keys. Missing keys fail with the stage name and
   the keys the record actually had.
 - Output fields merge into the record. Unmentioned keys pass through.
-- Pydantic outputs are elicited as JSON objects or lists of objects, then
-  written back as plain dicts. See `PiiFinding` in `stages.py`.
+- Pydantic outputs are parsed by DSPy. JSONL writes dump models to dicts.
+  See `PiiFinding` in `stages.py`.
 - LM stages do not receive `ctx`. If you need `ctx`, wrap the module in a
   Python function; the wrapper is then a Python stage.
 - Instructions live on the signature docstring, `Field(description=...)`, and
@@ -203,8 +203,8 @@ detect_pii_in_step = dspy.Predict(DetectPiiInStep)
 - A parent-level LM reduce (see `analyze_harbor_trajectory`) can take
   `step_summary: list[str]` plus parent metadata.
 
-If a Python function needs an LM, wrap the Predict module. Do not give the
-signature `ctx`.
+If a Python function needs `ctx` and an LM, wrap the Predict module. Do not
+give the signature `ctx`.
 
 ## Adding a pipeline
 

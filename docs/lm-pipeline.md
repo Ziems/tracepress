@@ -79,6 +79,9 @@ DSPy is the supported authoring dependency. Detect LM modules by duck typing on 
 an introspectable `signature` attribute exposing `input_fields` and `output_fields`, so a small
 custom module class can still work in tests or local experiments without modification.
 
+DSPy modules are executed by DSPy (`dspy.Predict` via stock `dspy.LM`). The provider and model
+still come from config: `lm.provider`, `lm.default`, and per-step `lm.model`.
+
 ## A3. Amends section 3, stage contract
 
 Section 3 currently defines resolution, arity binding, and the four callable shapes. Add a fifth
@@ -95,7 +98,8 @@ LM stages do not receive `ctx`. This is deliberate rather than a limitation. A m
 only fields and returns only fields is a pure function, which is what makes it optimizable in
 A10. Giving it access to group state would break that.
 
-A stage that needs `ctx` is written as a Python stage that wraps the module.
+A stage that needs `ctx` is written as a Python stage that wraps the module. Do not wrap
+`Predict` unless you need `ctx`; the module name in YAML is enough.
 
 ```python
 _label = dspy.Predict(Label)
