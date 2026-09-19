@@ -41,12 +41,17 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert "Created a hello-world project" in out
     assert "trace-miner summarize.yaml" in out
     assert "pii.yaml" in out
+    assert "AGENTS.md" in out
     assert (dest / "summarize.yaml").is_file()
     assert (dest / "pii.yaml").is_file()
     assert (dest / "frustration.yaml").is_file()
     assert (dest / "category.yaml").is_file()
     assert (dest / "stages.py").is_file()
+    assert (dest / "AGENTS.md").is_file()
     assert (dest / "input" / "trajectories.jsonl").is_file()
+    agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
+    assert "trace-miner summarize.yaml" in agents
+    assert "stages.py" in agents
 
     traces = (dest / "input" / "trajectories.jsonl").read_text(encoding="utf-8")
     assert "123-45-6789" in traces

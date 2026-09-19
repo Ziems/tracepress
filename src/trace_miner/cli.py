@@ -84,6 +84,7 @@ def _init(argv: list[str]) -> int:
     print("  frustration.yaml          user frustration")
     print("  category.yaml             domain and outcome")
     print("  stages.py                 shared Python and LM stages")
+    print("  AGENTS.md                 guide for coding agents")
     print("  input/trajectories.jsonl  slim harbor traces")
     print()
     print("Run it:")

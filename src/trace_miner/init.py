@@ -7,6 +7,7 @@ from trace_miner.errors import TraceMinerError
 
 TEMPLATE_FILES = (
     "README.md",
+    "AGENTS.md",
     "summarize.yaml",
     "pii.yaml",
     "frustration.yaml",

@@ -42,6 +42,8 @@ trace-miner category.yaml
 - `stages.py` is ordinary Python plus DSPy signatures. Changing a stage here
   changes every pipeline that names it.
 - `input/trajectories.jsonl` is three slim harbor records.
+- `AGENTS.md` is the working guide for coding agents: how to run, add a
+  pipeline, and write Python or LM stages.
 
 ## Change it
 

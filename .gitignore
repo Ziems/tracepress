@@ -23,3 +23,5 @@ examples/harbor/input/trajectories.jsonl
 examples/**/niah_trajectories.jsonl
 examples/**/input/live.jsonl
 !examples/harbor/input/live.jsonl
+
+vendor/

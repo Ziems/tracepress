@@ -36,10 +36,11 @@ cd my-traces
 trace-miner summarize.yaml
 ```
 
-That scaffolds `stages.py`, three example harbor traces, and `summarize.yaml` /
+That scaffolds `stages.py`, three example harbor traces, `AGENTS.md`, and `summarize.yaml` /
 `pii.yaml` / `frustration.yaml` / `category.yaml`. The summarize pipeline summarizes each step and diagnoses the trajectory, same shape as `examples/harbor`. The traces include a fake SSN, a fake phone number, and a
 frustrated user turn so the other pipelines have something to find. Open
-`output/summaries.jsonl` when it finishes, then read the generated `README.md`.
+`output/summaries.jsonl` when it finishes, then read the generated `README.md`
+and `AGENTS.md`.
 
 `trace-miner init` without a name prompts for one and defaults to `hello-world`.
 Use `--force` to replace an existing scaffold.
