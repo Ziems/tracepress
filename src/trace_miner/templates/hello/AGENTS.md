@@ -26,6 +26,20 @@ trace-miner frustration.yaml
 trace-miner category.yaml
 ```
 
+`stream.yaml` is the live-tail sibling of `summarize.yaml`. In one terminal:
+
+```bash
+trace-miner stream stream.yaml --reset-checkpoint --progress
+```
+
+In another:
+
+```bash
+trace-miner replay input/trajectories.jsonl --into input/live.jsonl --reset
+```
+
+That replays all three traces. Use `--limit 1` to send a single trace.
+
 Use `--progress` to show per-stage bars. There is no `--profile` flag; the
 summary always prints.
 
@@ -34,8 +48,10 @@ summary always prints.
 | Path | Role |
 | --- | --- |
 | `*.yaml` | Pipeline topology only: inputs, outputs, step order, model policy |
+| `stream.yaml` | Live-tail copy of `summarize.yaml`; `in: input/live.jsonl` |
 | `stages.py` | Shared Python functions and DSPy signatures |
 | `input/trajectories.jsonl` | Three slim harbor traces |
+| `input/live.jsonl` | Replay target. Starts empty. Gitignored. |
 | `output/` | Generated JSONL. Gitignored. Safe to overwrite |
 | `README.md` | Human walkthrough |
 
@@ -56,8 +72,10 @@ Three harbor traces with planted signals:
 | `pii.yaml` | expand steps → LM detect → Python reduce | `output/pii.jsonl` |
 | `frustration.yaml` | expand steps → LM detect → Python reduce | `output/frustration.jsonl` |
 | `category.yaml` | prepare → expand steps → LM summarize → LM categorize → compact | `output/categories.jsonl` |
+| `stream.yaml` | same as `summarize.yaml`, reading `input/live.jsonl` | `output/stream_summaries.jsonl` |
 
-Prefer copying one of these over inventing a new shape.
+Prefer copying one of these over inventing a new shape. Feed `stream.yaml` with
+`trace-miner replay`; do not write a helper script.
 
 ## How a pipeline is written
 
@@ -116,7 +134,8 @@ children, then one reduce.
 - `pipeline` runs on every child.
 - `reduce` runs once per group with the surviving children.
 - `by: field` groups by a key and only fires after all input is read. Avoid it
-  unless the user wants a global aggregation.
+  unless the user wants a global aggregation. Streaming rejects `by` until there
+  is a close condition for unbounded streams.
 - `every: N` is a fixed-size window.
 
 `on_child_error` is `fail` by default. Use `partial` to reduce over survivors,
@@ -211,7 +230,7 @@ give the signature `ctx`.
 ## Adding a pipeline
 
 1. Copy the closest YAML (`pii.yaml` for per-step detection, `summarize.yaml`
-   for trajectory diagnosis).
+   for trajectory diagnosis, `stream.yaml` for a live-tail of summarize).
 2. Add or reuse stages in `stages.py`. Name the YAML keys exactly after those
    attributes.
 3. Point `out:` at a new file under `output/`.
@@ -235,8 +254,7 @@ shape is different. Clip long strings before they reach an LM.
 - Do not add `lm:` options to a Python stage.
 - Do not change `from:` unless the user wants a different module.
 - Do not edit files under `output/` as source. They are run products.
-- Do not add streaming (`trace-miner stream`) unless the user asks. This
-  scaffold is batch.
+- Do not invent a `simulate_stream.py`. Use `trace-miner replay`.
 
 ## Debugging
 

@@ -27,7 +27,8 @@ The GitHub repo is private, so that command needs credentials that can clone it.
 
 ## Start a Project
 
-`init` writes a hello-world project with shared LM stages and four pipelines:
+`init` writes a hello-world project with shared LM stages, four batch pipelines,
+and a live-tail stream config:
 
 ```bash
 export OPENROUTER_API_KEY=...
@@ -36,8 +37,10 @@ cd my-traces
 trace-miner summarize.yaml
 ```
 
-That scaffolds `stages.py`, three example harbor traces, `AGENTS.md`, and `summarize.yaml` /
-`pii.yaml` / `frustration.yaml` / `category.yaml`. The summarize pipeline summarizes each step and diagnoses the trajectory, same shape as `examples/harbor`. The traces include a fake SSN, a fake phone number, and a
+That scaffolds `stages.py`, three example harbor traces, `AGENTS.md`, and
+`summarize.yaml` / `pii.yaml` / `frustration.yaml` / `category.yaml` /
+`stream.yaml`. The summarize pipeline summarizes each step and diagnoses the
+trajectory. The traces include a fake SSN, a fake phone number, and a
 frustrated user turn so the other pipelines have something to find. Open
 `output/summaries.jsonl` when it finishes, then read the generated `README.md`
 and `AGENTS.md`.
@@ -45,9 +48,9 @@ and `AGENTS.md`.
 `trace-miner init` without a name prompts for one and defaults to `hello-world`.
 Use `--force` to replace an existing scaffold.
 
-## Language-Model Examples
+## Language-Model Pipelines
 
-Language-model examples use OpenRouter:
+Language-model stages use OpenRouter:
 
 ```bash
 export OPENROUTER_API_KEY=...
@@ -61,85 +64,59 @@ lm:
   default: deepseek/deepseek-v4.1-flash
 ```
 
-Each directory under `examples/` is a self-contained demo (`pipeline.yaml`, `stages.py`, `input/`).
-
-
-| Demo                                                     | What it shows                         | Run                                              |
-| -------------------------------------------------------- | ------------------------------------- | ------------------------------------------------ |
-| `[examples/harbor](examples/harbor/README.md)`           | Trajectory analysis, batch or stream  | `trace-miner examples/harbor/pipeline.yaml`      |
-| `[examples/pii](examples/pii/README.md)`                 | PII detection over slim harbor traces | `trace-miner examples/pii/pipeline.yaml`         |
-| `[examples/category](examples/category/README.md)`       | Domain/outcome labeling               | `trace-miner examples/category/pipeline.yaml`    |
-| `[examples/frustration](examples/frustration/README.md)` | User-frustration detection            | `trace-miner examples/frustration/pipeline.yaml` |
-
-
-
-
-## Run The Harbor LM Example
-
-The harbor example summarizes a trajectory by mapping over each step, producing one-sentence step
-summaries, then reducing those into a failure diagnosis and a compact trajectory summary. See
-`[examples/harbor/README.md](examples/harbor/README.md)` for the full walkthrough.
+After `init`, the same project is the batch and stream demo. Summarize maps over
+each step, produces one-sentence step summaries, then reduces those into a
+failure diagnosis and a compact trajectory summary.
 
 ### Batch Run
 
-This reads a fixed fixture file and processes one selected trajectory:
-
 ```bash
-trace-miner examples/harbor/pipeline.yaml
+trace-miner summarize.yaml
 ```
 
-When it finishes, the CLI prints each output path and a one-line run profile (wall time, plus LM calls, tokens, and cost when any language-model stages ran).
+When it finishes, the CLI prints each output path and a one-line run profile
+(wall time, plus LM calls, tokens, and cost when any language-model stages ran).
 
-Inspect:
-
-- `examples/harbor/output/one_summary.jsonl`
-
-
+Inspect `output/summaries.jsonl`, then try `pii.yaml`, `frustration.yaml`, or
+`category.yaml` on the same traces.
 
 ### Streaming Run
 
-The streaming example watches a live JSONL input file and processes each complete line after it is
-appended.
-
-First prepare an empty live input file:
+`stream.yaml` watches a live JSONL input file and processes each complete line
+after it is appended. In one terminal:
 
 ```bash
-uv run python examples/harbor/simulate_stream.py --reset-only
+trace-miner stream stream.yaml --reset-checkpoint --progress
 ```
 
-In one terminal, start the stream:
+In another, replay fixture trajectories into the live input file:
 
 ```bash
-trace-miner stream examples/harbor/stream.yaml --reset-checkpoint --progress
+trace-miner replay input/trajectories.jsonl --into input/live.jsonl --reset
 ```
 
-In another terminal, replay fixture trajectories into the live input file:
+`--reset` truncates the live file first. That command replays all three fixture
+traces. `--interval` is the delay between appended records. Use `--limit 1` to
+send a single trace.
 
-```bash
-uv run python examples/harbor/simulate_stream.py --limit 1 --interval 3
-```
+The stream reads `input/live.jsonl` and appends summaries to
+`output/stream_summaries.jsonl`.
 
-`--interval` is the simulator delay between appended records. Increase `--limit` to replay more
-trajectories; use `--limit 0` to replay the whole fixture.
-
-The stream reads `examples/harbor/input/live.jsonl` and appends summaries to:
-
-- `examples/harbor/output/stream_summaries.jsonl`
-
-Stream checkpoint and journal state lives under `.trace-miner/` beside the config and is ignored by
-git. Use `--reset-checkpoint` to start reading from byte 0 again. Stream outputs are append-only, so
-remove the output JSONL between experiments when you want a fresh result file.
+Stream checkpoint and journal state lives under `.trace-miner/` beside the
+config and is ignored by git. Use `--reset-checkpoint` to start reading from
+byte 0 again. Stream outputs are append-only, so remove the output JSONL
+between experiments when you want a fresh result file.
 
 The streaming progress line reports:
 
 
-| Counter       | Meaning                                                    |
-| ------------- | ---------------------------------------------------------- |
-| `records`     | Complete input JSONL records read from root input files.   |
-| `emitted`     | Records emitted by pipeline stages and reducers.           |
-| `retired`     | Input records fully processed and safe to checkpoint past. |
-| `failed`      | Records or groups that failed during execution.            |
-| `groups_open` | Groups/windows still waiting to reduce or flush.           |
+| Counter     | Meaning                                                    |
+| ----------- | ---------------------------------------------------------- |
+| `read`      | Complete input JSONL records read from root input files.   |
+| `produced`  | Records created by pipeline stages and reducers.           |
+| `done`      | Records fully processed and safe to checkpoint past.       |
+| `failed`    | Records or groups that failed during execution.            |
+| `waiting`   | Groups/windows still waiting to reduce or flush.           |
 
 
 
@@ -221,5 +198,3 @@ Design specs live in `[docs/](docs/)`:
 - `[docs/pipeline-spec.md](docs/pipeline-spec.md)` describes the core runtime model.
 - `[docs/lm-pipeline.md](docs/lm-pipeline.md)` describes the DSPy/OpenRouter language-model stage support.
 - `[docs/streaming-amendment.md](docs/streaming-amendment.md)` describes the stream-friendly WAL/checkpoint design.
-
-Example-specific notes live in each demo's `README.md`.

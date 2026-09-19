@@ -12,6 +12,7 @@ TEMPLATE_FILES = (
     "pii.yaml",
     "frustration.yaml",
     "category.yaml",
+    "stream.yaml",
     "stages.py",
     "input/trajectories.jsonl",
     ".gitignore",
@@ -42,4 +43,10 @@ def init_project(dest: Path, *, force: bool = False) -> list[Path]:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
         written.append(target)
+
+    live = dest / "input" / "live.jsonl"
+    live.parent.mkdir(parents=True, exist_ok=True)
+    if force or not live.exists():
+        live.write_text("", encoding="utf-8")
+        written.append(live)
     return written

@@ -1308,8 +1308,8 @@ class _StreamProgress:
         groups_open = stats.groups_opened - stats.groups_reduced - stats.groups_skipped
         self.stream.write(
             "\r"
-            f"[trace-miner] stream: records={stats.records_read} emitted={stats.emitted} "
-            f"retired={stats.retired} failed={stats.failed} groups_open={groups_open}"
+            f"[trace-miner] stream: read={stats.records_read} produced={stats.emitted} "
+            f"done={stats.retired} failed={stats.failed} waiting={groups_open}"
         )
         self.stream.flush()
 

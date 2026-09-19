@@ -263,7 +263,7 @@ ongoing counters rather than a percentage.
 MVP display:
 
 ```text
-[trace-miner] stream: records=128 emitted=256 retired=256 failed=0 groups_open=0
+[trace-miner] stream: read=128 produced=256 done=256 failed=0 waiting=0
 ```
 
 Update the display periodically, not on every record. A one-second interval is enough.

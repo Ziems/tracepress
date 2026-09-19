@@ -8,6 +8,7 @@ from trace_miner.config import load_config
 from trace_miner.errors import TraceMinerError
 from trace_miner.init import init_project
 from trace_miner.model import format_run_profile
+from trace_miner.replay import replay_jsonl
 from trace_miner.runtime import run_config, run_stream
 
 
@@ -20,6 +21,7 @@ commands:
   init      Create a hello-world project
   run       Run a batch pipeline
   stream    Follow a JSONL file as records arrive
+  replay    Append JSONL records into a live input file
 
 Pass a config path to run a batch pipeline:
   trace-miner pipeline.yaml
@@ -41,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
         return _init(rest)
     if command == "stream":
         return _stream(rest)
+    if command == "replay":
+        return _replay(rest)
     if command == "run":
         return _batch(rest, prog="trace-miner run")
     return _batch(argv)
@@ -83,6 +87,7 @@ def _init(argv: list[str]) -> int:
     print("  pii.yaml                  PII detection")
     print("  frustration.yaml          user frustration")
     print("  category.yaml             domain and outcome")
+    print("  stream.yaml               live-tail summarize")
     print("  stages.py                 shared Python and LM stages")
     print("  AGENTS.md                 guide for coding agents")
     print("  input/trajectories.jsonl  slim harbor traces")
@@ -95,6 +100,8 @@ def _init(argv: list[str]) -> int:
     print("  trace-miner summarize.yaml")
     print()
     print("Then try pii.yaml, frustration.yaml, or category.yaml")
+    print("To stream: trace-miner stream stream.yaml")
+    print("Feed it:   trace-miner replay input/trajectories.jsonl --into input/live.jsonl --reset")
     return 0
 
 
@@ -144,6 +151,45 @@ def _display_path(path: Path) -> str:
         return str(resolved.relative_to(Path.cwd().resolve()))
     except ValueError:
         return str(resolved)
+
+
+def _replay(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="trace-miner replay",
+        description="Append JSONL records into a live input file.",
+    )
+    parser.add_argument("source", type=Path, help="Existing JSONL file to replay.")
+    parser.add_argument("--into", type=Path, required=True, dest="dest", help="Live JSONL file to append to.")
+    parser.add_argument("--interval", type=float, default=3.0, help="Seconds to wait between appended records.")
+    parser.add_argument("--limit", type=int, default=0, help="Number of records to append. 0, the default, appends all records.")
+    parser.add_argument("--reset", action="store_true", help="Truncate the target before appending.")
+    parser.add_argument("--reset-only", action="store_true", help="Truncate the target and exit without appending.")
+    args = parser.parse_args(argv)
+
+    if args.interval < 0:
+        parser.error("--interval must be non-negative.")
+    if args.limit < 0:
+        parser.error("--limit must be non-negative.")
+
+    def log(message: str) -> None:
+        print(message, flush=True)
+
+    try:
+        replay_jsonl(
+            args.source,
+            args.dest,
+            interval=args.interval,
+            limit=args.limit,
+            reset=args.reset,
+            reset_only=args.reset_only,
+            log=log,
+        )
+    except KeyboardInterrupt:
+        return 130
+    except TraceMinerError as exc:
+        print(f"trace-miner: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _stream(argv: list[str]) -> int:
