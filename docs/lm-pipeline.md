@@ -228,7 +228,8 @@ positive integer.
 
 `lm.cache` enables DSPy's LM request cache. It defaults to `true` so identical provider calls
 are reused. Set it to `false` to force a fresh call every time. This is not the post-MVP
-record-level pipeline cache. The cache directory is DSPy's default (`~/.dspy_cache`).
+record-level pipeline cache. The cache directory is `~/.trace-miner/cache`
+(override the home directory with `TRACE_MINER_HOME`).
 
 The resolved model id is passed to the LM adapter/provider. It is not a signature input field
 and is not visible to the module unless the adapter's backend chooses to bind it there.

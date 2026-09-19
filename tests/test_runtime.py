@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 from pathlib import Path
 import threading
 import time
@@ -1112,6 +1113,10 @@ pipelines:
     assert lm.api_key == "test-key"
     assert lm.cache is True
     assert lm.extra_body == {"usage": {"include": True}}
+    from trace_miner.home import cache_dir
+
+    assert Path(os.environ["DSPY_CACHEDIR"]) == cache_dir()
+    assert cache_dir().is_dir()
     assert result.stats.elapsed_s > 0
     assert result.stats.lm_calls == 1
     assert result.stats.lm_prompt_tokens == 12

@@ -23,6 +23,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TaskID, TextC
 
 from trace_miner.config import load_config
 from trace_miner.errors import PipelineExecutionError
+from trace_miner.home import configure_lm_cache
 from trace_miner.model import (
     Config,
     Failure,
@@ -828,6 +829,7 @@ class _Runtime:
         api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:
             raise PipelineExecutionError("OPENROUTER_API_KEY is required for OpenRouter LM stages.")
+        configure_lm_cache()
         self._dspy_lms = {model: _openrouter_lm(model, api_key, self.config.lm_cache) for model in models}
 
     def _lm_slot(self) -> asyncio.Semaphore:

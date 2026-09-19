@@ -7,6 +7,7 @@ import pytest
 
 from trace_miner.cli import main
 from trace_miner.config import load_config
+from trace_miner.home import load_stats
 from trace_miner.replay import replay_jsonl
 
 
@@ -29,11 +30,29 @@ def test_root_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
     assert "run" in out
     assert "stream" in out
     assert "replay" in out
+    assert "stats" in out
 
 
 def test_no_args_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert main([]) == 2
     assert "init" in capsys.readouterr().out
+
+
+def test_help_does_not_create_home(isolate_trace_miner_home: Path) -> None:
+    assert main(["--help"]) == 0
+    assert not isolate_trace_miner_home.exists()
+
+
+def test_init_creates_home_and_records_command(
+    tmp_path: Path, isolate_trace_miner_home: Path
+) -> None:
+    dest = tmp_path / "demo"
+    assert main(["init", str(dest)]) == 0
+    assert isolate_trace_miner_home.is_dir()
+    assert (isolate_trace_miner_home / "cache").is_dir()
+    stats = load_stats()
+    assert stats["commands"]["init"] == 1
+    assert stats["runs"] == 0
 
 
 def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

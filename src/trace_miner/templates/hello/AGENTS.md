@@ -108,8 +108,8 @@ Rules:
 - `id_field` is for error messages, not grouping.
 - `lm.max_concurrent` caps simultaneous OpenRouter calls. Keep it at least 64
   unless the user asks otherwise.
-- `lm.cache` defaults to true and uses DSPy's request cache. Set
-  `cache: false` to force a fresh call every time.
+- `lm.cache` defaults to true and uses DSPy's request cache in
+  `~/.trace-miner/cache`. Set `cache: false` to force a fresh call every time.
 - Override a model on one step with `lm: {model: ...}` only on LM stages.
 
 ### Step forms
@@ -263,5 +263,5 @@ shape is different. Clip long strings before they reach an LM.
 - Runtime errors name the stage, the record identity (`session_id` here), and
   the group. Missing LM input fields also print the record's actual keys.
 - `tee: output/debug.jsonl` in the middle of a pipeline dumps intermediates.
-- Reruns overwrite `output/*.jsonl`. There is no cache yet; LM calls cost money
-  every time.
+- Reruns overwrite `output/*.jsonl`. Identical LM calls reuse
+  `~/.trace-miner/cache` unless `lm.cache` is false.

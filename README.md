@@ -76,6 +76,10 @@ trace-miner summarize.yaml
 
 When it finishes, the CLI prints each output path and a one-line run profile
 (wall time, plus LM calls, tokens, and cost when any language-model stages ran).
+Commands create `~/.trace-miner/` for the shared LM cache and local usage
+totals. `trace-miner stats` prints the accumulated counts. Override the
+directory with `TRACE_MINER_HOME`. Project stream checkpoints still live in
+`.trace-miner/` beside the config.
 
 Inspect `output/summaries.jsonl`, then try `pii.yaml`, `frustration.yaml`, or
 `category.yaml` on the same traces.
@@ -134,7 +138,7 @@ lm:                             # optional LM defaults
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
   max_concurrent: 64            # concurrent LM calls inside this run
-  cache: true                   # DSPy request cache; set false to always hit the provider
+  cache: true                   # DSPy request cache under ~/.trace-miner/cache; set false to always hit the provider
 
 pipelines:
   - in: input/trajectories.jsonl   # JSONL source

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from trace_miner.config import load_config
 from trace_miner.errors import TraceMinerError
+from trace_miner.home import ensure_home, format_usage, record_command, record_run
 from trace_miner.init import init_project
 from trace_miner.model import format_run_profile
 from trace_miner.replay import replay_jsonl
@@ -22,6 +23,7 @@ commands:
   run       Run a batch pipeline
   stream    Follow a JSONL file as records arrive
   replay    Append JSONL records into a live input file
+  stats     Show local usage totals
 
 Pass a config path to run a batch pipeline:
   trace-miner pipeline.yaml
@@ -39,6 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     if command in {"-h", "--help"}:
         print(_ROOT_HELP, end="")
         return 0
+    if command == "stats":
+        return _stats(rest)
+    ensure_home()
     if command == "init":
         return _init(rest)
     if command == "stream":
@@ -72,6 +77,7 @@ def _init(argv: list[str]) -> int:
     try:
         dest = args.directory if args.directory is not None else _prompt_project_name()
         init_project(dest, force=args.force)
+        record_command("init", extra={"directory": str(dest.expanduser().resolve())})
     except TraceMinerError as exc:
         print(f"trace-miner: {exc}", file=sys.stderr)
         return 1
@@ -139,6 +145,7 @@ def _batch(argv: list[str], *, prog: str = "trace-miner") -> int:
     except TraceMinerError as exc:
         print(f"trace-miner: {exc}", file=sys.stderr)
         return 1
+    record_run("run", result.stats, extra={"config": str(config.config_path)})
     for pipeline in config.pipelines:
         print(f"Wrote {_display_path(pipeline.output)}")
     print(format_run_profile(result.stats))
@@ -184,6 +191,13 @@ def _replay(argv: list[str]) -> int:
             reset_only=args.reset_only,
             log=log,
         )
+        record_command(
+            "replay",
+            extra={
+                "source": str(args.source.expanduser().resolve()),
+                "dest": str(args.dest.expanduser().resolve()),
+            },
+        )
     except KeyboardInterrupt:
         return 130
     except TraceMinerError as exc:
@@ -222,7 +236,19 @@ def _stream(argv: list[str]) -> int:
     except TraceMinerError as exc:
         print(f"trace-miner: {exc}", file=sys.stderr)
         return 1
+    record_run("stream", result.stats, extra={"config": str(args.config.expanduser().resolve())})
     print(format_run_profile(result.stats))
+    return 0
+
+
+def _stats(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="trace-miner stats",
+        description="Show local Trace Miner usage.",
+    )
+    parser.parse_args(argv)
+    ensure_home()
+    print(format_usage())
     return 0
 
 
