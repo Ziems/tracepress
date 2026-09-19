@@ -1,27 +1,20 @@
 # Trace Miner
 
-Trace Miner is a config-driven JSONL pipeline runtime for map/filter/reduce workflows where groups
-can have variable size. Pipeline topology lives in YAML; stage logic lives in ordinary Python
-functions.
+Trace Miner is a config-driven JSONL pipeline runtime for map/filter/reduce workflows over language model
+traces. Pipeline topology lives in YAML; stage logic lives in ordinary Python functions.
 
-It is built for runs like:
+It is built for things like:
 
-- filter and transform JSONL records
-- expand one record into many child records
-- reduce child records back into one summary
-- run the same pipeline in batch mode or against an appended JSONL stream
-- call DSPy language-model stages when a pipeline needs semantic labeling or summarization
+- finding failure modes over very long agentic trajectories
+- interrupting long running failed rollouts in real time (pending a notification mechanism)
+- identifying reward hacking or misalignment
+- identifying user frustration, impatience, or abandonment in a session
+- spotting PII or other policy violations buried in tool traces
+- labeling domain, outcome, and error type across a corpus of runs
+- finding behavioral differences in model performance across agents or versions
+- and much much more...
 
 ## Setup
-
-From the repository root:
-
-```bash
-uv sync
-uv run trace-miner --help
-```
-
-To install the CLI onto your PATH without publishing to PyPI:
 
 ```bash
 uv tool install git+https://github.com/Ziems/trace-miner.git
@@ -29,8 +22,6 @@ trace-miner --help
 ```
 
 The GitHub repo is private, so that command needs credentials that can clone it.
-From a local checkout, `uv tool install .` works without GitHub access. After a
-later PyPI publish, the public form is `uv tool install trace-miner`.
 
 Language-model examples use OpenRouter:
 
@@ -50,27 +41,27 @@ lm:
 
 Each directory under `examples/` is a self-contained demo (`pipeline.yaml`, `stages.py`, `input/`).
 
-| Demo | What it shows | Run |
-| --- | --- | --- |
-| [`examples/lm`](examples/lm/README.md) | DSPy LM stage on mine-sensor readings | `uv run trace-miner examples/lm/pipeline.yaml` |
-| [`examples/harbor`](examples/harbor/README.md) | Trajectory step summaries, batch or stream | `uv run trace-miner examples/harbor/pipeline.yaml` |
-| [`examples/pii`](examples/pii/README.md) | PII detection over slim harbor traces | `uv run trace-miner examples/pii/pipeline.yaml` |
-| [`examples/category`](examples/category/README.md) | Domain/outcome labeling | `uv run trace-miner examples/category/pipeline.yaml` |
-| [`examples/frustration`](examples/frustration/README.md) | User-frustration detection | `uv run trace-miner examples/frustration/pipeline.yaml` |
+
+| Demo                                                     | What it shows                         | Run                                              |
+| -------------------------------------------------------- | ------------------------------------- | ------------------------------------------------ |
+| `[examples/harbor](examples/harbor/README.md)`           | Trajectory analysis, batch or stream  | `trace-miner examples/harbor/pipeline.yaml`      |
+| `[examples/pii](examples/pii/README.md)`                 | PII detection over slim harbor traces | `trace-miner examples/pii/pipeline.yaml`         |
+| `[examples/category](examples/category/README.md)`       | Domain/outcome labeling               | `trace-miner examples/category/pipeline.yaml`    |
+| `[examples/frustration](examples/frustration/README.md)` | User-frustration detection            | `trace-miner examples/frustration/pipeline.yaml` |
+
 
 ## Run The Harbor LM Example
 
 The harbor example summarizes a trajectory by mapping over each step, producing one-sentence step
 summaries, then reducing those into a failure diagnosis and a compact trajectory summary. See
-[`examples/harbor/README.md`](examples/harbor/README.md) for the full walkthrough.
+`[examples/harbor/README.md](examples/harbor/README.md)` for the full walkthrough.
 
 ### Batch Run
 
 This reads a fixed fixture file and processes one selected trajectory:
 
 ```bash
-export OPENROUTER_API_KEY=...
-uv run trace-miner examples/harbor/pipeline.yaml
+trace-miner examples/harbor/pipeline.yaml
 ```
 
 Inspect:
@@ -91,8 +82,7 @@ uv run python examples/harbor/simulate_stream.py --reset-only
 In one terminal, start the stream:
 
 ```bash
-export OPENROUTER_API_KEY=...
-uv run trace-miner stream examples/harbor/stream.yaml --reset-checkpoint --progress
+trace-miner stream examples/harbor/stream.yaml --reset-checkpoint --progress
 ```
 
 In another terminal, replay fixture trajectories into the live input file:
@@ -114,6 +104,7 @@ remove the output JSONL between experiments when you want a fresh result file.
 
 The streaming progress line reports:
 
+
 | Counter       | Meaning                                                    |
 | ------------- | ---------------------------------------------------------- |
 | `records`     | Complete input JSONL records read from root input files.   |
@@ -122,36 +113,71 @@ The streaming progress line reports:
 | `failed`      | Records or groups that failed during execution.            |
 | `groups_open` | Groups/windows still waiting to reduce or flush.           |
 
+
 ## Config Shape
 
-A pipeline config names a stage module and a set of file-based pipelines:
+A pipeline config names a stage module and a set of file-based pipelines. Comments below mark
+each part:
 
 ```yaml
-from: ./stages
-id_field: id
+from: ./stages                  # module where stage names are resolved
+id_field: session_id            # optional; used in error messages and identity
+
+lm:                             # optional LM defaults
+  provider: openrouter
+  default: deepseek/deepseek-v4.1-flash
+  max_concurrent: 16            # concurrent LM calls inside this run
 
 pipelines:
-  - in: input/traces.jsonl
-    out: output/overviews.jsonl
+  - in: input/trajectories.jsonl   # JSONL source
+    out: output/findings.jsonl     # JSONL sink
     pipeline:
-      - filter: enabled
-      - tee: output/kept.jsonl
-      - group:
-          expand: split_samples
+      - filter: has_steps          # Python stage: keep or drop a record
+      - group:                     # one barrier: wait for all children, then reduce
+          expand: split_steps      # Python stage: one parent -> many children
           pipeline:
-            - filter: interesting
-            - map: score
-          reduce: summarize_trace
+            - map: detect_failure      # LM stage: same config form as Python
+          reduce: diagnose_trajectory  # LM stage: fires once the group closes
 ```
 
-Stage functions are plain Python:
+  
+Stage names resolve to either a Python function or a DSPy module. The config does not change.
 
 ```python
-def enabled(record):
-    return record if record["enabled"] else None
+def has_steps(record):
+    return record if record.get("steps") else None
 
-def score(record):
-    return {**record, "score": record["reading"] * 2}
+
+def split_steps(record, ctx):
+    for step in record["steps"]:
+        ctx.emit({"step_index": step["step_id"], "message": step["message"]})
+
+
+class DetectFailure(dspy.Signature):
+    """Flag a concrete failure mode in one agent step, or none."""
+    # Inputs
+    step_index: int = dspy.InputField()
+    message: str = dspy.InputField()
+    # Outputs
+    failure_mode: str = dspy.OutputField(
+        desc="One of: tool_loop, hallucinated_path, stuck, none."
+    )
+    evidence: str = dspy.OutputField()
+
+detect_failure = dspy.Predict(DetectFailure)
+
+
+class DiagnoseTrajectory(dspy.Signature):
+    """Diagnose the dominant failure mode from per-step flags."""
+    # Inputs; child fields arrive as lists
+    session_id: str = dspy.InputField()
+    failure_mode: list[str] = dspy.InputField()
+    evidence: list[str] = dspy.InputField()
+    # Outputs
+    failed: bool = dspy.OutputField()
+    diagnosis: str = dspy.OutputField()
+
+diagnose_trajectory = dspy.Predict(DiagnoseTrajectory)
 ```
 
 Supported MVP step forms are `map`, `filter`, `stage`, `tee`, and `group`. Groups support `expand`,
@@ -160,10 +186,10 @@ there is a close condition for unbounded streams.
 
 ## More Detail
 
-Design specs live in [`docs/`](docs/):
+Design specs live in `[docs/](docs/)`:
 
-- [`docs/pipeline-spec.md`](docs/pipeline-spec.md) describes the core runtime model.
-- [`docs/lm-pipeline.md`](docs/lm-pipeline.md) describes the DSPy/OpenRouter language-model stage support.
-- [`docs/streaming-amendment.md`](docs/streaming-amendment.md) describes the stream-friendly WAL/checkpoint design.
+- `[docs/pipeline-spec.md](docs/pipeline-spec.md)` describes the core runtime model.
+- `[docs/lm-pipeline.md](docs/lm-pipeline.md)` describes the DSPy/OpenRouter language-model stage support.
+- `[docs/streaming-amendment.md](docs/streaming-amendment.md)` describes the stream-friendly WAL/checkpoint design.
 
 Example-specific notes live in each demo's `README.md`.
