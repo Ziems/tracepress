@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen --group dev
+      - run: uv run --frozen pytest
+
+  hello-world:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      TRACE_MINER_HOME: ${{ runner.temp }}/trace-miner-home
+      PROJECT_DIR: ${{ runner.temp }}/my-trace-pipelines
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Require OpenRouter secret
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "Set the OPENROUTER_API_KEY repository secret to run the hello-world smoke test."
+            exit 1
+          fi
+      - name: Install the current checkout
+        run: uv tool install .
+      - name: Init and run summarize.yaml
+        run: |
+          trace-miner init "$PROJECT_DIR"
+          cd "$PROJECT_DIR"
+          trace-miner summarize.yaml --progress
+      - name: Check summaries
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["PROJECT_DIR"]) / "output" / "summaries.jsonl"
+          assert path.is_file(), f"missing {path}"
+          rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+          assert len(rows) == 3, f"expected 3 summaries, got {len(rows)}"
+          required = {
+              "session_id",
+              "task_name",
+              "failed",
+              "failure_cause",
+              "trajectory_summary",
+              "step_count",
+          }
+          for index, row in enumerate(rows):
+              missing = required - row.keys()
+              assert not missing, f"row {index} missing {sorted(missing)}"
+              assert isinstance(row["failed"], bool)
+              assert str(row["trajectory_summary"]).strip()
+              assert int(row["step_count"]) > 0
+          print(f"ok: {len(rows)} summaries")
+          PY
