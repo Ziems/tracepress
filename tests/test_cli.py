@@ -154,7 +154,10 @@ pipelines:
     )
 
     assert main(["pipeline.yaml"]) == 0
-    assert "Wrote output/findings.jsonl" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Wrote output/findings.jsonl" in out
+    assert "LM calls" not in out
+    assert any(line.endswith("s") and "Wrote" not in line for line in out.splitlines())
 
 
 def test_batch_does_not_print_output_on_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

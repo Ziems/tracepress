@@ -11,7 +11,7 @@ import pytest
 
 from trace_miner.config import load_config
 from trace_miner.errors import ConfigError, PipelineExecutionError
-from trace_miner.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER
+from trace_miner.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER, RunStats, format_run_profile
 from trace_miner.runtime import run_config, run_config_async, run_stream, run_stream_async
 
 
@@ -63,10 +63,15 @@ pipelines:
         ],
     )
 
-    run_config(config)
+    result = run_config(config)
 
     assert read_jsonl(tmp_path / "kept.jsonl") == [{"id": "a", "keep": True, "value": 2}]
     assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "value": 5}]
+    assert result.stats.elapsed_s > 0
+    assert result.stats.lm_calls == 0
+    assert result.stats.lm_prompt_tokens == 0
+    assert result.stats.lm_completion_tokens == 0
+    assert result.stats.lm_cost_usd == 0
 
 
 def test_async_python_stages_and_async_entrypoint(tmp_path: Path) -> None:
@@ -177,15 +182,17 @@ pipelines:
         [],
     )
 
-    async def run() -> None:
+    async def run():
         task = asyncio.create_task(run_stream_async(config, max_records=2, poll_interval=0.01, progress=False))
         await asyncio.sleep(0.02)
         with (tmp_path / "input.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"id": "a", "value": 2}) + "\n")
             handle.write(json.dumps({"id": "b", "value": 3}) + "\n")
-        await task
+        return await task
 
-    asyncio.run(run())
+    result = asyncio.run(run())
+    assert result.stats.elapsed_s > 0
+    assert result.stats.lm_calls == 0
 
     assert read_jsonl(tmp_path / "output.jsonl") == [
         {"id": "a", "value": 4},
@@ -892,12 +899,14 @@ pipelines:
 
     loaded = load_config(config)
     assert loaded.pipelines[0].steps[0].stage.lm_model == "cheap-model"
-    run_config(loaded)
+    result = run_config(loaded)
 
     assert read_jsonl(tmp_path / "output.jsonl") == [
         {"confidence": 0.8, "id": "a", "label": "ALPHA", "text": "alpha", "untouched": True}
     ]
     assert loaded.module.label.models == ["cheap-model"]
+    assert result.stats.lm_calls == 1
+    assert result.stats.lm_cost_usd == 0
 
 
 def test_lm_config_validation_default_model_python_lm_options_and_filter_shape(tmp_path: Path) -> None:
@@ -1037,7 +1046,17 @@ pipelines:
             return False
 
         def read(self):
-            return json.dumps({"choices": [{"message": {"content": json.dumps({"label": "ORE"})}}]}).encode("utf-8")
+            return json.dumps(
+                {
+                    "choices": [{"message": {"content": json.dumps({"label": "ORE"})}}],
+                    "usage": {
+                        "prompt_tokens": 12,
+                        "completion_tokens": 4,
+                        "total_tokens": 16,
+                        "cost": 0.0021,
+                    },
+                }
+            ).encode("utf-8")
 
     def fake_urlopen(request, timeout):
         captured["url"] = request.full_url
@@ -1048,12 +1067,13 @@ pipelines:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("trace_miner.runtime.urlopen", fake_urlopen)
 
-    run_config(config)
+    result = run_config(config)
 
     assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "label": "ORE", "text": "ore"}]
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["timeout"] == 60
     assert captured["body"]["model"] == DEFAULT_LM_MODEL
+    assert captured["body"]["usage"] == {"include": True}
     assert captured["body"]["messages"][1]["role"] == "user"
     assert json.loads(captured["body"]["messages"][1]["content"]) == {
         "inputs": {"text": "ore"},
@@ -1061,6 +1081,79 @@ pipelines:
         "output_fields": ["label"],
         "stage": "label",
     }
+    assert result.stats.elapsed_s > 0
+    assert result.stats.lm_calls == 1
+    assert result.stats.lm_prompt_tokens == 12
+    assert result.stats.lm_completion_tokens == 4
+    assert result.stats.lm_cost_usd == 0.0021
+
+
+def test_lm_openrouter_missing_usage_still_counts_the_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = write_project(
+        tmp_path,
+        """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class LabelSignature:
+    input_fields = {"text": Field(str)}
+    output_fields = {"label": Field(str)}
+
+
+class LabelModule:
+    signature = LabelSignature()
+
+
+label = LabelModule()
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"label": "ORE"})}}]}).encode("utf-8")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("trace_miner.runtime.urlopen", lambda request, timeout: Response())
+
+    result = run_config(config)
+
+    assert result.stats.lm_calls == 1
+    assert result.stats.lm_prompt_tokens == 0
+    assert result.stats.lm_completion_tokens == 0
+    assert result.stats.lm_cost_usd == 0
+
+
+def test_format_run_profile_totals() -> None:
+    assert format_run_profile(RunStats(elapsed_s=0.12)) == "0.12s"
+    assert (
+        format_run_profile(
+            RunStats(
+                elapsed_s=12.4,
+                lm_calls=3,
+                lm_prompt_tokens=4000,
+                lm_completion_tokens=210,
+                lm_cost_usd=0.0021,
+            )
+        )
+        == "12.4s  3 LM calls  4,210 tokens  $0.0021"
+    )
 
 
 def test_parse_lm_json_repairs_python_style_escapes() -> None:

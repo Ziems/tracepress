@@ -26,7 +26,7 @@ through an LM for a one-sentence summary, then reduces those summaries into both
 diagnosis and a one-sentence trajectory summary. It writes
 `examples/harbor/output/one_summary.jsonl`.
 
-The harbor example sets `lm.max_concurrent: 16`, so the per-step LM summaries can run in
+The harbor example sets `lm.max_concurrent: 64`, so the per-step LM summaries can run in
 parallel without sending the whole trajectory at once.
 
 ## Streaming run

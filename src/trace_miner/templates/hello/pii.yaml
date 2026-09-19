@@ -4,7 +4,7 @@ id_field: session_id
 lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
-  max_concurrent: 16
+  max_concurrent: 64
 
 pipelines:
   - in: input/trajectories.jsonl

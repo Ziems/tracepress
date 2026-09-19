@@ -14,7 +14,7 @@ IncompletePolicy = Literal["fail", "partial"]
 
 DEFAULT_LM_PROVIDER = "openrouter"
 DEFAULT_LM_MODEL = "deepseek/deepseek-v4.1-flash"
-DEFAULT_LM_MAX_CONCURRENT = 8
+DEFAULT_LM_MAX_CONCURRENT = 64
 
 
 @dataclass(frozen=True)
@@ -104,6 +104,13 @@ class RunManifest:
     skipped_groups: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class LmUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+
+
 @dataclass
 class RunStats:
     records_read: int = 0
@@ -114,9 +121,36 @@ class RunStats:
     groups_opened: int = 0
     groups_reduced: int = 0
     groups_skipped: int = 0
+    elapsed_s: float = 0.0
+    lm_calls: int = 0
+    lm_prompt_tokens: int = 0
+    lm_completion_tokens: int = 0
+    lm_cost_usd: float = 0.0
+
+    def record_lm(self, usage: LmUsage | None = None) -> None:
+        self.lm_calls += 1
+        if usage is None:
+            return
+        self.lm_prompt_tokens += usage.prompt_tokens
+        self.lm_completion_tokens += usage.completion_tokens
+        self.lm_cost_usd += usage.cost_usd
 
 
 @dataclass
 class RunResult:
     stats: RunStats
     manifest: RunManifest
+
+
+def format_run_profile(stats: RunStats) -> str:
+    elapsed = _format_elapsed(stats.elapsed_s)
+    if stats.lm_calls == 0:
+        return elapsed
+    tokens = stats.lm_prompt_tokens + stats.lm_completion_tokens
+    return f"{elapsed}  {stats.lm_calls} LM calls  {tokens:,} tokens  ${stats.lm_cost_usd:.4f}"
+
+
+def _format_elapsed(seconds: float) -> str:
+    if seconds < 10:
+        return f"{seconds:.2f}s"
+    return f"{seconds:.1f}s"

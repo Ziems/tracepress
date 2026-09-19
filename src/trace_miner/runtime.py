@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,7 @@ from trace_miner.model import (
     Config,
     Failure,
     GroupSpec,
+    LmUsage,
     PipelineSpec,
     RunManifest,
     RunResult,
@@ -261,13 +263,17 @@ class _Runtime:
         self.held_stream_tokens: set[_StreamToken] = set()
 
     async def run(self) -> RunResult:
-        for pipeline in self.config.pipelines:
-            await self._run_pipeline(pipeline)
-        leaks = [group for group in self._open_groups if not group.fired]
-        if leaks:
-            details = ", ".join(f"{group.group_id} count={group.outstanding}" for group in leaks)
-            raise PipelineExecutionError(f"Open groups remain at shutdown: {details}")
-        return RunResult(self.stats, self.manifest)
+        started = time.perf_counter()
+        try:
+            for pipeline in self.config.pipelines:
+                await self._run_pipeline(pipeline)
+            leaks = [group for group in self._open_groups if not group.fired]
+            if leaks:
+                details = ", ".join(f"{group.group_id} count={group.outstanding}" for group in leaks)
+                raise PipelineExecutionError(f"Open groups remain at shutdown: {details}")
+            return RunResult(self.stats, self.manifest)
+        finally:
+            self.stats.elapsed_s = time.perf_counter() - started
 
     async def _run_pipeline(self, pipeline: PipelineSpec) -> None:
         envelopes = list(self._read_inputs(pipeline.inputs))
@@ -797,7 +803,8 @@ class _Runtime:
         if callable(target):
             prediction = target(**kwargs)
             if inspect.isawaitable(prediction):
-                return await prediction
+                prediction = await prediction
+            self.stats.record_lm()
             return prediction
         if stage.lm_provider == "openrouter":
             return await self._call_openrouter_async(stage, kwargs)
@@ -807,7 +814,10 @@ class _Runtime:
         if self._lm_semaphore is None:
             self._lm_semaphore = asyncio.Semaphore(self.config.lm_max_concurrent)
         async with self._lm_semaphore:
-            return await asyncio.to_thread(_call_openrouter, stage, kwargs)
+            result = await asyncio.to_thread(_call_openrouter, stage, kwargs)
+        prediction, usage = _unpack_openrouter_result(result)
+        self.stats.record_lm(usage)
+        return prediction
 
     def _lm_outputs(self, stage: StageRef, prediction: Any) -> dict[str, Any]:
         assert stage.lm_signature is not None
@@ -1060,6 +1070,7 @@ class _StreamRun:
         self.journal.append({"type": "run_started", "run_id": self.run_id, "config": str(self.config.config_path)})
         stop_event = _install_stop_event()
         processed = 0
+        started = time.perf_counter()
         try:
             while not stop_event.is_set():
                 made_progress = False
@@ -1083,6 +1094,7 @@ class _StreamRun:
             self.journal.append({"type": "run_stopped", "reason": "signal"})
             return RunResult(self.runtime.stats, self.runtime.manifest)
         finally:
+            self.runtime.stats.elapsed_s = time.perf_counter() - started
             self.progress.close()
 
     def _build_graph(self) -> None:
@@ -1437,7 +1449,7 @@ def _is_dspy_target(target: Any) -> bool:
     return module == "dspy" or module.startswith("dspy.")
 
 
-def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> dict[str, Any]:
+def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> tuple[dict[str, Any], LmUsage]:
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise PipelineExecutionError("OPENROUTER_API_KEY is required for OpenRouter LM stages.")
@@ -1469,6 +1481,7 @@ def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> dict[str, Any]:
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0,
+        "usage": {"include": True},
     }
     request = Request(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -1501,7 +1514,41 @@ def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> dict[str, Any]:
         raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` was not valid JSON: {content}") from exc
     if not isinstance(parsed, dict):
         raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` must be a JSON object.")
-    return parsed
+    return parsed, _lm_usage_from_payload(payload)
+
+
+def _unpack_openrouter_result(result: Any) -> tuple[Any, LmUsage]:
+    if isinstance(result, tuple) and len(result) == 2:
+        prediction, usage = result
+        if isinstance(usage, LmUsage):
+            return prediction, usage
+        if isinstance(usage, dict):
+            return prediction, _lm_usage_from_payload({"usage": usage})
+        return prediction, LmUsage()
+    return result, LmUsage()
+
+
+def _lm_usage_from_payload(payload: Any) -> LmUsage:
+    raw = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        return LmUsage()
+    return LmUsage(
+        prompt_tokens=_as_int(raw.get("prompt_tokens")),
+        completion_tokens=_as_int(raw.get("completion_tokens")),
+        cost_usd=_as_float(raw.get("cost")),
+    )
+
+
+def _as_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0
+    return int(value)
+
+
+def _as_float(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    return float(value)
 
 
 def _parse_lm_json(content: str) -> Any:

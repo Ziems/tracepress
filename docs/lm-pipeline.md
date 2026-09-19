@@ -187,7 +187,7 @@ uses:
 lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
-  max_concurrent: 8
+  max_concurrent: 64
 ```
 
 The default model id is the OpenRouter slug for DeepSeek V4.1 Flash.
@@ -196,7 +196,7 @@ The default model id is the OpenRouter slug for DeepSeek V4.1 Flash.
 lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
-  max_concurrent: 8
+  max_concurrent: 64
 
 pipelines:
   - in: traces.jsonl
@@ -218,7 +218,7 @@ If any LM stage is used, a model is resolved from the per-step `lm.model`, top-l
 load error, because model selection only has meaning for LM stages. Providers other than
 OpenRouter are post-MVP and fail at load time.
 
-`lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 8 and must be a
+`lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 64 and must be a
 positive integer.
 
 The resolved model id is passed to the LM adapter/provider. It is not a signature input field

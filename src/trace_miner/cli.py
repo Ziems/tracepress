@@ -7,6 +7,7 @@ from pathlib import Path
 from trace_miner.config import load_config
 from trace_miner.errors import TraceMinerError
 from trace_miner.init import init_project
+from trace_miner.model import format_run_profile
 from trace_miner.runtime import run_config, run_stream
 
 
@@ -126,12 +127,13 @@ def _batch(argv: list[str], *, prog: str = "trace-miner") -> int:
 
     try:
         config = load_config(args.config)
-        run_config(config, progress=args.progress)
+        result = run_config(config, progress=args.progress)
     except TraceMinerError as exc:
         print(f"trace-miner: {exc}", file=sys.stderr)
         return 1
     for pipeline in config.pipelines:
         print(f"Wrote {_display_path(pipeline.output)}")
+    print(format_run_profile(result.stats))
     return 0
 
 
@@ -159,7 +161,7 @@ def _stream(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     try:
-        run_stream(
+        result = run_stream(
             args.config,
             checkpoint_path=args.checkpoint,
             from_start=args.from_start,
@@ -173,6 +175,7 @@ def _stream(argv: list[str]) -> int:
     except TraceMinerError as exc:
         print(f"trace-miner: {exc}", file=sys.stderr)
         return 1
+    print(format_run_profile(result.stats))
     return 0
 
 

@@ -87,6 +87,8 @@ This reads a fixed fixture file and processes one selected trajectory:
 trace-miner examples/harbor/pipeline.yaml
 ```
 
+When it finishes, the CLI prints each output path and a one-line run profile (wall time, plus LM calls, tokens, and cost when any language-model stages ran).
+
 Inspect:
 
 - `examples/harbor/output/one_summary.jsonl`
@@ -153,7 +155,7 @@ id_field: session_id            # optional; used in error messages and identity
 lm:                             # optional LM defaults
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
-  max_concurrent: 16            # concurrent LM calls inside this run
+  max_concurrent: 64            # concurrent LM calls inside this run
 
 pipelines:
   - in: input/trajectories.jsonl   # JSONL source
