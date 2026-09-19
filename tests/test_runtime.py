@@ -1078,7 +1078,7 @@ pipelines:
     assert json.loads(captured["body"]["messages"][1]["content"]) == {
         "inputs": {"text": "ore"},
         "instructions": "Return a concise material label.",
-        "output_fields": ["label"],
+        "output_fields": {"label": {"type": "string"}},
         "stage": "label",
     }
     assert result.stats.elapsed_s > 0
@@ -1086,6 +1086,151 @@ pipelines:
     assert result.stats.lm_prompt_tokens == 12
     assert result.stats.lm_completion_tokens == 4
     assert result.stats.lm_cost_usd == 0.0021
+
+
+def test_lm_pydantic_output_is_validated_and_schema_is_sent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = write_project(
+        tmp_path,
+        """
+from typing import Literal
+
+from pydantic import BaseModel, Field as PydField
+
+
+class Finding(BaseModel):
+    kind: Literal["ssn", "phone"]
+    evidence: str = PydField(description="Quoted span.")
+
+
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class DetectSignature:
+    input_fields = {"text": Field(str)}
+    output_fields = {"findings": Field(list[Finding])}
+
+
+class DetectModule:
+    signature = DetectSignature()
+
+
+detect = DetectModule()
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: detect
+""",
+        [{"id": "a", "text": "ssn 123-45-6789"}],
+    )
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {"findings": [{"kind": "ssn", "evidence": "123-45-6789"}]}
+                                )
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return Response()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("trace_miner.runtime.urlopen", fake_urlopen)
+
+    run_config(config)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [
+        {"findings": [{"evidence": "123-45-6789", "kind": "ssn"}], "id": "a", "text": "ssn 123-45-6789"}
+    ]
+    prompt = json.loads(captured["body"]["messages"][1]["content"])
+    schema = prompt["output_fields"]["findings"]
+    assert schema["type"] == "array"
+    encoded = json.dumps(schema)
+    assert "ssn" in encoded
+    assert "phone" in encoded
+    assert "evidence" in encoded
+
+
+def test_lm_pydantic_output_rejects_invalid_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = write_project(
+        tmp_path,
+        """
+from typing import Literal
+
+from pydantic import BaseModel
+
+
+class Finding(BaseModel):
+    kind: Literal["ssn", "phone"]
+    evidence: str
+
+
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class DetectSignature:
+    input_fields = {"text": Field(str)}
+    output_fields = {"findings": Field(list[Finding])}
+
+
+class DetectModule:
+    signature = DetectSignature()
+
+
+detect = DetectModule()
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: detect
+""",
+        [{"id": "a", "text": "hello"}],
+    )
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"message": {"content": json.dumps({"findings": [{"kind": "email", "evidence": "x"}]})}}]}
+            ).encode("utf-8")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("trace_miner.runtime.urlopen", lambda request, timeout: Response())
+
+    with pytest.raises(PipelineExecutionError, match="did not match"):
+        run_config(config)
 
 
 def test_lm_openrouter_missing_usage_still_counts_the_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -7,8 +7,9 @@ authors = [{ name = "Noah Ziems" }]
 requires-python = ">=3.12"
 dependencies = [
     "dspy>=3.3.1",
+    "pydantic>=2.0.0",
     "PyYAML>=6.0.2",
-    "tqdm>=4.70.0",
+    "rich>=14.0.0",
 ]
 
 [project.urls]

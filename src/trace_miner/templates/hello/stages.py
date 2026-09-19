@@ -1,4 +1,7 @@
+from typing import Literal
+
 import dspy
+from pydantic import BaseModel, Field
 
 
 def prepare_harbor_trajectory(record):
@@ -98,6 +101,11 @@ def compact_harbor_summary(record):
     }
 
 
+class PiiFinding(BaseModel):
+    kind: Literal["ssn", "phone", "email", "other"]
+    evidence: str = Field(description="Short quote of the PII span.")
+
+
 class DetectPiiInStep(dspy.Signature):
     """Detect personally identifiable information in one agent trajectory step.
 
@@ -113,30 +121,33 @@ class DetectPiiInStep(dspy.Signature):
     tool_calls: list[str] = dspy.InputField()
     observation: str = dspy.InputField()
 
-    has_pii: bool = dspy.OutputField(desc="True if this step contains personal identifiers.")
-    pii_kind: str = dspy.OutputField(desc="One of: ssn, phone, email, other, or none.")
-    evidence: str = dspy.OutputField(desc="Short quote of the PII span, or empty if none.")
+    findings: list[PiiFinding] = dspy.OutputField(desc="Every distinct PII span in this step. Empty if none.")
 
 
 detect_pii_in_step = dspy.Predict(DetectPiiInStep)
 
 
 def aggregate_pii_findings(steps, ctx):
-    findings = [
-        {
-            "step_index": step["step_index"],
-            "pii_kind": step["pii_kind"],
-            "evidence": step["evidence"],
-        }
-        for step in steps
-        if step["has_pii"]
-    ]
+    findings = []
+    for step in steps:
+        for finding in step.get("findings") or []:
+            item = _finding_dict(finding)
+            if item is None:
+                continue
+            findings.append({"step_index": step["step_index"], **item})
     return {
         "session_id": ctx.parent["session_id"],
         "trajectory_path": ctx.parent.get("_path", ""),
         "has_pii": bool(findings),
         "findings": findings,
     }
+
+
+def _finding_dict(finding):
+    data = finding.model_dump() if hasattr(finding, "model_dump") else finding
+    if not isinstance(data, dict) or not data.get("kind"):
+        return None
+    return {"kind": data["kind"], "evidence": data.get("evidence") or ""}
 
 
 class DetectFrustrationInStep(dspy.Signature):

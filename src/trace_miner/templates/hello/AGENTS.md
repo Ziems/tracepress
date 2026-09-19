@@ -162,14 +162,26 @@ Useful `ctx` fields: `emit`, `parent`, `group_id`, `key`, `index`, `path`,
 ### LM stages
 
 A DSPy signature is an LM stage. Config still says `- map: detect_pii_in_step`.
+Annotate outputs with Pydantic models when you want nested structure; the
+runtime sends that JSON schema to the model and stores validated JSON on the
+record.
 
 ```python
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class PiiFinding(BaseModel):
+    kind: Literal["ssn", "phone", "email", "other"]
+    evidence: str = Field(description="Short quote of the PII span.")
+
+
 class DetectPiiInStep(dspy.Signature):
     """Detect personal identifiers in one trajectory step."""
 
     message: str = dspy.InputField()
-    has_pii: bool = dspy.OutputField()
-    pii_kind: str = dspy.OutputField(desc="One of: ssn, phone, email, other, none.")
+    findings: list[PiiFinding] = dspy.OutputField(desc="Every distinct PII span. Empty if none.")
 
 
 detect_pii_in_step = dspy.Predict(DetectPiiInStep)
@@ -178,9 +190,12 @@ detect_pii_in_step = dspy.Predict(DetectPiiInStep)
 - Input field names are record keys. Missing keys fail with the stage name and
   the keys the record actually had.
 - Output fields merge into the record. Unmentioned keys pass through.
+- Pydantic outputs are elicited as JSON objects or lists of objects, then
+  written back as plain dicts. See `PiiFinding` in `stages.py`.
 - LM stages do not receive `ctx`. If you need `ctx`, wrap the module in a
   Python function; the wrapper is then a Python stage.
-- Instructions live on the signature docstring and `desc=`. Never in YAML.
+- Instructions live on the signature docstring, `Field(description=...)`, and
+  `desc=`. Never in YAML.
 - `filter` needs exactly one `bool` output.
 - `expand` needs exactly one `list[...]` output.
 - `reduce` needs exactly one `list[...]` input. That field is gathered from

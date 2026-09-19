@@ -11,11 +11,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, TextIO, get_origin
+from typing import Any, Iterable, TextIO, get_args, get_origin
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from tqdm.auto import tqdm
+from pydantic import BaseModel, TypeAdapter
+from rich.console import Console
+from rich.markup import escape
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TaskID, TextColumn, TimeElapsedColumn
 
 from trace_miner.config import load_config
 from trace_miner.errors import PipelineExecutionError
@@ -448,7 +451,7 @@ class _Runtime:
     ) -> list[_Envelope]:
         assert step.stage is not None
         output: list[_Envelope] = []
-        task = self.progress.start(f"{step.kind}: {step.stage.name}", len(envelopes))
+        task = self.progress.start(step.kind, step.stage.name, len(envelopes))
         if step.stage.kind == "lm" or step.stage.is_async:
             results = await asyncio.gather(
                 *(self._call_stage_for_env_result(step.stage, env, task) for env in envelopes)
@@ -504,7 +507,8 @@ class _Runtime:
     ) -> list[_Envelope]:
         if spec.kind == "expand":
             task = self.progress.start(
-                f"reduce: {spec.reduce.name}",
+                "reduce",
+                spec.reduce.name,
                 len(envelopes),
                 display_immediately=False,
                 close_after_advance=True,
@@ -584,7 +588,8 @@ class _Runtime:
 
         outputs: list[_Envelope] = []
         task = self.progress.start(
-            f"reduce: {spec.reduce.name}",
+            "reduce",
+            spec.reduce.name,
             len(order),
             display_immediately=False,
             close_after_advance=True,
@@ -620,7 +625,8 @@ class _Runtime:
         outputs: list[_Envelope] = []
         total = (len(envelopes) + spec.every - 1) // spec.every
         task = self.progress.start(
-            f"reduce: {spec.reduce.name}",
+            "reduce",
+            spec.reduce.name,
             total,
             display_immediately=False,
             close_after_advance=True,
@@ -826,9 +832,11 @@ class _Runtime:
             if isinstance(prediction, dict):
                 if field.name not in prediction:
                     raise PipelineExecutionError(f"LM stage `{stage.name}` missing output field `{field.name}`.")
-                outputs[field.name] = prediction[field.name]
+                outputs[field.name] = _coerce_lm_output(stage.name, field.name, field.annotation, prediction[field.name])
             elif hasattr(prediction, field.name):
-                outputs[field.name] = getattr(prediction, field.name)
+                outputs[field.name] = _coerce_lm_output(
+                    stage.name, field.name, field.annotation, getattr(prediction, field.name)
+                )
             else:
                 raise PipelineExecutionError(f"LM stage `{stage.name}` missing output field `{field.name}`.")
         return outputs
@@ -901,14 +909,16 @@ class _ProgressReporter:
 
     def start(
         self,
-        label: str,
+        kind: str,
+        name: str,
         total: int,
         display_immediately: bool = True,
         close_after_advance: bool = False,
     ) -> _ProgressTask:
         disable = None if self.enabled is None else not self.enabled
         return _ProgressTask(
-            label,
+            kind,
+            name,
             total,
             self.stream,
             disable if total > 0 else True,
@@ -920,43 +930,66 @@ class _ProgressReporter:
 class _ProgressTask:
     def __init__(
         self,
-        label: str,
+        kind: str,
+        name: str,
         total: int,
         stream: TextIO | None,
         disable: bool | None,
         display_immediately: bool,
         close_after_advance: bool,
     ):
-        self.label = label
+        self.kind = kind
+        self.name = name
         self.total = total
         self.stream = stream
         self.disable = disable
         self.close_after_advance = close_after_advance
         self.current = 0
-        self._bar: tqdm | None = None
+        self._progress: Progress | None = None
+        self._task_id: TaskID | None = None
         self._closed = False
         if display_immediately:
             self.open()
 
     def open(self) -> None:
-        if self._bar is not None or self._closed:
+        if self._progress is not None or self._closed or self.disable is True:
             return
-        self._bar = tqdm(
-            total=self.total,
-            initial=self.current,
-            desc=f"[trace-miner] {self.label}",
+        force_terminal = None if self.disable is None else True
+        is_tty = self.stream is None or bool(getattr(self.stream, "isatty", lambda: False)())
+        console = Console(
             file=self.stream,
-            disable=self.disable,
-            leave=True,
-            ncols=_PROGRESS_NCOLS,
+            width=_PROGRESS_NCOLS,
+            force_terminal=force_terminal,
+            no_color=force_terminal is True and not is_tty,
+            highlight=False,
+            soft_wrap=False,
+        )
+        self._progress = Progress(
+            TextColumn(r"[dim]\[trace-miner][/] [bold cyan]{task.fields[kind]}[/]: [bold]{task.fields[name]}[/]"),
+            BarColumn(bar_width=None),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+            transient=False,
+            redirect_stdout=False,
+            redirect_stderr=False,
+            expand=True,
+        )
+        self._progress.start()
+        self._task_id = self._progress.add_task(
+            "",
+            total=self.total,
+            completed=self.current,
+            kind=escape(self.kind),
+            name=escape(self.name),
         )
 
     def advance(self) -> None:
         if self._closed:
             return
         self.open()
-        if self._bar is not None:
-            self._bar.update(1)
+        if self._progress is not None and self._task_id is not None:
+            self._progress.advance(self._task_id)
         self.current += 1
         if self.close_after_advance:
             self._close_bar()
@@ -968,9 +1001,10 @@ class _ProgressTask:
         self._closed = True
 
     def _close_bar(self) -> None:
-        if self._bar is not None:
-            self._bar.close()
-            self._bar = None
+        if self._progress is not None:
+            self._progress.stop()
+            self._progress = None
+            self._task_id = None
 
 
 class _ExecutionJournal:
@@ -1449,12 +1483,48 @@ def _is_dspy_target(target: Any) -> bool:
     return module == "dspy" or module.startswith("dspy.")
 
 
+def _is_pydantic_model(annotation: Any) -> bool:
+    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
+
+
+def _is_structured_annotation(annotation: Any) -> bool:
+    if _is_pydantic_model(annotation):
+        return True
+    origin = get_origin(annotation)
+    if origin is None:
+        return False
+    return any(_is_structured_annotation(arg) for arg in get_args(annotation) if arg is not type(None))
+
+
+def _annotation_json_schema(annotation: Any) -> dict[str, Any]:
+    if annotation is None:
+        return {}
+    try:
+        return TypeAdapter(annotation).json_schema()
+    except Exception:
+        return {"type": str(annotation)}
+
+
+def _coerce_lm_output(stage_name: str, field_name: str, annotation: Any, value: Any) -> Any:
+    if not _is_structured_annotation(annotation):
+        return value
+    try:
+        adapter = TypeAdapter(annotation)
+        return adapter.dump_python(adapter.validate_python(value), mode="json")
+    except Exception as exc:
+        raise PipelineExecutionError(
+            f"LM stage `{stage_name}` output `{field_name}` did not match {annotation}: {exc}"
+        ) from exc
+
+
 def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> tuple[dict[str, Any], LmUsage]:
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise PipelineExecutionError("OPENROUTER_API_KEY is required for OpenRouter LM stages.")
     assert stage.lm_signature is not None
-    output_fields = [field.name for field in stage.lm_signature.output_fields]
+    output_fields = {
+        field.name: _annotation_json_schema(field.annotation) for field in stage.lm_signature.output_fields
+    }
     instructions = _lm_instructions(stage.target)
     body = {
         "model": stage.lm_model,
@@ -1463,7 +1533,8 @@ def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> tuple[dict[str,
                 "role": "system",
                 "content": (
                     "You are executing a Trace Miner declarative stage. "
-                    "Return only a JSON object. Include exactly the requested output fields."
+                    "Return only a JSON object. Include exactly the requested output fields "
+                    "and match each field's JSON schema."
                 ),
             },
             {

@@ -40,7 +40,8 @@ trace-miner category.yaml
 
 - The YAML files are topology only. They name stages and how they connect.
 - `stages.py` is ordinary Python plus DSPy signatures. Changing a stage here
-  changes every pipeline that names it.
+  changes every pipeline that names it. `detect_pii_in_step` uses a Pydantic
+  output type (`list[PiiFinding]`) so the model returns structured spans.
 - `input/trajectories.jsonl` is three slim harbor records.
 - `AGENTS.md` is the working guide for coding agents: how to run, add a
   pipeline, and write Python or LM stages.
@@ -48,4 +49,5 @@ trace-miner category.yaml
 ## Change it
 
 Edit a signature in `stages.py`, or copy `pii.yaml` to start a new pipeline
-over the same traces.
+over the same traces. Prefer a Pydantic model when an LM output is an object
+or a list of objects.
