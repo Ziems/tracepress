@@ -1,10 +1,31 @@
 # AGENTS.md
 
-You are working in a Trace Miner project. Trace Miner is a config-driven JSONL
-pipeline runtime for map/filter/reduce over language-model traces.
+You are working in a Trace Miner project. YAML pipelines over JSONL traces.
+Stage logic is ordinary Python or a DSPy signature.
 
 YAML owns topology. Python owns logic. Do not put prompts, routing, or stage
 bodies in YAML. Do not invent a second stage module unless the user asks.
+
+## Commands
+
+```bash
+trace-miner <config.yaml> [--progress]
+trace-miner run <config.yaml> [--progress]
+trace-miner stream <config.yaml> [--reset-checkpoint] [--progress]
+trace-miner replay <source.jsonl> --into <live.jsonl> [--interval 3] [--reset]
+trace-miner stats
+```
+
+`run` and a bare config path are the same batch command. `--progress` always
+shows stage bars.
+
+`stream` processes each JSONL line as it is appended. `--reset-checkpoint`
+starts at byte 0. `--from-end` skips lines already in the file.
+
+`replay` appends records into a live file. `--reset` truncates first.
+`--limit 1` sends one record.
+
+`stats` prints local usage totals from `~/.trace-miner/`.
 
 ## First run
 
@@ -39,9 +60,6 @@ trace-miner replay input/trajectories.jsonl --into input/live.jsonl --reset
 ```
 
 That replays all three traces. Use `--limit 1` to send a single trace.
-
-Use `--progress` to show per-stage bars. There is no `--profile` flag; the
-summary always prints.
 
 ## Layout
 

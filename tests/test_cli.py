@@ -23,6 +23,13 @@ def test_stream_rejects_conflicting_start_modes(capsys: pytest.CaptureFixture[st
     assert "not allowed with argument" in capsys.readouterr().err
 
 
+def _command_help(argv: list[str], capsys: pytest.CaptureFixture[str]) -> str:
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    assert exc.value.code == 0
+    return capsys.readouterr().out
+
+
 def test_root_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--help"]) == 0
     out = capsys.readouterr().out
@@ -31,6 +38,30 @@ def test_root_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
     assert "stream" in out
     assert "replay" in out
     assert "stats" in out
+    assert "trace-miner pipeline.yaml" in out
+
+
+def test_command_help_documents_usage(capsys: pytest.CaptureFixture[str]) -> None:
+    init = _command_help(["init", "--help"], capsys)
+    assert "hello-world" in init
+    assert "--force" in init
+
+    run = _command_help(["run", "--help"], capsys)
+    assert "Pipeline YAML path" in run
+    assert "--progress" in run
+
+    stream = _command_help(["stream", "--help"], capsys)
+    assert "Pipeline YAML path" in stream
+    assert "--reset-checkpoint" in stream
+    assert "--from-end" in stream
+
+    replay = _command_help(["replay", "--help"], capsys)
+    assert "--into" in replay
+    assert "--reset" in replay
+    assert "--interval" in replay
+
+    stats = _command_help(["stats", "--help"], capsys)
+    assert "~/.trace-miner" in stats
 
 
 def test_no_args_prints_help(capsys: pytest.CaptureFixture[str]) -> None:

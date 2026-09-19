@@ -16,7 +16,7 @@ from trace_miner.runtime import run_config, run_stream
 _ROOT_HELP = """\
 usage: trace-miner [-h] <command> ...
 
-Config-driven JSONL pipelines for language-model traces.
+YAML pipelines over JSONL traces.
 
 commands:
   init      Create a hello-world project
@@ -25,10 +25,10 @@ commands:
   replay    Append JSONL records into a live input file
   stats     Show local usage totals
 
-Pass a config path to run a batch pipeline:
+Run a batch pipeline:
   trace-miner pipeline.yaml
 
-Run `trace-miner <command> --help` for details.
+`trace-miner <command> --help` documents each command.
 """
 
 
@@ -58,14 +58,14 @@ def main(argv: list[str] | None = None) -> int:
 def _init(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="trace-miner init",
-        description="Create a hello-world Trace Miner project.",
+        description="Create a hello-world project with example pipelines and traces.",
     )
     parser.add_argument(
         "directory",
         nargs="?",
         default=None,
         type=Path,
-        help="New project directory. Prompted if omitted, default hello-world.",
+        help="New project directory. Prompted if omitted; default hello-world.",
     )
     parser.add_argument(
         "--force",
@@ -131,8 +131,11 @@ def _prompt_project_name() -> Path:
 
 
 def _batch(argv: list[str], *, prog: str = "trace-miner") -> int:
-    parser = argparse.ArgumentParser(prog=prog)
-    parser.add_argument("config", type=Path)
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Run a batch pipeline from a YAML config. Same as `trace-miner pipeline.yaml`.",
+    )
+    parser.add_argument("config", type=Path, help="Pipeline YAML path.")
     progress = parser.add_mutually_exclusive_group()
     progress.add_argument("--progress", action="store_true", dest="progress", help="Always show stage progress bars.")
     progress.add_argument("--no-progress", action="store_false", dest="progress", help="Disable progress bars.")
@@ -167,7 +170,7 @@ def _replay(argv: list[str]) -> int:
     )
     parser.add_argument("source", type=Path, help="Existing JSONL file to replay.")
     parser.add_argument("--into", type=Path, required=True, dest="dest", help="Live JSONL file to append to.")
-    parser.add_argument("--interval", type=float, default=3.0, help="Seconds to wait between appended records.")
+    parser.add_argument("--interval", type=float, default=3.0, help="Seconds to wait between appended records. Default: 3.")
     parser.add_argument("--limit", type=int, default=0, help="Number of records to append. 0, the default, appends all records.")
     parser.add_argument("--reset", action="store_true", help="Truncate the target before appending.")
     parser.add_argument("--reset-only", action="store_true", help="Truncate the target and exit without appending.")
@@ -207,14 +210,22 @@ def _replay(argv: list[str]) -> int:
 
 
 def _stream(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="trace-miner stream")
-    parser.add_argument("config", type=Path)
-    parser.add_argument("--checkpoint", type=Path, help="Override the checkpoint path.")
+    parser = argparse.ArgumentParser(
+        prog="trace-miner stream",
+        description="Follow a JSONL input as records are appended.",
+    )
+    parser.add_argument("config", type=Path, help="Pipeline YAML path.")
+    parser.add_argument("--checkpoint", type=Path, help="Checkpoint file. Default: .trace-miner/ beside the config.")
     start = parser.add_mutually_exclusive_group()
-    start.add_argument("--from-start", action="store_true", help="Ignore any checkpoint and start at byte 0.")
-    start.add_argument("--from-end", action="store_true", help="Ignore any checkpoint and start at the current end.")
-    parser.add_argument("--reset-checkpoint", action="store_true", help="Ignore existing checkpoint state.")
-    parser.add_argument("--poll-interval", type=float, default=1.0, help="Seconds to sleep when no complete line is available.")
+    start.add_argument("--from-start", action="store_true", help="Start at byte 0.")
+    start.add_argument("--from-end", action="store_true", help="Skip lines already in the file.")
+    parser.add_argument("--reset-checkpoint", action="store_true", help="Ignore saved checkpoint state and start at byte 0.")
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=1.0,
+        help="Seconds to wait when no complete line is available. Default: 1.",
+    )
     progress = parser.add_mutually_exclusive_group()
     progress.add_argument("--progress", action="store_true", dest="progress", help="Show streaming counters.")
     progress.add_argument("--no-progress", action="store_false", dest="progress", help="Disable streaming counters.")
@@ -244,7 +255,7 @@ def _stream(argv: list[str]) -> int:
 def _stats(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="trace-miner stats",
-        description="Show local Trace Miner usage.",
+        description="Show local usage totals from ~/.trace-miner.",
     )
     parser.parse_args(argv)
     ensure_home()
