@@ -37,7 +37,7 @@ In scope for the LM MVP:
   `output_fields`.
 - Duck typing for the signature surface where practical, so tests and small custom modules can
   use the same contract without invoking DSPy.
-- LM stages in `map`, `filter`, `expand`, and `reduce`.
+- LM stages in `map`, `filter`, `alert`, `expand`, and `reduce`.
 - A minimal `lm` config surface for provider and model selection: built-in OpenRouter/DeepSeek
   defaults, top-level overrides, and per-step model override.
 - Field mapping, passthrough, and clear missing-field errors.
@@ -141,12 +141,14 @@ principle 5.
 |---|---|---|
 | `map` | any outputs | 1, merged |
 | `filter` | exactly one `bool` output field | 1 if true, 0 if false |
+| `alert` | exactly one `bool` output field | the record unchanged; an alert fires when that bool is true, carrying the module's outputs |
 | `expand` | exactly one `list[T]` output field | one child per element |
 | `reduce` | exactly one `list[T]` input field | 1 |
 
 Load-time validation:
 
 - A `filter` whose module has zero or more than one bool output is a load error.
+- An `alert` whose module does not have exactly one bool output is a load error. The other outputs are the alert body. The record passing downstream is not merged with them.
 - An `expand` whose module has zero or more than one list-typed output is a load error.
 - A `reduce` whose module has zero or more than one list-typed input is a load error.
 

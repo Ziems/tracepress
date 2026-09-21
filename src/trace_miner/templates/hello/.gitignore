@@ -1,3 +1,4 @@
 output/
 .trace-miner/
 input/live.jsonl
+input/alerts.jsonl

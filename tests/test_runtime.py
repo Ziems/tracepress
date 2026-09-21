@@ -143,6 +143,174 @@ pipelines:
     assert result.stats.lm_cost_usd == 0
 
 
+def test_alert_passes_records_through_and_copies_the_parent_id(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def split(record, ctx):
+    for step in record["steps"]:
+        ctx.emit(step)
+
+def frustrated_user(record):
+    if record.get("has_frustration"):
+        return record["evidence"]
+    return None
+
+def collect(steps, ctx):
+    return {"session_id": ctx.parent["session_id"], "texts": [step["text"] for step in steps]}
+
+def not_a_reason(record):
+    return {"reason": "nope"}
+""",
+        """
+from: ./stages
+id_field: session_id
+pipelines:
+  - name: findings
+    in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          expand: split
+          pipeline:
+            - alert: frustrated_user
+          reduce: collect
+""",
+        [
+            {
+                "session_id": "s1",
+                "steps": [
+                    {"text": "ok"},
+                    {"text": "slow", "has_frustration": True, "evidence": "taking forever"},
+                ],
+            }
+        ],
+    )
+
+    run_config(config)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"session_id": "s1", "texts": ["ok", "slow"]}]
+    assert read_jsonl(tmp_path / ".trace-miner" / "alerts" / "findings.jsonl") == [
+        {"name": "frustrated_user", "reason": "taking forever", "session_id": "s1"}
+    ]
+
+    broken = write_project(
+        tmp_path / "broken",
+        """
+def not_a_reason(record):
+    return {"reason": "nope"}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - alert: not_a_reason
+""",
+        [{"id": "a"}],
+    )
+    with pytest.raises(PipelineExecutionError, match="reason string"):
+        run_config(broken)
+
+
+def test_lm_alert_sends_module_outputs_when_the_bool_is_true(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class FrustrationSignature:
+    input_fields = {"message": Field(str)}
+    output_fields = {"has_frustration": Field(bool), "evidence": Field(str)}
+
+
+class DetectFrustration:
+    signature = FrustrationSignature()
+
+    def __call__(self, **kwargs):
+        frustrated = "forever" in kwargs["message"]
+        return {
+            "has_frustration": frustrated,
+            "evidence": "taking forever" if frustrated else "",
+        }
+
+
+detect_frustration = DetectFrustration()
+""",
+        """
+from: ./stages
+id_field: session_id
+pipelines:
+  - name: alerts
+    in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - alert: detect_frustration
+""",
+        [
+            {"session_id": "s1", "message": "looks good"},
+            {"session_id": "s1", "message": "this is taking forever"},
+        ],
+    )
+
+    run_config(config)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [
+        {"session_id": "s1", "message": "looks good"},
+        {"session_id": "s1", "message": "this is taking forever"},
+    ]
+    assert read_jsonl(tmp_path / ".trace-miner" / "alerts" / "alerts.jsonl") == [
+        {
+            "name": "detect_frustration",
+            "session_id": "s1",
+            "has_frustration": True,
+            "evidence": "taking forever",
+        }
+    ]
+
+
+def test_lm_alert_requires_one_bool_output(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+class Field:
+    def __init__(self, annotation):
+        self.annotation = annotation
+
+
+class QuoteSignature:
+    input_fields = {"message": Field(str)}
+    output_fields = {"evidence": Field(str)}
+
+
+class Quote:
+    signature = QuoteSignature()
+
+    def __call__(self, **kwargs):
+        return {"evidence": kwargs["message"]}
+
+
+quote = Quote()
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - alert: quote
+""",
+        [{"message": "hi"}],
+    )
+
+    with pytest.raises(ConfigError, match="exactly one bool output"):
+        load_config(config)
+
+
 def test_async_python_stages_and_async_entrypoint(tmp_path: Path) -> None:
     config = write_project(
         tmp_path,

@@ -1,7 +1,7 @@
 # Hello Trace Miner
 
 This project is a small harbor-style workspace. One `stages.py` module, three
-slim harbor traces, and five pipelines that reuse those stages.
+slim harbor traces, and six pipelines that reuse those stages.
 
 The traces are real harbor runs (failed ATRX/VEP CRISPR, failed photonic
 routing, passed FreeCAD spring clip) with planted signals so each pipeline has
@@ -22,6 +22,7 @@ export OPENROUTER_API_KEY=...
 | `frustration.yaml` | Detect user frustration or impatience | `output/frustration.jsonl` |
 | `category.yaml` | Label domain and outcome | `output/categories.jsonl` |
 | `stream.yaml` | Same as summarize, watching `input/live.jsonl` | `output/stream_summaries.jsonl` |
+| `alerts.yaml` | Alert when a step contains an SSN, a phone number, or a frustrated user turn | `output/alerts.jsonl` |
 
 ## Run
 
@@ -61,6 +62,30 @@ Stream outputs are append-only, so remove `output/stream_summaries.jsonl` when
 you want a fresh result file. Checkpoint state lives under `.trace-miner/` and
 is gitignored. `--reset-checkpoint` starts reading from byte 0 again.
 
+## Alerts
+
+`alerts.yaml` watches `input/alerts.jsonl`. `flag_sensitive_step` is an `alert` step. It returns a reason when a posted step contains an SSN, a phone number, or the phrase "taking forever". The posted step still lands in `output/alerts.jsonl`. The alert itself is written under `.trace-miner/alerts/`.
+
+In one terminal:
+
+```bash
+trace-miner serve alerts.yaml
+```
+
+In another, from this directory:
+
+```bash
+python client_demo.py
+```
+
+`client_demo.py` replays each step of `input/trajectories.jsonl`. It stops at the first alert, which is the SSN planted in the ATRX trace:
+
+```text
+aborted terminal-bench/atrx-vep-crispr step 2: ssn
+```
+
+The later traces carry a frustrated user turn and a phone number. Those fire if you remove the earlier signal.
+
 ## What each file is
 
 - The YAML files are topology only. They name stages and how they connect.
@@ -70,7 +95,10 @@ is gitignored. `--reset-checkpoint` starts reading from byte 0 again.
 - `input/trajectories.jsonl` is three slim harbor records.
 - `input/live.jsonl` starts empty so `stream.yaml` can start before replay.
   Gitignored. Recreated empty by `init --force`.
+- `input/alerts.jsonl` starts empty so `alerts.yaml` can be served before any
+  steps are posted. Gitignored. Recreated empty by `init --force`.
 - `stream.yaml` watches `input/live.jsonl`; feed it with `trace-miner replay`.
+- `alerts.yaml` watches `input/alerts.jsonl`. `client_demo.py` posts steps into it.
 - `AGENTS.md` is the working guide for coding agents: how to run, add a
   pipeline, and write Python or LM stages.
 

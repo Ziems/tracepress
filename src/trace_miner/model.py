@@ -6,7 +6,7 @@ from types import ModuleType
 from typing import Any, Callable, Literal
 
 
-StepKind = Literal["map", "filter", "stage", "tee", "group"]
+StepKind = Literal["map", "filter", "stage", "tee", "alert", "group"]
 GroupKind = Literal["expand", "by", "every"]
 StageKind = Literal["python", "lm"]
 ChildErrorPolicy = Literal["fail", "partial", "skip"]
@@ -77,6 +77,7 @@ class PipelineSpec:
     output: Path
     steps: tuple[Step, ...]
     source_index: int
+    name: str | None = None
 
 
 @dataclass(frozen=True)

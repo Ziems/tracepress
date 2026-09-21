@@ -11,6 +11,7 @@ from trace_miner.init import init_project
 from trace_miner.model import format_run_profile
 from trace_miner.replay import replay_jsonl
 from trace_miner.runtime import run_config, run_stream
+from trace_miner.serve import serve, token_from_env
 
 
 _ROOT_HELP = """\
@@ -22,6 +23,7 @@ commands:
   init      Create a hello-world project
   run       Run a batch pipeline
   stream    Follow a JSONL file as records arrive
+  serve     Accept records over HTTP and push alerts
   replay    Append JSONL records into a live input file
   stats     Show local usage totals
 
@@ -48,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
         return _init(rest)
     if command == "stream":
         return _stream(rest)
+    if command == "serve":
+        return _serve(rest)
     if command == "replay":
         return _replay(rest)
     if command == "run":
@@ -94,6 +98,8 @@ def _init(argv: list[str]) -> int:
     print("  frustration.yaml          user frustration")
     print("  category.yaml             domain and outcome")
     print("  stream.yaml               live-tail summarize")
+    print("  alerts.yaml               alert on a planted signal")
+    print("  client_demo.py            replay traces and stop on an abort")
     print("  stages.py                 shared Python and LM stages")
     print("  AGENTS.md                 guide for coding agents")
     print("  input/trajectories.jsonl  slim harbor traces")
@@ -108,6 +114,8 @@ def _init(argv: list[str]) -> int:
     print("Then try pii.yaml, frustration.yaml, or category.yaml")
     print("To stream: trace-miner stream stream.yaml")
     print("Feed it:   trace-miner replay input/trajectories.jsonl --into input/live.jsonl --reset")
+    print("To serve:  trace-miner serve alerts.yaml")
+    print("Watch it:  python client_demo.py")
     return 0
 
 
@@ -248,6 +256,56 @@ def _stream(argv: list[str]) -> int:
         print(f"trace-miner: {exc}", file=sys.stderr)
         return 1
     record_run("stream", result.stats, extra={"config": str(args.config.expanduser().resolve())})
+    print(format_run_profile(result.stats))
+    return 0
+
+
+def _serve(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="trace-miner serve",
+        description="Run a pipeline stream and accept records over HTTP.",
+    )
+    parser.add_argument("config", type=Path, help="Pipeline YAML path.")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address. Default: 127.0.0.1.")
+    parser.add_argument("--port", type=int, default=8765, help="Bind port. Default: 8765.")
+    parser.add_argument("--checkpoint", type=Path, help="Checkpoint file. Default: .trace-miner/ beside the config.")
+    start = parser.add_mutually_exclusive_group()
+    start.add_argument("--from-start", action="store_true", help="Start at byte 0.")
+    start.add_argument("--from-end", action="store_true", help="Skip lines already in the file.")
+    parser.add_argument("--reset-checkpoint", action="store_true", help="Ignore saved checkpoint state and start at byte 0.")
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=1.0,
+        help="Seconds to wait when no complete line is available. Default: 1.",
+    )
+    progress = parser.add_mutually_exclusive_group()
+    progress.add_argument("--progress", action="store_true", dest="progress", help="Show streaming counters.")
+    progress.add_argument("--no-progress", action="store_false", dest="progress", help="Disable streaming counters.")
+    parser.set_defaults(progress=None)
+    args = parser.parse_args(argv)
+    if not 0 <= args.port <= 65535:
+        parser.error("--port must be from 0 to 65535.")
+
+    try:
+        result = serve(
+            args.config,
+            host=args.host,
+            port=args.port,
+            token=token_from_env(),
+            checkpoint_path=args.checkpoint,
+            from_start=args.from_start,
+            from_end=args.from_end,
+            reset_checkpoint=args.reset_checkpoint,
+            poll_interval=args.poll_interval,
+            progress=args.progress,
+        )
+    except KeyboardInterrupt:
+        return 130
+    except TraceMinerError as exc:
+        print(f"trace-miner: {exc}", file=sys.stderr)
+        return 1
+    record_run("serve", result.stats, extra={"config": str(args.config.expanduser().resolve())})
     print(format_run_profile(result.stats))
     return 0
 

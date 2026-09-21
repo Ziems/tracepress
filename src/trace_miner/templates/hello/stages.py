@@ -1,3 +1,4 @@
+import re
 from typing import Literal
 
 import dspy
@@ -83,6 +84,22 @@ class AnalyzeHarborTrajectory(dspy.Signature):
 
 
 analyze_harbor_trajectory = dspy.Predict(AnalyzeHarborTrajectory)
+
+
+_SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+_PHONE = re.compile(r"\(\d{3}\) \d{3}-\d{4}")
+
+
+def flag_sensitive_step(record):
+    """Alert when a step contains a planted SSN, phone number, or frustrated user turn."""
+    text = f"{record.get('message') or ''} {record.get('observation') or ''}"
+    if _SSN.search(text):
+        return "ssn"
+    if _PHONE.search(text):
+        return "phone number"
+    if "taking forever" in text.lower():
+        return "frustrated user"
+    return None
 
 
 def compact_harbor_summary(record):

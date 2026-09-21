@@ -36,6 +36,7 @@ def test_root_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
     assert "init" in out
     assert "run" in out
     assert "stream" in out
+    assert "serve" in out
     assert "replay" in out
     assert "stats" in out
     assert "trace-miner pipeline.yaml" in out
@@ -54,6 +55,11 @@ def test_command_help_documents_usage(capsys: pytest.CaptureFixture[str]) -> Non
     assert "Pipeline YAML path" in stream
     assert "--reset-checkpoint" in stream
     assert "--from-end" in stream
+
+    serve = _command_help(["serve", "--help"], capsys)
+    assert "Pipeline YAML path" in serve
+    assert "--host" in serve
+    assert "--port" in serve
 
     replay = _command_help(["replay", "--help"], capsys)
     assert "--into" in replay
@@ -94,6 +100,9 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert "trace-miner summarize.yaml" in out
     assert "pii.yaml" in out
     assert "stream.yaml" in out
+    assert "alerts.yaml" in out
+    assert "trace-miner serve alerts.yaml" in out
+    assert "python client_demo.py" in out
     assert "AGENTS.md" in out
     assert "trace-miner replay" in out
     assert (dest / "summarize.yaml").is_file()
@@ -101,11 +110,14 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert (dest / "frustration.yaml").is_file()
     assert (dest / "category.yaml").is_file()
     assert (dest / "stream.yaml").is_file()
+    assert (dest / "alerts.yaml").is_file()
+    assert (dest / "client_demo.py").is_file()
     assert (dest / "stages.py").is_file()
     assert (dest / "AGENTS.md").is_file()
     assert (dest / "input" / "trajectories.jsonl").is_file()
     assert (dest / "input" / "live.jsonl").is_file()
     assert (dest / "input" / "live.jsonl").read_text(encoding="utf-8") == ""
+    assert (dest / "input" / "alerts.jsonl").read_text(encoding="utf-8") == ""
     assert not (dest / "simulate_stream.py").exists()
     agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
     assert "trace-miner summarize.yaml" in agents
@@ -123,9 +135,11 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
         "terminal-bench/freecad-spring-clip",
     ]
 
-    for name in ("summarize.yaml", "pii.yaml", "frustration.yaml", "category.yaml", "stream.yaml"):
+    for name in ("summarize.yaml", "pii.yaml", "frustration.yaml", "category.yaml", "stream.yaml", "alerts.yaml"):
         config = load_config(dest / name)
         assert config.pipelines[0].output.name.endswith(".jsonl")
+    alerts = load_config(dest / "alerts.yaml")
+    assert alerts.pipelines[0].name == "alerts"
 
 
 def test_init_refuses_to_overwrite(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

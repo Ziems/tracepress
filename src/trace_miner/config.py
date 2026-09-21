@@ -33,7 +33,7 @@ _KNOWN_LM_KEYS = {"cache", "default", "max_concurrent", "provider"}
 _KNOWN_STEP_OPTIONS = {"stage", "lm"}
 _KNOWN_PER_STEP_LM_KEYS = {"model"}
 _KNOWN_DEFAULTS = {"on_child_error", "on_group_incomplete", "ordered"}
-_STEP_KEYS = {"map", "filter", "stage", "tee", "group"}
+_STEP_KEYS = {"map", "filter", "stage", "tee", "alert", "group"}
 _GROUP_KEYS = {
     "expand",
     "by",
@@ -86,6 +86,7 @@ def load_config(path: str | Path) -> Config:
         for i, block in enumerate(pipelines_raw)
     )
     pipelines = _sort_pipelines(pipelines)
+    _validate_pipeline_names(pipelines)
     return Config(
         config_path,
         base_dir,
@@ -162,9 +163,10 @@ def _parse_pipeline(
     missing = required - set(raw)
     if missing:
         raise ConfigError(f"Pipeline {source_index + 1} missing key(s): {sorted(missing)}")
-    unknown = set(raw) - required
+    unknown = set(raw) - required - {"name"}
     if unknown:
         raise ConfigError(f"Pipeline {source_index + 1} unknown key(s): {sorted(unknown)}")
+    name = _parse_pipeline_name(raw.get("name"), source_index)
 
     inputs_raw = raw["in"]
     input_items = inputs_raw if isinstance(inputs_raw, list) else [inputs_raw]
@@ -173,7 +175,7 @@ def _parse_pipeline(
     inputs = tuple(_normalize_path(item, base_dir, f"pipeline {source_index + 1} input") for item in input_items)
     output = _normalize_path(raw["out"], base_dir, f"pipeline {source_index + 1} output")
     steps = _parse_steps(raw["pipeline"], base_dir, module, defaults, lm_provider, lm_default_model, f"pipeline {source_index + 1}")
-    return PipelineSpec(inputs, output, steps, source_index)
+    return PipelineSpec(inputs, output, steps, source_index, name)
 
 
 def _parse_steps(
@@ -194,7 +196,7 @@ def _parse_steps(
         key, value = next(iter(item.items()))
         if key not in _STEP_KEYS:
             raise ConfigError(f"Unknown step key `{key}` in {where} step {idx}.")
-        if key in {"map", "filter", "stage"}:
+        if key in {"map", "filter", "stage", "alert"}:
             steps.append(Step(kind=key, stage=_resolve_stage(value, module, lm_provider, lm_default_model, role=key)))
         elif key == "tee":
             steps.append(Step(kind="tee", path=_normalize_path(value, base_dir, f"{where} tee")))
@@ -356,7 +358,12 @@ def _lm_fields(signature: Any, attribute: str) -> tuple[LmField, ...]:
 
 def _validate_lm_stage(name: str, role: str, signature: LmSignature) -> None:
     if role == "stage":
-        raise ConfigError(f"LM stage `{name}` cannot be used with `stage`; use map, filter, expand, or reduce.")
+        raise ConfigError(f"LM stage `{name}` cannot be used with `stage`; use map, filter, alert, expand, or reduce.")
+    if role == "alert":
+        bool_outputs = [field for field in signature.output_fields if _is_bool_annotation(field.annotation)]
+        if len(bool_outputs) != 1:
+            raise ConfigError(f"LM alert `{name}` must have exactly one bool output field.")
+        return
     if role == "filter":
         bool_outputs = [field for field in signature.output_fields if _is_bool_annotation(field.annotation)]
         if len(bool_outputs) != 1 or len(signature.output_fields) != 1:
@@ -434,6 +441,25 @@ def _normalize_path(raw: Any, base_dir: Path, where: str) -> Path:
     if not path.is_absolute():
         path = base_dir / path
     return Path(os.path.realpath(path))
+
+
+def _parse_pipeline_name(raw: Any, source_index: int) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw or raw.strip() != raw:
+        raise ConfigError(f"Pipeline {source_index + 1} `name` must be a non-empty string.")
+    return raw
+
+
+def _validate_pipeline_names(pipelines: tuple[PipelineSpec, ...]) -> None:
+    seen: dict[str, int] = {}
+    for pipeline in pipelines:
+        if pipeline.name is None:
+            continue
+        previous = seen.get(pipeline.name)
+        if previous is not None:
+            raise ConfigError(f"Duplicate pipeline name `{pipeline.name}`.")
+        seen[pipeline.name] = pipeline.source_index
 
 
 def _sort_pipelines(pipelines: tuple[PipelineSpec, ...]) -> tuple[PipelineSpec, ...]:

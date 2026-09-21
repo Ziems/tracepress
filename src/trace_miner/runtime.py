@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, TextIO, get_origin
+from typing import Any, Callable, Iterable, TextIO, get_origin
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -268,6 +268,7 @@ class _Runtime:
         self.completed_stream_tokens: list[_StreamToken] = []
         self.stream_every: dict[tuple[int, tuple[int, ...]], _StreamEveryState] = {}
         self.held_stream_tokens: set[_StreamToken] = set()
+        self._alert_log: Path | None = None
         self._prepare_dspy_lms()
 
     async def run(self) -> RunResult:
@@ -288,20 +289,32 @@ class _Runtime:
         await self.process_pipeline_envelopes(pipeline, envelopes)
 
     async def process_pipeline_envelopes(self, pipeline: PipelineSpec, envelopes: list[_Envelope]) -> list[_Envelope]:
-        outputs = await self.apply_steps(envelopes, pipeline.steps, active_group=None)
-        self._write_envelopes(pipeline.output, outputs, append=self.append_outputs)
-        self.stats.retired += len(outputs)
-        return outputs
+        previous = self._alert_log
+        self._alert_log = alert_log_path(self.config, pipeline)
+        self._alert_log.parent.mkdir(parents=True, exist_ok=True)
+        self._alert_log.write_text("", encoding="utf-8")
+        try:
+            outputs = await self.apply_steps(envelopes, pipeline.steps, active_group=None)
+            self._write_envelopes(pipeline.output, outputs, append=self.append_outputs)
+            self.stats.retired += len(outputs)
+            return outputs
+        finally:
+            self._alert_log = previous
 
     async def process_stream_pipeline_envelopes(
         self,
         pipeline: PipelineSpec,
         envelopes: list[_Envelope],
     ) -> list[_Envelope]:
-        outputs = await self.apply_stream_steps(envelopes, pipeline.steps, pipeline.source_index, ())
-        self._write_envelopes(pipeline.output, outputs, append=True)
-        self.stats.retired += len(outputs)
-        return outputs
+        previous = self._alert_log
+        self._alert_log = alert_log_path(self.config, pipeline)
+        try:
+            outputs = await self.apply_stream_steps(envelopes, pipeline.steps, pipeline.source_index, ())
+            self._write_envelopes(pipeline.output, outputs, append=True)
+            self.stats.retired += len(outputs)
+            return outputs
+        finally:
+            self._alert_log = previous
 
     def _read_inputs(self, paths: Iterable[Path]) -> Iterable[_Envelope]:
         for path in paths:
@@ -328,6 +341,8 @@ class _Runtime:
                 raise _GroupSkipped()
             if step.kind in {"map", "filter", "stage"}:
                 current = await self._apply_stage_step(current, step, active_group)
+            elif step.kind == "alert":
+                current = await self._apply_alert_step(current, step, active_group)
             elif step.kind == "tee":
                 assert step.path is not None
                 self._write_envelopes(step.path, current, append=True)
@@ -350,6 +365,8 @@ class _Runtime:
             current_path = step_path + (idx,)
             if step.kind in {"map", "filter", "stage"}:
                 current = await self._apply_stage_step(current, step, active_group=None)
+            elif step.kind == "alert":
+                current = await self._apply_alert_step(current, step, active_group=None)
             elif step.kind == "tee":
                 assert step.path is not None
                 self._write_envelopes(step.path, current, append=True)
@@ -364,10 +381,15 @@ class _Runtime:
         return current
 
     async def flush_stream_pipeline(self, pipeline: PipelineSpec) -> list[_Envelope]:
-        outputs = await self.flush_stream_steps(pipeline.steps, pipeline.source_index, ())
-        self._write_envelopes(pipeline.output, outputs, append=True)
-        self.stats.retired += len(outputs)
-        return outputs
+        previous = self._alert_log
+        self._alert_log = alert_log_path(self.config, pipeline)
+        try:
+            outputs = await self.flush_stream_steps(pipeline.steps, pipeline.source_index, ())
+            self._write_envelopes(pipeline.output, outputs, append=True)
+            self.stats.retired += len(outputs)
+            return outputs
+        finally:
+            self._alert_log = previous
 
     async def flush_stream_steps(
         self,
@@ -447,6 +469,75 @@ class _Runtime:
         if active_group is not None:
             await active_group.adjust_for_replacement(len(window), len(nested_outputs))
         return [_Envelope(out.record, out.path, active_group, out.stream_tokens) for out in nested_outputs]
+
+    async def _apply_alert_step(
+        self,
+        envelopes: list[_Envelope],
+        step: Step,
+        active_group: _GroupState | None,
+    ) -> list[_Envelope]:
+        assert step.stage is not None
+        task = self.progress.start("alert", step.stage.name, len(envelopes))
+        if step.stage.kind == "lm" or step.stage.is_async:
+            results = await asyncio.gather(
+                *(self._call_stage_for_env_result(step.stage, env, task) for env in envelopes)
+            )
+        else:
+            results = []
+            for env in envelopes:
+                results.append(await self._call_stage_for_env_result(step.stage, env, task))
+        try:
+            kept: list[_Envelope] = []
+            fired: list[_Envelope] = []
+            for env, result in results:
+                if isinstance(result, Exception):
+                    if active_group is None:
+                        raise result
+                    await active_group.fail_child(env, step.stage.name, result)
+                    continue
+                body = self._alert_body(step.stage, result)
+                if body is not None:
+                    fired.append(_Envelope(self._alert_record(step.stage.name, body, env), env.path, active_group, ()))
+                kept.append(env)
+            if fired and self._alert_log is not None:
+                self._write_envelopes(self._alert_log, fired, append=True)
+            return kept
+        finally:
+            task.close()
+
+    def _alert_body(self, stage: StageRef, emitted: list[Any]) -> str | dict[str, Any] | None:
+        if not emitted:
+            return None
+        if len(emitted) > 1:
+            raise PipelineExecutionError(
+                f"`alert` stage `{stage.name}` returned {len(emitted)} values; expected a reason string or None."
+            )
+        body = emitted[0]
+        if stage.kind == "lm":
+            if not isinstance(body, dict):
+                raise PipelineExecutionError(f"LM alert `{stage.name}` must produce an output mapping.")
+            return body
+        if body is None:
+            return None
+        if not isinstance(body, str):
+            raise PipelineExecutionError(f"`alert` stage `{stage.name}` must return a reason string or None.")
+        text = body.strip()
+        if not text or text.lower() == "none":
+            return None
+        return text
+
+    def _alert_record(self, name: str, body: str | dict[str, Any], env: _Envelope) -> dict[str, Any]:
+        record: dict[str, Any] = {"reason": body} if isinstance(body, str) else dict(body)
+        record["name"] = name
+        field_name = self.config.id_field
+        if not field_name:
+            return record
+        value = _id_value(env.record, field_name)
+        if value is None and env.group is not None:
+            value = _id_value(env.group.parent_record, field_name)
+        if value is not None:
+            record[field_name] = value
+        return record
 
     async def _apply_stage_step(
         self,
@@ -765,6 +856,12 @@ class _Runtime:
             keep_field = stage.lm_signature.output_fields[0].name
             self.stats.emitted += 1 if outputs[keep_field] else 0
             return [arg] if outputs[keep_field] else []
+        if stage.role == "alert":
+            flag_name = _lm_alert_flag(stage)
+            if not outputs[flag_name]:
+                return []
+            self.stats.emitted += 1
+            return [outputs]
         if stage.role == "expand":
             output_field = stage.lm_signature.output_fields[0].name
             children = outputs[output_field]
@@ -1112,6 +1209,10 @@ class _StreamRun:
         progress_stream: TextIO | None,
         max_records: int | None,
         stop_when_idle: bool,
+        wake_event: asyncio.Event | None = None,
+        stop_event: asyncio.Event | None = None,
+        on_write: Callable[[str, Path, Any, int], None] | None = None,
+        on_ready: Callable[[], None] | None = None,
     ):
         if from_start and from_end:
             raise PipelineExecutionError("Use only one of `from_start` or `from_end`.")
@@ -1136,6 +1237,12 @@ class _StreamRun:
         self.consumers: dict[Path, list[PipelineSpec]] = {}
         self.root_consumers: dict[Path, list[PipelineSpec]] = {}
         self._write_cursor = 0
+        self.wake_event = wake_event
+        self.stop_event = stop_event
+        self.on_write = on_write
+        self.on_ready = on_ready
+        self._published_by_path: dict[Path, str] = {}
+        self._publish_offsets: dict[Path, int] = {}
 
     async def run(self) -> RunResult:
         _validate_streamable(self.config)
@@ -1143,7 +1250,11 @@ class _StreamRun:
         self._load_offsets()
         self.checkpoint.write(self.config, self.journal.path, self.offsets)
         self.journal.append({"type": "run_started", "run_id": self.run_id, "config": str(self.config.config_path)})
-        stop_event = _install_stop_event()
+        self._init_publish_offsets()
+        stop_event = self.stop_event or asyncio.Event()
+        _bind_stop_signals(stop_event)
+        if self.on_ready is not None:
+            self.on_ready()
         processed = 0
         started = time.perf_counter()
         try:
@@ -1164,7 +1275,7 @@ class _StreamRun:
                     self.journal.append({"type": "run_stopped", "reason": "idle"})
                     return RunResult(self.runtime.stats, self.runtime.manifest)
                 if not made_progress:
-                    await asyncio.sleep(self.poll_interval)
+                    await self._wait_for_input(stop_event)
             await self._flush()
             self.journal.append({"type": "run_stopped", "reason": "signal"})
             return RunResult(self.runtime.stats, self.runtime.manifest)
@@ -1185,6 +1296,9 @@ class _StreamRun:
 
         root_inputs = sorted({path for pipeline in self.config.pipelines for path in pipeline.inputs if path not in produced})
         self.root_inputs = tuple(root_inputs)
+        self._published_by_path = {
+            path: name for name, paths in published_outputs(self.config).items() for path in paths
+        }
         self.consumers = consumers
         self.root_consumers = {path: consumers.get(path, []) for path in self.root_inputs}
 
@@ -1251,6 +1365,7 @@ class _StreamRun:
         while self._write_cursor < len(self.runtime.write_events):
             event = self.runtime.write_events[self._write_cursor]
             self._write_cursor += 1
+            self._publish_new_outputs(event.path)
             downstream = self.consumers.get(event.path, [])
             if downstream:
                 for pipeline in downstream:
@@ -1258,6 +1373,54 @@ class _StreamRun:
             else:
                 terminal_tokens.extend(_envelope_stream_tokens(event.envelopes))
         return terminal_tokens
+
+    async def _wait_for_input(self, stop_event: asyncio.Event) -> None:
+        if self.wake_event is not None and self.wake_event.is_set():
+            self.wake_event.clear()
+            return
+        waiters = [asyncio.create_task(stop_event.wait())]
+        if self.wake_event is not None:
+            waiters.append(asyncio.create_task(self.wake_event.wait()))
+        try:
+            await asyncio.wait(waiters, timeout=self.poll_interval, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in waiters:
+                task.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
+            if self.wake_event is not None:
+                self.wake_event.clear()
+
+    def _init_publish_offsets(self) -> None:
+        if self.on_write is None:
+            return
+        for path in self._published_by_path:
+            self._publish_offsets[path] = path.stat().st_size if path.exists() else 0
+
+    def _publish_new_outputs(self, path: Path) -> None:
+        if self.on_write is None:
+            return
+        name = self._published_by_path.get(path)
+        if name is None:
+            return
+        start = self._publish_offsets.get(path, 0)
+        if not path.exists():
+            return
+        with path.open("rb") as handle:
+            handle.seek(start)
+            while True:
+                offset = handle.tell()
+                line = handle.readline()
+                if not line or not line.endswith(b"\n"):
+                    break
+                next_offset = handle.tell()
+                self._publish_offsets[path] = next_offset
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line.decode("utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                self.on_write(name, path, record, next_offset)
 
     async def _flush(self) -> None:
         for pipeline in self.config.pipelines:
@@ -1378,15 +1541,36 @@ def _default_journal_path(config: Config, run_id: str) -> Path:
     return config.base_dir / ".trace-miner" / "runs" / run_id / "journal.jsonl"
 
 
-def _install_stop_event() -> asyncio.Event:
-    event = asyncio.Event()
+def _bind_stop_signals(event: asyncio.Event) -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, event.set)
         except (NotImplementedError, RuntimeError):
             pass
-    return event
+
+
+def root_inputs(config: Config) -> tuple[Path, ...]:
+    produced: set[Path] = set()
+    for pipeline in config.pipelines:
+        produced.add(pipeline.output)
+        produced.update(_collect_runtime_tee_paths(pipeline.steps))
+    roots = {path for pipeline in config.pipelines for path in pipeline.inputs if path not in produced}
+    return tuple(sorted(roots))
+
+
+def alert_log_path(config: Config, pipeline: PipelineSpec) -> Path:
+    label = pipeline.name if pipeline.name is not None else str(pipeline.source_index)
+    return config.base_dir / ".trace-miner" / "alerts" / f"{label}.jsonl"
+
+
+def published_outputs(config: Config) -> dict[str, tuple[Path, ...]]:
+    found: dict[str, tuple[Path, ...]] = {}
+    for pipeline in config.pipelines:
+        if pipeline.name is None:
+            continue
+        found[pipeline.name] = (alert_log_path(config, pipeline),)
+    return found
 
 
 def _group_stream_tokens(children: list[_Envelope], parent_env: _Envelope | None) -> tuple[_StreamToken, ...]:
@@ -1443,6 +1627,10 @@ async def run_stream_async(
     progress_stream: TextIO | None = None,
     max_records: int | None = None,
     stop_when_idle: bool = False,
+    wake_event: asyncio.Event | None = None,
+    stop_event: asyncio.Event | None = None,
+    on_write: Callable[[str, Path, Any, int], None] | None = None,
+    on_ready: Callable[[], None] | None = None,
 ) -> RunResult:
     config = load_config(config_or_path) if not isinstance(config_or_path, Config) else config_or_path
     checkpoint = Path(checkpoint_path).expanduser().resolve() if checkpoint_path is not None else None
@@ -1457,6 +1645,10 @@ async def run_stream_async(
         progress_stream=progress_stream,
         max_records=max_records,
         stop_when_idle=stop_when_idle,
+        wake_event=wake_event,
+        stop_event=stop_event,
+        on_write=on_write,
+        on_ready=on_ready,
     ).run()
 
 
@@ -1499,6 +1691,24 @@ def _hashable_key(value: Any) -> Any:
     except TypeError as exc:
         raise PipelineExecutionError(f"Group key is not hashable: {value!r}") from exc
     return value
+
+
+def _lm_alert_flag(stage: StageRef) -> str:
+    assert stage.lm_signature is not None
+    names = [
+        field.name
+        for field in stage.lm_signature.output_fields
+        if field.annotation is bool or field.annotation == "bool"
+    ]
+    if len(names) != 1:
+        raise PipelineExecutionError(f"LM alert `{stage.name}` must have exactly one bool output field.")
+    return names[0]
+
+
+def _id_value(record: Any, field_name: str) -> Any:
+    if isinstance(record, dict) and field_name in record and _is_scalar(record[field_name]):
+        return record[field_name]
+    return None
 
 
 def _is_scalar(value: Any) -> bool:

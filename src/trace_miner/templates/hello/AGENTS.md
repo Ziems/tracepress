@@ -12,6 +12,7 @@ bodies in YAML. Do not invent a second stage module unless the user asks.
 trace-miner <config.yaml> [--progress]
 trace-miner run <config.yaml> [--progress]
 trace-miner stream <config.yaml> [--reset-checkpoint] [--progress]
+trace-miner serve <config.yaml> [--host 127.0.0.1] [--port 8765]
 trace-miner replay <source.jsonl> --into <live.jsonl> [--interval 3] [--reset]
 trace-miner stats
 ```
@@ -24,6 +25,9 @@ starts at byte 0. `--from-end` skips lines already in the file.
 
 `replay` appends records into a live file. `--reset` truncates first.
 `--limit 1` sends one record.
+
+`serve` runs a stream and accepts steps over HTTP. `alerts.yaml` is the
+bundled example. Bind beyond localhost with `--host` and `TRACE_MINER_TOKEN`.
 
 `stats` prints local usage totals from `~/.trace-miner/`.
 
@@ -61,15 +65,75 @@ trace-miner replay input/trajectories.jsonl --into input/live.jsonl --reset
 
 That replays all three traces. Use `--limit 1` to send a single trace.
 
+`alerts.yaml` serves an alert stream. In one terminal:
+
+```bash
+trace-miner serve alerts.yaml
+```
+
+In another, from this directory:
+
+```bash
+python client_demo.py
+```
+
+That replays `input/trajectories.jsonl` one step at a time and exits when
+`flag_sensitive_step` returns a reason. The first hit is the planted SSN in
+the ATRX trace.
+
+To alert from a judgment over the whole rollout, summarize the steps, reduce
+those summaries, then publish with an `alert` step. The reduce merges its
+outputs onto the parent, which still carries `id_field`. The alert step
+returns a reason string or `None`. The record passes through. The event is
+written under `.trace-miner/alerts/<pipeline name>.jsonl`.
+
+```yaml
+- group:
+    expand: split_steps
+    pipeline:
+      - map: summarize_step
+    reduce: detect_doom_loop
+- alert: flag_doom_loop
+```
+
+```python
+class DetectDoomLoop(dspy.Signature):
+    """Decide if these summaries show an agent stuck repeating itself."""
+
+    step_summary: list[str] = dspy.InputField()
+
+    doom_loop: bool = dspy.OutputField(
+        desc="True when the agent is stuck doing the same thing over and over."
+    )
+    pattern: str = dspy.OutputField(desc="What it keeps repeating, or an empty string.")
+
+
+detect_doom_loop = dspy.Predict(DetectDoomLoop)
+
+
+def flag_doom_loop(record):
+    if not record.get("doom_loop"):
+        return None
+    return record.get("pattern") or "stuck repeating itself"
+```
+
+`step_summary` is gathered from the children. A client watches the named
+pipeline and stops on `alerts.latest.reason`. A DSPy module used directly as
+`alert:` needs exactly one bool output. False sends nothing. True sends the
+module's other outputs on `alerts.latest.record`.
+
 ## Layout
 
 | Path | Role |
 | --- | --- |
 | `*.yaml` | Pipeline topology only: inputs, outputs, step order, model policy |
 | `stream.yaml` | Live-tail copy of `summarize.yaml`; `in: input/live.jsonl` |
+| `alerts.yaml` | Named `alerts` pipeline; `in: input/alerts.jsonl` |
+| `client_demo.py` | Posts trajectory steps to a running `serve` and stops on an abort |
 | `stages.py` | Shared Python functions and DSPy signatures |
 | `input/trajectories.jsonl` | Three slim harbor traces |
 | `input/live.jsonl` | Replay target. Starts empty. Gitignored. |
+| `input/alerts.jsonl` | Serve target for `alerts.yaml`. Starts empty. Gitignored. |
 | `output/` | Generated JSONL. Gitignored. Safe to overwrite |
 | `README.md` | Human walkthrough |
 
@@ -91,6 +155,7 @@ Three harbor traces with planted signals:
 | `frustration.yaml` | expand steps → LM detect → Python reduce | `output/frustration.jsonl` |
 | `category.yaml` | prepare → expand steps → LM summarize → LM categorize → compact | `output/categories.jsonl` |
 | `stream.yaml` | same as `summarize.yaml`, reading `input/live.jsonl` | `output/stream_summaries.jsonl` |
+| `alerts.yaml` | `alert: flag_sensitive_step` on posted steps | `output/alerts.jsonl` |
 
 Prefer copying one of these over inventing a new shape. Feed `stream.yaml` with
 `trace-miner replay`; do not write a helper script.
@@ -138,6 +203,7 @@ Rules:
 | `filter: name` | Stage must emit 0 or 1 |
 | `stage: name` | No emit-count assertion |
 | `tee: path.jsonl` | Write the current records aside; stream continues unchanged |
+| `alert: name` | Publish an alert; the record continues unchanged |
 | `group:` | Expand/by/every children, run a child pipeline, then reduce |
 
 `map`, `filter`, and `stage` are the same mechanism. The label is an assertion.
@@ -236,6 +302,7 @@ detect_pii_in_step = dspy.Predict(DetectPiiInStep)
 - Instructions live on the signature docstring, `Field(description=...)`, and
   `desc=`. Never in YAML.
 - `filter` needs exactly one `bool` output.
+- A DSPy `alert` needs exactly one `bool` output. Other outputs are the alert body.
 - `expand` needs exactly one `list[...]` output.
 - `reduce` needs exactly one `list[...]` input. That field is gathered from
   children; every other input comes from `ctx.parent`.

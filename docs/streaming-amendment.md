@@ -39,7 +39,7 @@ In scope for streaming MVP:
 - Append to pipeline `out` and `tee` files instead of overwriting them.
 - Maintain an append-only execution journal and derive input checkpoints from it.
 - Resume from the journal/checkpoint by default.
-- Support `map`, `filter`, `stage`, `tee`, and `expand` groups.
+- Support `map`, `filter`, `stage`, `tee`, `alert`, and `expand` groups.
 - Support `every` groups for complete windows.
 - Flush incomplete `every` windows on graceful shutdown.
 - Preserve the existing async stage and LM concurrency behavior.
@@ -210,6 +210,7 @@ For the streaming MVP, support one source-to-sink DAG inside one process:
 
 - Root inputs are tailed from disk.
 - Pipeline `out` and `tee` paths are still written to disk.
+- `alert` steps append to the pipeline's alert log. That log is not a DAG edge.
 - If another pipeline's `in` matches an upstream `out` or `tee`, records are routed in memory to
   that downstream pipeline after the upstream write succeeds.
 

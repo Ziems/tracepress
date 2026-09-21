@@ -87,13 +87,14 @@ Pipelines execute in dependency order. A pipeline whose `in` matches another pip
 
 ### Step forms
 
-A step is a single-key mapping. Five forms exist.
+A step is a single-key mapping. Six forms exist.
 
 ```yaml
 - map: label            # stage that must emit exactly 1
 - filter: keep          # stage that must emit 0 or 1
 - stage: whatever       # stage with no emit-count constraint
 - tee: path.jsonl       # side output, stream continues unchanged
+- alert: flag_secret     # side alert, stream continues unchanged
 - group: {...}          # see below
 
 ```
@@ -101,6 +102,20 @@ A step is a single-key mapping. Five forms exist.
 `map`, `filter`, and `stage` are the same mechanism. The difference is an assertion the runtime enforces on emit count, and the readability of the config. A `map` that emits twice is a config error surfaced at runtime with the stage name, the record identity, and the actual count. Treat these labels as executable documentation.
 
 `tee` writes every record passing through it to the given path and passes it downstream unchanged. It exists so a long chain can expose an intermediate for debugging without being split into two pipeline blocks joined by a filename.
+
+`alert` calls a stage and passes the record downstream unchanged. A Python stage returns a reason string to fire, or `None` to stay quiet. A blank string or the word `none` also stays quiet. Any other return value is a runtime error. The runtime appends an alert event and does not put it in `out`:
+
+```json
+{"name": "flag_secret", "reason": "ssn", "session_id": "s1"}
+```
+
+A DSPy `alert` stage has exactly one bool output. False stays quiet. True writes the module's outputs onto the event:
+
+```json
+{"name": "detect_frustration", "session_id": "s1", "has_frustration": true, "evidence": "This is taking forever"}
+```
+
+`name` is the stage name. `reason` is the string a Python stage returned. When `id_field` is set, that field is copied from the record. Inside a group it is copied from the parent when the child record does not have it. Named pipelines write `.trace-miner/alerts/<name>.jsonl`. A pipeline with no name writes `.trace-miner/alerts/<index>.jsonl`, using the pipeline's position in the file starting at 0. A batch run truncates that file at the start of the pipeline. A stream appends.
 
 ### Group block keys
 
