@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import threading
 import time
 
@@ -15,6 +16,13 @@ from trace_miner.config import load_config
 from trace_miner.errors import ConfigError, PipelineExecutionError
 from trace_miner.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER, RunStats, format_run_profile
 from trace_miner.runtime import run_config, run_config_async, run_stream, run_stream_async
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def progress_text(stream: io.StringIO) -> str:
+    return _ANSI.sub("", stream.getvalue())
 
 
 def chat_completion(**fields: object) -> str:
@@ -191,9 +199,10 @@ pipelines:
 
     run_config(config, progress=True, progress_stream=stream)
 
-    assert "[trace-miner] map: double" in stream.getvalue()
-    assert "2/2" in stream.getvalue()
-    lines = [line for chunk in stream.getvalue().split("\r") for line in chunk.splitlines() if line]
+    rendered = progress_text(stream)
+    assert "[trace-miner] map: double" in rendered
+    assert "2/2" in rendered
+    lines = [line for chunk in rendered.split("\r") for line in chunk.splitlines() if line]
     assert max(len(line) for line in lines) <= 120
 
 
@@ -221,8 +230,9 @@ pipelines:
 
     run_config(config, progress=True, progress_stream=stream)
 
-    assert "[trace-miner] reduce: merge" in stream.getvalue()
-    assert "2/2" in stream.getvalue()
+    rendered = progress_text(stream)
+    assert "[trace-miner] reduce: merge" in rendered
+    assert "2/2" in rendered
 
 
 def test_stream_processes_appended_lines_and_writes_checkpoint(tmp_path: Path) -> None:
