@@ -51,8 +51,23 @@ jobs:
         run: |
           trace-miner init "$PROJECT_DIR"
           cd "$PROJECT_DIR"
-          trace-miner summarize.yaml --progress
-          trace-miner pii.yaml --progress
-          trace-miner frustration.yaml --progress
+          log_dir="${{ runner.temp }}/pipeline-logs"
+          mkdir -p "$log_dir"
+          trace-miner summarize.yaml --progress >"$log_dir/summarize.log" 2>&1 &
+          summarize_pid=$!
+          trace-miner pii.yaml --progress >"$log_dir/pii.log" 2>&1 &
+          pii_pid=$!
+          trace-miner frustration.yaml --progress >"$log_dir/frustration.log" 2>&1 &
+          frustration_pid=$!
+          status=0
+          wait "$summarize_pid" || status=1
+          wait "$pii_pid" || status=1
+          wait "$frustration_pid" || status=1
+          for name in summarize pii frustration; do
+            echo "::group::$name.yaml"
+            cat "$log_dir/$name.log"
+            echo "::endgroup::"
+          done
+          exit "$status"
       - name: Check planted outcomes
         run: python3 tests/hello_world_checks.py "$PROJECT_DIR"
