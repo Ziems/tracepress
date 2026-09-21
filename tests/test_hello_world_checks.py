@@ -91,6 +91,27 @@ def test_check_pii_accepts_planted_spans(tmp_path: Path) -> None:
     check_pii(_write_jsonl(tmp_path / "pii.jsonl", _pii_rows()))
 
 
+def test_check_pii_identifies_rows_from_trajectory_path(tmp_path: Path) -> None:
+    rows = [
+        {
+            "trajectory_path": "Terminal-Bench/atrx-vep-crispr__76064f07/agent/trajectory.eval.json",
+            "has_pii": True,
+            "findings": [{"kind": "ssn", "evidence": "123-45-6789"}],
+        },
+        {
+            "trajectory_path": "Terminal-Bench/photonic-waveguide-routing__3890296f/agent/trajectory.eval.json",
+            "has_pii": False,
+            "findings": [],
+        },
+        {
+            "trajectory_path": "Terminal-Bench/freecad-spring-clip__df396b0f/agent/trajectory.eval.json",
+            "has_pii": True,
+            "findings": [{"kind": "phone", "evidence": "(555) 010-1234"}],
+        },
+    ]
+    check_pii(_write_jsonl(tmp_path / "pii.jsonl", rows))
+
+
 def test_check_pii_rejects_missing_ssn(tmp_path: Path) -> None:
     rows = _pii_rows()
     rows[0]["has_pii"] = False

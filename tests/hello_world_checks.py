@@ -22,14 +22,29 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def row_task(row: dict[str, Any]) -> str | None:
+    name = row.get("task_name")
+    if isinstance(name, str) and name in EXPECTED_TASKS:
+        return name
+    blob = " ".join(str(row.get(key) or "") for key in ("task_name", "trajectory_path"))
+    matches = [task for task in EXPECTED_TASKS if task.rsplit("/", 1)[-1] in blob]
+    if len(matches) == 1:
+        return matches[0]
+    if isinstance(name, str) and name:
+        return name
+    return None
+
+
 def by_task(rows: list[dict[str, Any]], *, path: Path) -> dict[str, dict[str, Any]]:
     tasks: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise AssertionError(f"{path} row {index} is not an object")
-        name = row.get("task_name")
+        name = row_task(row)
         if not name:
-            raise AssertionError(f"{path} row {index} missing task_name")
+            raise AssertionError(
+                f"{path} row {index} missing task_name (keys: {sorted(row)})"
+            )
         if name in tasks:
             raise AssertionError(f"{path} has duplicate task_name {name}")
         tasks[name] = row

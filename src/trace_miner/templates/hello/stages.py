@@ -138,6 +138,7 @@ def aggregate_pii_findings(steps, ctx):
     return {
         "session_id": ctx.parent["session_id"],
         "trajectory_path": ctx.parent.get("_path", ""),
+        "task_name": (ctx.parent.get("eval") or {}).get("task_name", ""),
         "has_pii": bool(findings),
         "findings": findings,
     }
@@ -191,6 +192,7 @@ def aggregate_frustration_findings(steps, ctx):
     return {
         "session_id": ctx.parent["session_id"],
         "trajectory_path": ctx.parent.get("_path", ""),
+        "task_name": (ctx.parent.get("eval") or {}).get("task_name", ""),
         "has_frustration": bool(findings),
         "findings": findings,
     }
