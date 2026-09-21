@@ -45,35 +45,12 @@ jobs:
           fi
       - name: Install the current checkout
         run: uv tool install .
-      - name: Init and run summarize.yaml
+      - name: Init and run hello-world pipelines
         run: |
           trace-miner init "$PROJECT_DIR"
           cd "$PROJECT_DIR"
           trace-miner summarize.yaml --progress
-      - name: Check summaries
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          path = Path(os.environ["PROJECT_DIR"]) / "output" / "summaries.jsonl"
-          assert path.is_file(), f"missing {path}"
-          rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-          assert len(rows) == 3, f"expected 3 summaries, got {len(rows)}"
-          required = {
-              "session_id",
-              "task_name",
-              "failed",
-              "failure_cause",
-              "trajectory_summary",
-              "step_count",
-          }
-          for index, row in enumerate(rows):
-              missing = required - row.keys()
-              assert not missing, f"row {index} missing {sorted(missing)}"
-              assert isinstance(row["failed"], bool)
-              assert str(row["trajectory_summary"]).strip()
-              assert int(row["step_count"]) > 0
-          print(f"ok: {len(rows)} summaries")
-          PY
+          trace-miner pii.yaml --progress
+          trace-miner frustration.yaml --progress
+      - name: Check planted outcomes
+        run: python3 tests/hello_world_checks.py "$PROJECT_DIR"
