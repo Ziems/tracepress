@@ -29,14 +29,16 @@ jobs:
     timeout-minutes: 20
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      TRACE_MINER_HOME: ${{ runner.temp }}/trace-miner-home
-      PROJECT_DIR: ${{ runner.temp }}/my-trace-pipelines
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.12"
           enable-cache: true
+      - name: Set hello-world paths
+        run: |
+          echo "TRACE_MINER_HOME=${{ runner.temp }}/trace-miner-home" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=${{ runner.temp }}/my-trace-pipelines" >> "$GITHUB_ENV"
       - name: Require OpenRouter secret
         run: |
           if [ -z "$OPENROUTER_API_KEY" ]; then
