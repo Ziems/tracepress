@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from trace_miner.config import load_config
@@ -12,6 +13,7 @@ from trace_miner.model import format_run_profile
 from trace_miner.replay import replay_jsonl
 from trace_miner.runtime import run_config, run_stream
 from trace_miner.serve import serve
+from trace_miner.telemetry import capture_command_finished, command_telemetry_from_argv, reset_command_run_ids
 
 
 _ROOT_HELP = """\
@@ -35,7 +37,41 @@ Run a batch pipeline:
 
 
 def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
+    argv = list(sys.argv[1:] if argv is None else argv)
+    started = time.monotonic()
+    command, command_path, flags, bare = command_telemetry_from_argv(argv, _option_strings)
+    reset_command_run_ids()
+    exit_code = 0
+    caught: BaseException | None = None
+    try:
+        exit_code = _dispatch(argv)
+        return exit_code
+    except KeyboardInterrupt as exc:
+        exit_code = 130
+        caught = exc
+        raise
+    except SystemExit as exc:
+        exit_code = _exit_code(exc)
+        if exit_code != 0:
+            caught = exc
+        raise
+    except Exception as exc:
+        exit_code = 1
+        caught = exc
+        raise
+    finally:
+        capture_command_finished(
+            command=command,
+            command_path=command_path,
+            command_flags=flags,
+            bare=bare,
+            duration_seconds=time.monotonic() - started,
+            exit_code=exit_code,
+            exception=caught,
+        )
+
+
+def _dispatch(argv: list[str]) -> int:
     if not argv:
         print(_ROOT_HELP, end="")
         return 2
@@ -59,7 +95,38 @@ def main(argv: list[str] | None = None) -> int:
     return _batch(argv)
 
 
-def _init(argv: list[str]) -> int:
+def _exit_code(exc: SystemExit) -> int:
+    code = exc.code
+    if code is None or code == 0:
+        return 0
+    if isinstance(code, int):
+        return code
+    return 1
+
+
+def _option_strings(command: str) -> set[str]:
+    parser = _parser_for(command)
+    names: set[str] = set()
+    for action in parser._actions:
+        names.update(action.option_strings)
+    return names
+
+
+def _parser_for(command: str) -> argparse.ArgumentParser:
+    if command == "init":
+        return _init_parser()
+    if command == "stream":
+        return _stream_parser()
+    if command == "serve":
+        return _serve_parser()
+    if command == "replay":
+        return _replay_parser()
+    if command == "stats":
+        return _stats_parser()
+    return _batch_parser()
+
+
+def _init_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trace-miner init",
         description="Create a hello-world project with example pipelines and traces.",
@@ -76,6 +143,11 @@ def _init(argv: list[str]) -> int:
         action="store_true",
         help="Overwrite existing project files.",
     )
+    return parser
+
+
+def _init(argv: list[str]) -> int:
+    parser = _init_parser()
     args = parser.parse_args(argv)
 
     try:
@@ -138,7 +210,7 @@ def _prompt_project_name() -> Path:
         return Path(name)
 
 
-def _batch(argv: list[str], *, prog: str = "trace-miner") -> int:
+def _batch_parser(prog: str = "trace-miner") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
         description="Run a batch pipeline from a YAML config. Same as `trace-miner pipeline.yaml`.",
@@ -148,6 +220,11 @@ def _batch(argv: list[str], *, prog: str = "trace-miner") -> int:
     progress.add_argument("--progress", action="store_true", dest="progress", help="Always show stage progress bars.")
     progress.add_argument("--no-progress", action="store_false", dest="progress", help="Disable progress bars.")
     parser.set_defaults(progress=None)
+    return parser
+
+
+def _batch(argv: list[str], *, prog: str = "trace-miner") -> int:
+    parser = _batch_parser(prog)
     args = parser.parse_args(argv)
 
     try:
@@ -171,7 +248,7 @@ def _display_path(path: Path) -> str:
         return str(resolved)
 
 
-def _replay(argv: list[str]) -> int:
+def _replay_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trace-miner replay",
         description="Append JSONL records into a live input file.",
@@ -182,6 +259,11 @@ def _replay(argv: list[str]) -> int:
     parser.add_argument("--limit", type=int, default=0, help="Number of records to append. 0, the default, appends all records.")
     parser.add_argument("--reset", action="store_true", help="Truncate the target before appending.")
     parser.add_argument("--reset-only", action="store_true", help="Truncate the target and exit without appending.")
+    return parser
+
+
+def _replay(argv: list[str]) -> int:
+    parser = _replay_parser()
     args = parser.parse_args(argv)
 
     if args.interval < 0:
@@ -217,7 +299,7 @@ def _replay(argv: list[str]) -> int:
     return 0
 
 
-def _stream(argv: list[str]) -> int:
+def _stream_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trace-miner stream",
         description="Follow a JSONL input as records are appended.",
@@ -238,6 +320,11 @@ def _stream(argv: list[str]) -> int:
     progress.add_argument("--progress", action="store_true", dest="progress", help="Show streaming counters.")
     progress.add_argument("--no-progress", action="store_false", dest="progress", help="Disable streaming counters.")
     parser.set_defaults(progress=None)
+    return parser
+
+
+def _stream(argv: list[str]) -> int:
+    parser = _stream_parser()
     args = parser.parse_args(argv)
 
     try:
@@ -260,7 +347,7 @@ def _stream(argv: list[str]) -> int:
     return 0
 
 
-def _serve(argv: list[str]) -> int:
+def _serve_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trace-miner serve",
         description="Run a pipeline stream and accept records over HTTP.",
@@ -283,6 +370,11 @@ def _serve(argv: list[str]) -> int:
     progress.add_argument("--progress", action="store_true", dest="progress", help="Show streaming counters.")
     progress.add_argument("--no-progress", action="store_false", dest="progress", help="Disable streaming counters.")
     parser.set_defaults(progress=None)
+    return parser
+
+
+def _serve(argv: list[str]) -> int:
+    parser = _serve_parser()
     args = parser.parse_args(argv)
     if not 0 <= args.port <= 65535:
         parser.error("--port must be from 0 to 65535.")
@@ -309,11 +401,15 @@ def _serve(argv: list[str]) -> int:
     return 0
 
 
-def _stats(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(
+def _stats_parser() -> argparse.ArgumentParser:
+    return argparse.ArgumentParser(
         prog="trace-miner stats",
         description="Show local usage totals from ~/.trace-miner.",
     )
+
+
+def _stats(argv: list[str]) -> int:
+    parser = _stats_parser()
     parser.parse_args(argv)
     ensure_home()
     print(format_usage())

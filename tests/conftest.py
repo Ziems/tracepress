@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+os.environ["TRACE_MINER_TELEMETRY"] = "off"
 
 import pytest
 

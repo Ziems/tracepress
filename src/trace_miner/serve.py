@@ -18,6 +18,7 @@ from trace_miner.config import load_config
 from trace_miner.errors import PipelineExecutionError, TraceMinerError
 from trace_miner.model import Config, RunResult
 from trace_miner.runtime import published_outputs, root_inputs, run_stream_async
+from trace_miner.telemetry import run_command_name
 
 
 _MAX_BODY = 8 * 1024 * 1024
@@ -242,20 +243,24 @@ async def _serve_on_loop(
         await _wait_until_started(server, server_task)
         bound_host, bound_port = _bound_address(server)
         running.url = _display_url(bound_host, bound_port)
-        return await run_stream_async(
-            config,
-            checkpoint_path=checkpoint_path,
-            from_start=from_start,
-            from_end=from_end,
-            reset_checkpoint=reset_checkpoint,
-            poll_interval=poll_interval,
-            progress=progress,
-            progress_stream=progress_stream,
-            wake_event=wake,
-            stop_event=stop,
-            on_write=hub.publish,
-            on_ready=running._ready.set,
-        )
+        token = run_command_name.set("serve")
+        try:
+            return await run_stream_async(
+                config,
+                checkpoint_path=checkpoint_path,
+                from_start=from_start,
+                from_end=from_end,
+                reset_checkpoint=reset_checkpoint,
+                poll_interval=poll_interval,
+                progress=progress,
+                progress_stream=progress_stream,
+                wake_event=wake,
+                stop_event=stop,
+                on_write=hub.publish,
+                on_ready=running._ready.set,
+            )
+        finally:
+            run_command_name.reset(token)
     finally:
         hub.close()
         server.should_exit = True

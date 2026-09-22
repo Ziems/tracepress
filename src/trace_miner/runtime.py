@@ -36,6 +36,7 @@ from trace_miner.model import (
     StageRef,
     Step,
 )
+from trace_miner.telemetry import capture_run_finished_async, record_command_run_id, run_command_name
 
 
 _PROGRESS_NCOLS = 120
@@ -273,6 +274,9 @@ class _Runtime:
 
     async def run(self) -> RunResult:
         started = time.perf_counter()
+        run_id = uuid.uuid4().hex
+        record_command_run_id(run_id)
+        caught: BaseException | None = None
         try:
             for pipeline in self.config.pipelines:
                 await self._run_pipeline(pipeline)
@@ -281,8 +285,20 @@ class _Runtime:
                 details = ", ".join(f"{group.group_id} count={group.outstanding}" for group in leaks)
                 raise PipelineExecutionError(f"Open groups remain at shutdown: {details}")
             return RunResult(self.stats, self.manifest)
+        except BaseException as exc:
+            caught = exc
+            raise
         finally:
             self.stats.elapsed_s = time.perf_counter() - started
+            capture_run_finished_async(
+                run_id=run_id,
+                command="run",
+                pipeline_count=len(self.config.pipelines),
+                lm_provider=self.config.lm_provider,
+                lm_model=self.config.lm_default_model,
+                stats=self.stats,
+                exception=caught,
+            )
 
     async def _run_pipeline(self, pipeline: PipelineSpec) -> None:
         envelopes = list(self._read_inputs(pipeline.inputs))
@@ -1245,19 +1261,21 @@ class _StreamRun:
         self._publish_offsets: dict[Path, int] = {}
 
     async def run(self) -> RunResult:
-        _validate_streamable(self.config)
-        self._build_graph()
-        self._load_offsets()
-        self.checkpoint.write(self.config, self.journal.path, self.offsets)
-        self.journal.append({"type": "run_started", "run_id": self.run_id, "config": str(self.config.config_path)})
-        self._init_publish_offsets()
-        stop_event = self.stop_event or asyncio.Event()
-        _bind_stop_signals(stop_event)
-        if self.on_ready is not None:
-            self.on_ready()
-        processed = 0
         started = time.perf_counter()
+        record_command_run_id(self.run_id)
+        caught: BaseException | None = None
         try:
+            _validate_streamable(self.config)
+            self._build_graph()
+            self._load_offsets()
+            self.checkpoint.write(self.config, self.journal.path, self.offsets)
+            self.journal.append({"type": "run_started", "run_id": self.run_id, "config": str(self.config.config_path)})
+            self._init_publish_offsets()
+            stop_event = self.stop_event or asyncio.Event()
+            _bind_stop_signals(stop_event)
+            if self.on_ready is not None:
+                self.on_ready()
+            processed = 0
             while not stop_event.is_set():
                 made_progress = False
                 for path in self.root_inputs:
@@ -1279,9 +1297,21 @@ class _StreamRun:
             await self._flush()
             self.journal.append({"type": "run_stopped", "reason": "signal"})
             return RunResult(self.runtime.stats, self.runtime.manifest)
+        except BaseException as exc:
+            caught = exc
+            raise
         finally:
             self.runtime.stats.elapsed_s = time.perf_counter() - started
             self.progress.close()
+            capture_run_finished_async(
+                run_id=self.run_id,
+                command=run_command_name.get(),
+                pipeline_count=len(self.config.pipelines),
+                lm_provider=self.config.lm_provider,
+                lm_model=self.config.lm_default_model,
+                stats=self.runtime.stats,
+                exception=caught,
+            )
 
     def _build_graph(self) -> None:
         produced: set[Path] = set()
