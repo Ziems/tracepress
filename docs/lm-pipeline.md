@@ -33,10 +33,8 @@ without adding a second runtime.
 
 In scope for the LM MVP:
 
-- DSPy-backed LM stages, detected through an inspectable `signature` with `input_fields` and
-  `output_fields`.
-- Duck typing for the signature surface where practical, so tests and small custom modules can
-  use the same contract without invoking DSPy.
+- DSPy LM stages only: `dspy.Predict`, `dspy.ChainOfThought`, or another `dspy.Module`, with an
+  inspectable `signature` exposing `input_fields` and `output_fields`.
 - LM stages in `map`, `filter`, `alert`, `expand`, and `reduce`.
 - A minimal `lm` config surface for provider and model selection: built-in OpenRouter/DeepSeek
   defaults, top-level overrides, and per-step model override.
@@ -75,9 +73,9 @@ label = dspy.Predict(Label)
 - map: label
 ```
 
-DSPy is the supported authoring dependency. Detect LM modules by duck typing on the presence of
-an introspectable `signature` attribute exposing `input_fields` and `output_fields`, so a small
-custom module class can still work in tests or local experiments without modification.
+DSPy is the supported authoring dependency. An LM stage is a `dspy.Module`, such as
+`dspy.Predict(Label)`. A bare `dspy.Signature`, and any other object that merely exposes
+`input_fields` and `output_fields`, is a load error.
 
 DSPy modules are executed by DSPy (`dspy.Predict` via stock `dspy.LM`). The provider and model
 still come from config: `lm.provider`, `lm.default`, and per-step `lm.model`.
@@ -89,10 +87,12 @@ resolution outcome ahead of the arity check.
 
 At load time, after resolving a stage name to an object:
 
-1. If the object has an introspectable signature, it is an **LM stage**. Skip signature binding
-   from section 3 entirely, since LM stages are not called positionally. Apply the field mapping
-   in A4.
-2. Otherwise it is a Python stage and section 3 applies unchanged.
+1. If the object is a `dspy.Module` with an introspectable signature, it is an **LM stage**. Skip
+   signature binding from section 3 entirely, since LM stages are not called positionally. Apply
+   the field mapping in A4.
+2. If it is a `dspy.Module` without that signature, a bare `dspy.Signature`, or any other
+   signature-shaped object, it is a load error.
+3. Otherwise it is a Python stage and section 3 applies unchanged.
 
 LM stages do not receive `ctx`. This is deliberate rather than a limitation. A module that takes
 only fields and returns only fields is a pure function, which is what makes it optimizable in
@@ -154,10 +154,9 @@ Load-time validation:
 
 Report these the same way as an unknown stage name, before any record is read.
 
-**Modules without inspectable signatures** are not LM stages for this amendment. If they are
-callable, they resolve as ordinary Python stages and the base spec applies. If they are not
-callable, they are a load error. Do not add a second LM detection path until there is a concrete
-module type that needs it.
+**A DSPy module without an inspectable signature** is a load error. Non-DSPy callables are
+ordinary Python stages. A non-callable that is not a DSPy module is a load error. Do not add a
+second LM authoring surface.
 
 ## A6. Reduce field resolution
 
@@ -222,8 +221,22 @@ A per-step `lm.model` overrides the top-level `lm.default` or built-in default f
 
 If any LM stage is used, a model is resolved from the per-step `lm.model`, top-level
 `lm.default`, or built-in default, in that order. A per-step `lm` block on a Python stage is a
-load error, because model selection only has meaning for LM stages. Providers other than
-OpenRouter are post-MVP and fail at load time.
+load error, because model selection only has meaning for LM stages.
+
+`lm.provider` is one of `openrouter`, `openai`, or `anthropic`. Anything else is a load error.
+Trace Miner calls `dspy.LM("{provider}/{model}")`. The API keys are `OPENROUTER_API_KEY`,
+`OPENAI_API_KEY`, and `ANTHROPIC_API_KEY`. OpenRouter also asks for cost in the usage payload.
+The default provider is `openrouter`.
+
+`lm.default` and per-step `lm.model` must be one of that provider's models:
+
+| Provider | Models |
+| --- | --- |
+| `openrouter` | `deepseek/deepseek-v4.1-flash`, `openai/gpt-4o`, `anthropic/claude-sonnet-4` |
+| `openai` | `gpt-4o-mini`, `gpt-4o`, `gpt-6-astra` |
+| `anthropic` | `claude-haiku-4-5`, `claude-sonnet-5`, `claude-opus-5-5` |
+
+Any other model id is a load error. The default model is `deepseek/deepseek-v4.1-flash`.
 
 `lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 64 and must be a
 positive integer.
@@ -357,10 +370,16 @@ Additive to base spec section 17. Numbering continues from 27.
 32. **Filter with two bool outputs** is a load error.
 33. **Expand without a list output** is a load error.
 34. **Reduce without a list input** is a load error.
-35. **Uninspectable non-callable module** is a load error rather than an LM stage.
+35. **Non-DSPy module.** An object that is not a `dspy.Module` is not an LM stage. A
+    signature-shaped stand-in, a bare `dspy.Signature`, and a `dspy.Module` without
+    `input_fields` and `output_fields` are load errors. A non-callable without a signature is
+    still a load error.
 36. **Built-in LM defaults.** A config that uses an LM stage without an `lm` block resolves to
     `provider: openrouter` and `default: deepseek/deepseek-v4.1-flash`.
-37. **Unsupported provider.** A provider other than `openrouter` is a load error.
+37. **Supported providers and models.** `openrouter`, `openai`, and `anthropic` are accepted.
+    `lm.provider: openai` with model `gpt-4o-mini` invokes `dspy.LM` as `openai/gpt-4o-mini`
+    and requires `OPENAI_API_KEY`. Any other provider is a load error naming that list.
+    A model id outside that provider's list is a load error naming the supported models.
 38. **Python stage with LM options.** A per-step `lm` block on a Python stage is a load error.
 
 **Semantics**
@@ -373,8 +392,8 @@ Additive to base spec section 17. Numbering continues from 27.
 42. **Mixed pipeline.** Python and LM stages interleave in one pipeline and both work.
 43. **Per-step model override.** The adapter receives the per-step model instead of the top-level
     default for that stage.
-44. **OpenRouter adapter call.** A non-callable declarative LM stage invokes OpenRouter with the
-    default model and JSON-object response format.
+44. **Default OpenRouter call.** With the built-in provider, a DSPy LM stage invokes `dspy.LM`
+    with the `openrouter/<model>` id, `OPENROUTER_API_KEY`, and usage included.
 45. **`by` synthetic parent.** An LM reduce in a `by` group can receive the named grouping key as
     a parent-derived input field.
 

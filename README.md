@@ -54,8 +54,8 @@ from: ./stages                  # module where stage names are resolved
 id_field: session_id            # optional; names the record in errors and alerts
 
 lm:                             # optional LM defaults
-  provider: openrouter
-  default: deepseek/deepseek-v4.1-flash
+  provider: openrouter          # openrouter, openai, or anthropic
+  default: deepseek/deepseek-v4.1-flash  # must be a model for that provider
   max_concurrent: 64
   cache: true                   # LM cache under ~/.trace-miner/cache
 

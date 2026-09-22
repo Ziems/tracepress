@@ -13,9 +13,6 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, TextIO, get_origin
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-
 from pydantic import BaseModel
 from rich.console import Console
 from rich.markup import escape
@@ -28,6 +25,7 @@ from trace_miner.model import (
     Config,
     Failure,
     GroupSpec,
+    LM_PROVIDERS,
     LmUsage,
     PipelineSpec,
     RunManifest,
@@ -930,20 +928,21 @@ class _Runtime:
         models = {
             stage.lm_model
             for stage in _iter_stages(self.config)
-            if (
-                stage.kind == "lm"
-                and stage.lm_provider == "openrouter"
-                and stage.lm_model
-                and _is_dspy_target(stage.target)
-            )
+            if stage.kind == "lm" and stage.lm_model
         }
         if not models:
             return
-        api_key = os.environ.get("OPENROUTER_API_KEY")
+        provider = LM_PROVIDERS[self.config.lm_provider]
+        api_key = os.environ.get(provider.api_key_env)
         if not api_key:
-            raise PipelineExecutionError("OPENROUTER_API_KEY is required for OpenRouter LM stages.")
+            raise PipelineExecutionError(
+                f"{provider.api_key_env} is required for `{self.config.lm_provider}` LM stages."
+            )
         configure_lm_cache()
-        self._dspy_lms = {model: _openrouter_lm(model, api_key, self.config.lm_cache) for model in models}
+        self._dspy_lms = {
+            model: _make_lm(self.config.lm_provider, model, api_key, self.config.lm_cache, provider.extra_body)
+            for model in models
+        }
 
     def _lm_slot(self) -> asyncio.Semaphore:
         if self._lm_semaphore is None:
@@ -951,33 +950,13 @@ class _Runtime:
         return self._lm_semaphore
 
     async def _invoke_lm(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
-        target = stage.target
-        if stage.lm_provider == "openrouter" and _is_dspy_target(target):
-            return await self._invoke_dspy(stage, kwargs)
-        if hasattr(target, "with_model"):
-            target = target.with_model(stage.lm_model)
-        if callable(target):
-            prediction = target(**kwargs)
-            if inspect.isawaitable(prediction):
-                prediction = await prediction
-            self.stats.record_lm()
-            return prediction
-        if stage.lm_provider == "openrouter":
-            return await self._call_openrouter_async(stage, kwargs)
-        raise PipelineExecutionError(f"Unsupported LM provider `{stage.lm_provider}` for stage `{stage.name}`.")
+        return await self._invoke_dspy(stage, kwargs)
 
     async def _invoke_dspy(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
         assert stage.lm_model is not None
         lm = self._dspy_lms[stage.lm_model]
         async with self._lm_slot():
             prediction, usage = await asyncio.to_thread(_invoke_dspy_sync, stage.target, kwargs, lm)
-        self.stats.record_lm(usage)
-        return prediction
-
-    async def _call_openrouter_async(self, stage: StageRef, kwargs: dict[str, Any]) -> dict[str, Any]:
-        async with self._lm_slot():
-            result = await asyncio.to_thread(_call_openrouter, stage, kwargs)
-        prediction, usage = _unpack_openrouter_result(result)
         self.stats.record_lm(usage)
         return prediction
 
@@ -1777,20 +1756,19 @@ def _iter_stages(config: Config) -> Iterable[StageRef]:
         yield from walk(pipeline.steps)
 
 
-def _is_dspy_target(target: Any) -> bool:
-    module = getattr(type(target), "__module__", "")
-    return module == "dspy" or module.startswith("dspy.")
-
-
-def _openrouter_lm(model: str, api_key: str, cache: bool = True) -> Any:
+def _make_lm(
+    provider: str,
+    model: str,
+    api_key: str,
+    cache: bool,
+    extra_body: dict[str, Any] | None,
+) -> Any:
     import dspy
 
-    lm = dspy.LM(
-        f"openrouter/{model}",
-        api_key=api_key,
-        cache=cache,
-        extra_body={"usage": {"include": True}},
-    )
+    kwargs: dict[str, Any] = {"api_key": api_key, "cache": cache}
+    if extra_body is not None:
+        kwargs["extra_body"] = extra_body
+    lm = dspy.LM(f"{provider}/{model}", **kwargs)
     _install_usage_probe(lm)
     return lm
 
@@ -1912,96 +1890,6 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def _call_openrouter(stage: StageRef, kwargs: dict[str, Any]) -> tuple[dict[str, Any], LmUsage]:
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        raise PipelineExecutionError("OPENROUTER_API_KEY is required for OpenRouter LM stages.")
-    assert stage.lm_signature is not None
-    output_fields = [field.name for field in stage.lm_signature.output_fields]
-    instructions = _lm_instructions(stage.target)
-    body = {
-        "model": stage.lm_model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are executing a Trace Miner declarative stage. "
-                    "Return only a JSON object with the requested output fields."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "stage": stage.name,
-                        "instructions": instructions,
-                        "inputs": kwargs,
-                        "output_fields": output_fields,
-                    },
-                    sort_keys=True,
-                ),
-            },
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0,
-        "usage": {"include": True},
-    }
-    request = Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "X-OpenRouter-Title": "trace-miner",
-        },
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=60) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise PipelineExecutionError(f"OpenRouter request failed for `{stage.name}`: HTTP {exc.code} {detail}") from exc
-    except URLError as exc:
-        raise PipelineExecutionError(f"OpenRouter request failed for `{stage.name}`: {exc.reason}") from exc
-    except TimeoutError as exc:
-        raise PipelineExecutionError(f"OpenRouter request timed out for `{stage.name}`.") from exc
-
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` did not contain message content.") from exc
-    try:
-        parsed = _parse_lm_json(content)
-    except json.JSONDecodeError as exc:
-        raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` was not valid JSON: {content}") from exc
-    if not isinstance(parsed, dict):
-        raise PipelineExecutionError(f"OpenRouter response for `{stage.name}` must be a JSON object.")
-    return parsed, _lm_usage_from_payload(payload)
-
-
-def _unpack_openrouter_result(result: Any) -> tuple[Any, LmUsage]:
-    if isinstance(result, tuple) and len(result) == 2:
-        prediction, usage = result
-        if isinstance(usage, LmUsage):
-            return prediction, usage
-        if isinstance(usage, dict):
-            return prediction, _lm_usage_from_payload({"usage": usage})
-        return prediction, LmUsage()
-    return result, LmUsage()
-
-
-def _lm_usage_from_payload(payload: Any) -> LmUsage:
-    raw = payload.get("usage") if isinstance(payload, dict) else None
-    if not isinstance(raw, dict):
-        return LmUsage()
-    return LmUsage(
-        prompt_tokens=_as_int(raw.get("prompt_tokens")),
-        completion_tokens=_as_int(raw.get("completion_tokens")),
-        cost_usd=_as_float(raw.get("cost")),
-    )
-
-
 def _as_int(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return 0
@@ -2013,24 +1901,3 @@ def _as_float(value: Any) -> float:
         return 0.0
     return float(value)
 
-
-def _parse_lm_json(content: str) -> Any:
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        repaired = content.replace("\\'", "'")
-        if repaired == content:
-            raise
-        return json.loads(repaired)
-
-
-def _lm_instructions(target: Any) -> str:
-    instructions = getattr(target, "instructions", None)
-    if instructions:
-        return str(instructions)
-    signature = getattr(target, "signature", None)
-    doc = getattr(signature, "__doc__", None) or getattr(type(signature), "__doc__", None)
-    if doc:
-        return str(doc).strip()
-    doc = getattr(target, "__doc__", None) or getattr(type(target), "__doc__", None)
-    return str(doc).strip() if doc else ""

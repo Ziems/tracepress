@@ -19,6 +19,34 @@ DEFAULT_LM_CACHE = True
 
 
 @dataclass(frozen=True)
+class LmProvider:
+    api_key_env: str
+    models: tuple[str, ...]
+    extra_body: dict[str, Any] | None = None
+
+
+LM_PROVIDERS: dict[str, LmProvider] = {
+    "anthropic": LmProvider(
+        "ANTHROPIC_API_KEY",
+        ("claude-haiku-4-5", "claude-sonnet-5", "claude-opus-5-5"),
+    ),
+    "openai": LmProvider(
+        "OPENAI_API_KEY",
+        ("gpt-4o-mini", "gpt-4o", "gpt-6-astra"),
+    ),
+    "openrouter": LmProvider(
+        "OPENROUTER_API_KEY",
+        (
+            "deepseek/deepseek-v4.1-flash",
+            "openai/gpt-4o",
+            "anthropic/claude-sonnet-4",
+        ),
+        {"usage": {"include": True}},
+    ),
+}
+
+
+@dataclass(frozen=True)
 class LmField:
     name: str
     annotation: Any = None

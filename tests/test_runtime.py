@@ -42,6 +42,7 @@ def install_fake_lm(
     prompt_tokens: int = 12,
     completion_tokens: int = 4,
     cost: float | list[float] = 0.0021,
+    note_usage: bool = True,
 ) -> type[dspy.BaseLM]:
     from trace_miner.model import LmUsage
     from trace_miner.runtime import _note_lm_usage
@@ -52,6 +53,9 @@ def install_fake_lm(
     class FakeLM(dspy.BaseLM):
         instances: list[FakeLM] = []
         context_lms: list[object] = []
+        active = 0
+        max_active = 0
+        _gate = threading.Lock()
 
         def __init__(self, model: str, api_key=None, cache=False, extra_body=None, **kwargs):
             super().__init__(model=model, cache=cache)
@@ -62,23 +66,31 @@ def install_fake_lm(
 
         def __call__(self, *args, **kwargs):
             type(self).context_lms.append(dspy.settings.lm)
-            if sleep:
-                time.sleep(sleep)
-            content = (completions or {}).get(self.model)
-            if content is None:
-                content = (completions or {}).get("*", "")
-            with cost_lock:
-                this_cost = costs.pop(0) if costs else cost
-            _note_lm_usage(
-                LmUsage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=this_cost)
-            )
-            self.history.append(
-                {
-                    "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
-                    "cost": this_cost,
-                }
-            )
-            return [content]
+            with type(self)._gate:
+                type(self).active += 1
+                type(self).max_active = max(type(self).max_active, type(self).active)
+            try:
+                if sleep:
+                    time.sleep(sleep)
+                content = (completions or {}).get(self.model)
+                if content is None:
+                    content = (completions or {}).get("*", "")
+                if note_usage:
+                    with cost_lock:
+                        this_cost = costs.pop(0) if costs else cost
+                    _note_lm_usage(
+                        LmUsage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=this_cost)
+                    )
+                    self.history.append(
+                        {
+                            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+                            "cost": this_cost,
+                        }
+                    )
+                return [content]
+            finally:
+                with type(self)._gate:
+                    type(self).active -= 1
 
     monkeypatch.setattr(dspy, "LM", FakeLM)
     return FakeLM
@@ -214,29 +226,32 @@ pipelines:
         run_config(broken)
 
 
-def test_lm_alert_sends_module_outputs_when_the_bool_is_true(tmp_path: Path) -> None:
+def test_lm_alert_sends_module_outputs_when_the_bool_is_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = write_project(
         tmp_path,
         """
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+import dspy
 
 
-class FrustrationSignature:
-    input_fields = {"message": Field(str)}
-    output_fields = {"has_frustration": Field(bool), "evidence": Field(str)}
+class Frustration(dspy.Signature):
+    message: str = dspy.InputField()
+    has_frustration: bool = dspy.OutputField()
+    evidence: str = dspy.OutputField()
 
 
-class DetectFrustration:
-    signature = FrustrationSignature()
+class DetectFrustration(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.signature = Frustration
 
-    def __call__(self, **kwargs):
-        frustrated = "forever" in kwargs["message"]
-        return {
-            "has_frustration": frustrated,
-            "evidence": "taking forever" if frustrated else "",
-        }
+    def forward(self, message):
+        frustrated = "forever" in message
+        return dspy.Prediction(
+            has_frustration=frustrated,
+            evidence="taking forever" if frustrated else "",
+        )
 
 
 detect_frustration = DetectFrustration()
@@ -256,6 +271,8 @@ pipelines:
             {"session_id": "s1", "message": "this is taking forever"},
         ],
     )
+    install_fake_lm(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     run_config(config)
 
@@ -277,24 +294,15 @@ def test_lm_alert_requires_one_bool_output(tmp_path: Path) -> None:
     config = write_project(
         tmp_path,
         """
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+import dspy
 
 
-class QuoteSignature:
-    input_fields = {"message": Field(str)}
-    output_fields = {"evidence": Field(str)}
+class Quote(dspy.Signature):
+    message: str = dspy.InputField()
+    evidence: str = dspy.OutputField()
 
 
-class Quote:
-    signature = QuoteSignature()
-
-    def __call__(self, **kwargs):
-        return {"evidence": kwargs["message"]}
-
-
-quote = Quote()
+quote = dspy.Predict(Quote)
 """,
         """
 from: ./stages
@@ -1089,41 +1097,27 @@ pipelines:
         load_config(config)
 
 
-def test_lm_map_field_mapping_passthrough_and_model_override(tmp_path: Path) -> None:
+def test_lm_map_field_mapping_passthrough_and_model_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = write_project(
         tmp_path,
         """
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+import dspy
 
 
-class LabelSignature:
-    input_fields = {"text": Field(str)}
-    output_fields = {"label": Field(str), "confidence": Field(float)}
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+    confidence: float = dspy.OutputField()
 
 
-class LabelModule:
-    signature = LabelSignature()
-
-    def __init__(self):
-        self.models = []
-
-    def with_model(self, model):
-        self.models.append(model)
-        return self
-
-    def __call__(self, **kwargs):
-        assert "model" not in kwargs
-        return {"label": kwargs["text"].upper(), "confidence": 0.8}
-
-
-label = LabelModule()
+label = dspy.Predict(Label)
 """,
         """
 from: ./stages
 lm:
-  default: strong-model
+  default: deepseek/deepseek-v4.1-flash
 pipelines:
   - in: input.jsonl
     out: output.jsonl
@@ -1131,46 +1125,44 @@ pipelines:
       - map:
           stage: label
           lm:
-            model: cheap-model
+            model: openai/gpt-4o
 """,
         [{"id": "a", "text": "alpha", "untouched": True}],
     )
+    FakeLM = install_fake_lm(
+        monkeypatch,
+        {"*": chat_completion(label="ALPHA", confidence=0.8)},
+        cost=0,
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     loaded = load_config(config)
-    assert loaded.pipelines[0].steps[0].stage.lm_model == "cheap-model"
+    assert loaded.pipelines[0].steps[0].stage.lm_model == "openai/gpt-4o"
     result = run_config(loaded)
 
     assert read_jsonl(tmp_path / "output.jsonl") == [
         {"confidence": 0.8, "id": "a", "label": "ALPHA", "text": "alpha", "untouched": True}
     ]
-    assert loaded.module.label.models == ["cheap-model"]
+    assert FakeLM.instances[0].model == "openrouter/openai/gpt-4o"
     assert result.stats.lm_calls == 1
     assert result.stats.lm_cost_usd == 0
 
 
 def test_lm_config_validation_default_model_python_lm_options_and_filter_shape(tmp_path: Path) -> None:
     stages = """
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+import dspy
 
 
-class LabelSignature:
-    input_fields = {"text": Field(str)}
-    output_fields = {"label": Field(str)}
-
-
-class LabelModule:
-    signature = LabelSignature()
-    def __call__(self, **kwargs):
-        return {"label": kwargs["text"]}
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
 
 
 def py_stage(record):
     return record
 
 
-label = LabelModule()
+label = dspy.Predict(Label)
 """
     default_model = write_project(
         tmp_path / "default-model",
@@ -1198,7 +1190,7 @@ pipelines:
         """
 from: ./stages
 lm:
-  default: model
+  default: deepseek/deepseek-v4.1-flash
 pipelines:
   - in: input.jsonl
     out: output.jsonl
@@ -1219,7 +1211,7 @@ pipelines:
         """
 from: ./stages
 lm:
-  default: model
+  default: deepseek/deepseek-v4.1-flash
 pipelines:
   - in: input.jsonl
     out: output.jsonl
@@ -1237,7 +1229,7 @@ pipelines:
         """
 from: ./stages
 lm:
-  provider: local
+  provider: "open ai"
 pipelines:
   - in: input.jsonl
     out: output.jsonl
@@ -1246,8 +1238,30 @@ pipelines:
 """,
         [{"id": "a", "text": "hello"}],
     )
-    with pytest.raises(ConfigError, match="openrouter"):
+    with pytest.raises(ConfigError, match="one of: anthropic, openai, openrouter"):
         load_config(bad_provider)
+
+    unknown_model = write_project(
+        tmp_path / "unknown-model",
+        stages,
+        """
+from: ./stages
+lm:
+  provider: openai
+  default: gpt-4o-mini
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map:
+          stage: label
+          lm:
+            model: gpt-4o-mini-not-a-model
+""",
+        [{"id": "a", "text": "hello"}],
+    )
+    with pytest.raises(ConfigError, match="Unknown model `gpt-4o-mini-not-a-model` for `openai`"):
+        load_config(unknown_model)
 
 
 def test_lm_openrouter_default_provider_invocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1302,6 +1316,58 @@ pipelines:
     assert result.stats.lm_cost_usd == 0.0021
 
 
+def test_lm_provider_prefixes_the_model_and_reads_its_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stages = """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label = dspy.Predict(Label)
+"""
+    config = """
+from: ./stages
+lm:
+  provider: openai
+  default: gpt-4o-mini
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+"""
+    path = write_project(tmp_path, stages, config, [{"id": "a", "text": "ore"}])
+    FakeLM = install_fake_lm(monkeypatch, {"*": chat_completion(label="ORE")})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    loaded = load_config(path)
+    assert loaded.lm_provider == "openai"
+    result = run_config(loaded)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "label": "ORE", "text": "ore"}]
+    lm = FakeLM.instances[0]
+    assert lm.model == "openai/gpt-4o-mini"
+    assert lm.api_key == "sk-test"
+    assert lm.extra_body is None
+    assert result.stats.lm_calls == 1
+
+    missing = write_project(
+        tmp_path / "missing-key",
+        stages,
+        config,
+        [{"id": "a", "text": "ore"}],
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(PipelineExecutionError, match="OPENAI_API_KEY is required for `openai`"):
+        run_config(missing)
+
+
 def test_lm_cache_can_be_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = write_project(
         tmp_path,
@@ -1337,9 +1403,9 @@ pipelines:
     assert FakeLM.instances[0].cache is False
 
 
-def test_lm_cache_must_be_boolean(tmp_path: Path) -> None:
-    config = write_project(
-        tmp_path,
+def test_lm_stage_must_be_a_dspy_module(tmp_path: Path) -> None:
+    duck = write_project(
+        tmp_path / "duck",
         """
 class Field:
     def __init__(self, annotation):
@@ -1353,11 +1419,89 @@ class LabelSignature:
 
 class LabelModule:
     signature = LabelSignature()
-    def __call__(self, **kwargs):
-        return {"label": kwargs["text"]}
 
 
 label = LabelModule()
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    with pytest.raises(ConfigError, match="not a DSPy module"):
+        load_config(duck)
+
+    bare_signature = write_project(
+        tmp_path / "signature",
+        """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label = Label
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    with pytest.raises(ConfigError, match="DSPy signature"):
+        load_config(bare_signature)
+
+    unsigned = write_project(
+        tmp_path / "unsigned",
+        """
+import dspy
+
+
+class Program(dspy.Module):
+    def forward(self, text):
+        return dspy.Prediction(label=text)
+
+
+label = Program()
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    with pytest.raises(ConfigError, match="input_fields"):
+        load_config(unsigned)
+
+
+def test_lm_cache_must_be_boolean(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label = dspy.Predict(Label)
 """,
         """
 from: ./stages
@@ -1489,19 +1633,19 @@ pipelines:
       - map:
           stage: label
           lm:
-            model: cheap-model
+            model: openai/gpt-4o
       - map:
           stage: score
           lm:
-            model: strong-model
+            model: anthropic/claude-sonnet-4
 """,
         [{"id": "a", "text": "ore"}, {"id": "b", "text": "coal"}],
     )
     FakeLM = install_fake_lm(
         monkeypatch,
         {
-            "openrouter/cheap-model": chat_completion(label="ORE"),
-            "openrouter/strong-model": chat_completion(score=0.9),
+            "openrouter/openai/gpt-4o": chat_completion(label="ORE"),
+            "openrouter/anthropic/claude-sonnet-4": chat_completion(score=0.9),
         },
         sleep=0.02,
     )
@@ -1510,12 +1654,12 @@ pipelines:
     run_config(config)
 
     models = sorted(lm.model for lm in FakeLM.instances)
-    assert models == ["openrouter/cheap-model", "openrouter/strong-model"]
+    assert models == ["openrouter/anthropic/claude-sonnet-4", "openrouter/openai/gpt-4o"]
     assert len({id(lm) for lm in FakeLM.instances}) == 2
     assert all(isinstance(observed, FakeLM) for observed in FakeLM.context_lms)
     assert {observed.model for observed in FakeLM.context_lms} == {
-        "openrouter/cheap-model",
-        "openrouter/strong-model",
+        "openrouter/anthropic/claude-sonnet-4",
+        "openrouter/openai/gpt-4o",
     }
     from dspy.dsp.utils.settings import main_thread_config
 
@@ -1630,21 +1774,15 @@ def test_lm_openrouter_missing_usage_still_counts_the_call(tmp_path: Path, monke
     config = write_project(
         tmp_path,
         """
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+import dspy
 
 
-class LabelSignature:
-    input_fields = {"text": Field(str)}
-    output_fields = {"label": Field(str)}
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
 
 
-class LabelModule:
-    signature = LabelSignature()
-
-
-label = LabelModule()
+label = dspy.Predict(Label)
 """,
         """
 from: ./stages
@@ -1656,22 +1794,12 @@ pipelines:
 """,
         [{"id": "a", "text": "ore"}],
     )
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": json.dumps({"label": "ORE"})}}]}).encode("utf-8")
-
+    install_fake_lm(monkeypatch, {"*": chat_completion(label="ORE")}, note_usage=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setattr("trace_miner.runtime.urlopen", lambda request, timeout: Response())
 
     result = run_config(config)
 
+    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "label": "ORE", "text": "ore"}]
     assert result.stats.lm_calls == 1
     assert result.stats.lm_prompt_tokens == 0
     assert result.stats.lm_completion_tokens == 0
@@ -1694,36 +1822,19 @@ def test_format_run_profile_totals() -> None:
     )
 
 
-def test_parse_lm_json_repairs_python_style_escapes() -> None:
-    from trace_miner.runtime import _parse_lm_json
-
-    content = r'{"has_frustration": false, "frustration_kind": null, "evidence": "No module named \'Bio\'"}'
-    assert _parse_lm_json(content) == {
-        "has_frustration": False,
-        "frustration_kind": None,
-        "evidence": "No module named 'Bio'",
-    }
-
-
 def test_lm_map_runs_concurrently_with_configured_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = write_project(
         tmp_path,
         """
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+import dspy
 
 
-class LabelSignature:
-    input_fields = {"text": Field(str)}
-    output_fields = {"label": Field(str)}
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
 
 
-class LabelModule:
-    signature = LabelSignature()
-
-
-label = LabelModule()
+label = dspy.Predict(Label)
 """,
         """
 from: ./stages
@@ -1737,57 +1848,36 @@ pipelines:
 """,
         [{"id": str(i), "text": f"item-{i}"} for i in range(5)],
     )
-    lock = threading.Lock()
-    active = 0
-    max_active = 0
-
-    def fake_openrouter(stage, kwargs):
-        nonlocal active, max_active
-        with lock:
-            active += 1
-            max_active = max(max_active, active)
-        time.sleep(0.02)
-        with lock:
-            active -= 1
-        return {"label": kwargs["text"].upper()}
-
-    monkeypatch.setattr("trace_miner.runtime._call_openrouter", fake_openrouter)
+    FakeLM = install_fake_lm(monkeypatch, {"*": chat_completion(label="ITEM")}, sleep=0.02)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     run_config(config)
 
-    assert max_active == 2
+    assert FakeLM.max_active == 2
     assert read_jsonl(tmp_path / "output.jsonl") == [
-        {"id": str(i), "label": f"ITEM-{i}", "text": f"item-{i}"}
+        {"id": str(i), "label": "ITEM", "text": f"item-{i}"}
         for i in range(5)
     ]
 
 
-def test_lm_missing_input_field_has_clear_error(tmp_path: Path) -> None:
+def test_lm_missing_input_field_has_clear_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = write_project(
         tmp_path,
         """
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+import dspy
 
 
-class LabelSignature:
-    input_fields = {"text": Field(str)}
-    output_fields = {"label": Field(str)}
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
 
 
-class LabelModule:
-    signature = LabelSignature()
-    def __call__(self, **kwargs):
-        return {"label": kwargs["text"]}
-
-
-label = LabelModule()
+label = dspy.Predict(Label)
 """,
         """
 from: ./stages
 lm:
-  default: model
+  default: deepseek/deepseek-v4.1-flash
 pipelines:
   - in: input.jsonl
     out: output.jsonl
@@ -1796,62 +1886,74 @@ pipelines:
 """,
         [{"id": "a", "body": "hello"}],
     )
+    install_fake_lm(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     with pytest.raises(PipelineExecutionError, match="missing input field `text`"):
         run_config(config)
 
 
-def test_lm_filter_expand_and_reduce(tmp_path: Path) -> None:
+def test_lm_filter_expand_and_reduce(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = write_project(
         tmp_path,
         """
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+import dspy
 
 
-class SplitSignature:
-    input_fields = {"text": Field(str)}
-    output_fields = {"sessions": Field(list[dict])}
+class SplitSig(dspy.Signature):
+    text: str = dspy.InputField()
+    sessions: list[dict] = dspy.OutputField()
 
 
-class KeepSignature:
-    input_fields = {"score": Field(int)}
-    output_fields = {"keep": Field(bool)}
+class KeepSig(dspy.Signature):
+    score: int = dspy.InputField()
+    keep: bool = dspy.OutputField()
 
 
-class MergeSignature:
-    input_fields = {"trace": Field(str), "label": Field(list[str])}
-    output_fields = {"summary": Field(str)}
+class MergeSig(dspy.Signature):
+    trace: str = dspy.InputField()
+    label: list[str] = dspy.InputField()
+    summary: str = dspy.OutputField()
 
 
-class Module:
-    def __init__(self, signature, fn):
-        self.signature = signature
-        self.fn = fn
+class Split(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.signature = SplitSig
 
-    def with_model(self, model):
-        return self
+    def forward(self, text):
+        return dspy.Prediction(sessions=[
+            {"id": f"{text}-1", "label": "hot", "score": 9},
+            {"id": f"{text}-2", "label": "cold", "score": 2},
+        ])
 
-    def __call__(self, **kwargs):
-        return self.fn(kwargs)
+
+class Keep(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.signature = KeepSig
+
+    def forward(self, score):
+        return dspy.Prediction(keep=score > 5)
 
 
-split = Module(SplitSignature(), lambda kwargs: {
-    "sessions": [
-        {"id": f"{kwargs['text']}-1", "label": "hot", "score": 9},
-        {"id": f"{kwargs['text']}-2", "label": "cold", "score": 2},
-    ]
-})
-keep = Module(KeepSignature(), lambda kwargs: {"keep": kwargs["score"] > 5})
-merge = Module(MergeSignature(), lambda kwargs: {
-    "summary": f"{kwargs['trace']}:{','.join(kwargs['label'])}"
-})
+class Merge(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.signature = MergeSig
+
+    def forward(self, trace, label):
+        return dspy.Prediction(summary=f"{trace}:{','.join(label)}")
+
+
+split = Split()
+keep = Keep()
+merge = Merge()
 """,
         """
 from: ./stages
 lm:
-  default: model
+  default: deepseek/deepseek-v4.1-flash
 pipelines:
   - in: input.jsonl
     out: output.jsonl
@@ -1864,6 +1966,8 @@ pipelines:
 """,
         [{"id": "trace-a", "trace": "A", "text": "session"}],
     )
+    install_fake_lm(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     run_config(config)
 
@@ -1872,34 +1976,34 @@ pipelines:
     ]
 
 
-def test_lm_reduce_by_group_gets_synthetic_parent_key(tmp_path: Path) -> None:
+def test_lm_reduce_by_group_gets_synthetic_parent_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = write_project(
         tmp_path,
         """
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+import dspy
 
 
-class MergeSignature:
-    input_fields = {"kind": Field(str), "value": Field(list[int])}
-    output_fields = {"summary": Field(str)}
+class MergeSig(dspy.Signature):
+    kind: str = dspy.InputField()
+    value: list[int] = dspy.InputField()
+    summary: str = dspy.OutputField()
 
 
-class MergeModule:
-    signature = MergeSignature()
-    def with_model(self, model):
-        return self
-    def __call__(self, **kwargs):
-        return {"summary": f"{kwargs['kind']}={sum(kwargs['value'])}"}
+class Merge(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.signature = MergeSig
+
+    def forward(self, kind, value):
+        return dspy.Prediction(summary=f"{kind}={sum(value)}")
 
 
-merge = MergeModule()
+merge = Merge()
 """,
         """
 from: ./stages
 lm:
-  default: model
+  default: deepseek/deepseek-v4.1-flash
 pipelines:
   - in: input.jsonl
     out: output.jsonl
@@ -1913,34 +2017,37 @@ pipelines:
             {"id": 2, "kind": "ore", "value": 5},
         ],
     )
+    install_fake_lm(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     run_config(config)
 
     assert read_jsonl(tmp_path / "output.jsonl") == [{"kind": "ore", "summary": "ore=7"}]
 
 
-def test_lm_invalid_output_flows_through_child_error_policy(tmp_path: Path) -> None:
+def test_lm_invalid_output_flows_through_child_error_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = write_project(
         tmp_path,
         """
-class Field:
-    def __init__(self, annotation):
-        self.annotation = annotation
+import dspy
 
 
-class BadSignature:
-    input_fields = {"text": Field(str)}
-    output_fields = {"label": Field(str)}
+class BadSig(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
 
 
-class BadModule:
-    signature = BadSignature()
-    def with_model(self, model):
-        return self
-    def __call__(self, **kwargs):
-        if kwargs["text"] == "bad":
+class Bad(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.signature = BadSig
+
+    def forward(self, text):
+        if text == "bad":
             return {}
-        return {"label": kwargs["text"]}
+        return dspy.Prediction(label=text)
 
 
 def split(record, ctx):
@@ -1952,12 +2059,12 @@ def merge(children, ctx):
     return {"labels": [child["label"] for child in children], "failures": len(ctx.failures)}
 
 
-bad = BadModule()
+bad = Bad()
 """,
         """
 from: ./stages
 lm:
-  default: model
+  default: deepseek/deepseek-v4.1-flash
 pipelines:
   - in: input.jsonl
     out: output.jsonl
@@ -1971,6 +2078,8 @@ pipelines:
 """,
         [{"id": "parent", "items": ["good", "bad"]}],
     )
+    install_fake_lm(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     run_config(config)
 
