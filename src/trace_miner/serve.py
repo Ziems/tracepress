@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hmac
 import json
-import os
 import threading
 from dataclasses import dataclass
-from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 
@@ -132,7 +129,6 @@ def serve(
     *,
     host: str = "127.0.0.1",
     port: int = 8765,
-    token: str | None = None,
     checkpoint_path: str | Path | None = None,
     from_start: bool = False,
     from_end: bool = False,
@@ -145,7 +141,6 @@ def serve(
         config_or_path,
         host=host,
         port=port,
-        token=token,
         checkpoint_path=checkpoint_path,
         from_start=from_start,
         from_end=from_end,
@@ -170,7 +165,6 @@ def start_serve(
     *,
     host: str = "127.0.0.1",
     port: int = 8765,
-    token: str | None = None,
     checkpoint_path: str | Path | None = None,
     from_start: bool = False,
     from_end: bool = False,
@@ -179,7 +173,6 @@ def start_serve(
     progress: bool | None = None,
     progress_stream: Any = None,
 ) -> RunningServe:
-    _check_bind(host, token)
     config = load_config(config_or_path) if not isinstance(config_or_path, Config) else config_or_path
     roots = root_inputs(config)
     if len(roots) != 1:
@@ -194,7 +187,6 @@ def start_serve(
                     config,
                     host=host,
                     port=port,
-                    token=token,
                     checkpoint_path=checkpoint_path,
                     from_start=from_start,
                     from_end=from_end,
@@ -227,7 +219,6 @@ async def _serve_on_loop(
     *,
     host: str,
     port: int,
-    token: str | None,
     checkpoint_path: str | Path | None,
     from_start: bool,
     from_end: bool,
@@ -242,7 +233,7 @@ async def _serve_on_loop(
     running._loop = loop
     running._stop = stop
     hub = _Hub(published_outputs(config))
-    app = _build_app(hub, config, root_inputs(config)[0], token, wake)
+    app = _build_app(hub, config, root_inputs(config)[0], wake)
     server = uvicorn.Server(
         uvicorn.Config(app, host=host, port=port, log_level="error", access_log=False, lifespan="off")
     )
@@ -275,18 +266,9 @@ def _build_app(
     hub: _Hub,
     config: Config,
     root_input: Path,
-    token: str | None,
     wake: asyncio.Event,
 ) -> Starlette:
-    def require_auth(request: Request) -> Response | None:
-        if token and not _constant_match(request.headers.get("authorization", ""), f"Bearer {token}"):
-            return PlainTextResponse("Unauthorized.\n", status_code=401)
-        return None
-
     async def records(request: Request) -> Response:
-        rejected = require_auth(request)
-        if rejected is not None:
-            return rejected
         body = await request.body()
         if len(body) > _MAX_BODY:
             return PlainTextResponse("Record is too large.\n", status_code=400)
@@ -301,9 +283,6 @@ def _build_app(
         return Response(status_code=202)
 
     async def events(request: Request) -> Response:
-        rejected = require_auth(request)
-        if rejected is not None:
-            return rejected
         try:
             field, value, output = _event_filter(config, dict(request.query_params))
             subscriber = hub.subscribe(output, field, value, request.headers.get("last-event-id"))
@@ -350,23 +329,6 @@ def _bound_address(server: uvicorn.Server) -> tuple[str, int]:
         raise TraceMinerError("HTTP server did not bind a port.")
     host, port = sockets[0].getsockname()[:2]
     return str(host), int(port)
-
-
-def _check_bind(host: str, token: str | None) -> None:
-    if _is_loopback(host):
-        return
-    if token:
-        return
-    raise PipelineExecutionError("`--host` other than loopback requires TRACE_MINER_TOKEN.")
-
-
-def _is_loopback(host: str) -> bool:
-    if host in {"localhost", "127.0.0.1", "::1"}:
-        return True
-    try:
-        return ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 def _display_url(host: str, port: int) -> str:
@@ -446,11 +408,3 @@ def _decode_cursor(event_id: str) -> dict[str, int]:
         raise ValueError("bad cursor")
     return {str(key): int(value) for key, value in data.items()}
 
-
-def _constant_match(left: str, right: str) -> bool:
-    return hmac.compare_digest(left, right)
-
-
-def token_from_env() -> str | None:
-    token = os.environ.get("TRACE_MINER_TOKEN", "").strip()
-    return token or None

@@ -27,7 +27,7 @@ starts at byte 0. `--from-end` skips lines already in the file.
 `--limit 1` sends one record.
 
 `serve` runs a stream and accepts steps over HTTP. `alerts.yaml` is the
-bundled example. Bind beyond localhost with `--host` and `TRACE_MINER_TOKEN`.
+bundled example. Bind beyond localhost with `--host`.
 
 `stats` prints local usage totals from `~/.trace-miner/`.
 

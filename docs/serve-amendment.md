@@ -9,10 +9,10 @@ JSONL paths, checkpoints, and the journal stay on the pipeline host. The client 
 `stream` and `replay` stay the same-machine tools. Across machines:
 
 ```bash
-TRACE_MINER_TOKEN=... trace-miner serve pipeline.yaml --host 0.0.0.0 --port 8765
+trace-miner serve pipeline.yaml --host 0.0.0.0 --port 8765
 ```
 
-`serve` runs the streaming runtime and an HTTP server in one process.
+`serve` runs the streaming runtime and an HTTP server in one process. It binds `127.0.0.1` unless `--host` is set.
 
 - `POST /v1/records` appends one JSON object as a newline-terminated line to the single root input and returns `202` once that append is flushed. It does not wait for the pipeline.
 - `GET /v1/events` is a Server-Sent Events response for one named pipeline's alert log.
@@ -71,16 +71,12 @@ def flag_doom_loop(record):
 
 `name` is the stage name. `reason` is the string a Python `alert` stage returned. `rollout_id` here is `id_field`, copied from the record or from the group parent. The record that continues down the pipeline is unchanged, and it is what `out` receives. A DSPy `alert` stage, used directly rather than as a reduce, has exactly one bool output. False stays quiet. True writes the module's outputs onto the event.
 
-## N4. Auth
-
-`serve` binds `127.0.0.1` unless `--host` is set. A non-loopback bind requires `TRACE_MINER_TOKEN`. When that variable is set, every request must send `Authorization: Bearer ...`.
-
-## N5. Client
+## N4. Client
 
 `Client` is a sync helper. `post_step` only sends. `watch` returns the alert stream for one named pipeline. A background thread reads it. `alerts.latest` stays `None` until an alert event arrives. A newer event replaces it. `alerts.latest.reason` is the string a Python stage returned. A DSPy alert leaves it empty and puts the module outputs on `alerts.latest.record`. `alerts.latest.name` is the stage name. Any alert is stop-worthy. The library does not raise.
 
 ```python
-client = Client("http://pipeline-host:8765", token=os.environ["TRACE_MINER_TOKEN"])
+client = Client("http://pipeline-host:8765")
 
 with client.watch("alerts", rollout_id="r1") as alerts:
     for step in agent.run():
@@ -93,6 +89,6 @@ The keyword is the field name. `rollout_id` is just the field in this example; `
 
 HTTP remains the contract. Another language can POST and read `text/event-stream` without this helper.
 
-## N6. Non-goals
+## N5. Non-goals
 
 Do not add webhooks, sockets as a pipeline source, or a message broker. Do not add `ctx.side`. Do not make a stage name a subscriber or a host.

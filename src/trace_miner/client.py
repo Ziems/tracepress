@@ -42,9 +42,8 @@ class Alerts:
 
 
 class Client:
-    def __init__(self, base_url: str, token: str | None = None):
+    def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
-        self.token = token
 
     def post_step(self, record: dict[str, Any]) -> None:
         body = json.dumps(record).encode("utf-8")
@@ -162,12 +161,7 @@ class Client:
             time.sleep(0.2)
 
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        headers = {}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        if extra:
-            headers.update(extra)
-        return headers
+        return dict(extra or {})
 
 
 class _WatchSession:

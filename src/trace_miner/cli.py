@@ -11,7 +11,7 @@ from trace_miner.init import init_project
 from trace_miner.model import format_run_profile
 from trace_miner.replay import replay_jsonl
 from trace_miner.runtime import run_config, run_stream
-from trace_miner.serve import serve, token_from_env
+from trace_miner.serve import serve
 
 
 _ROOT_HELP = """\
@@ -292,7 +292,6 @@ def _serve(argv: list[str]) -> int:
             args.config,
             host=args.host,
             port=args.port,
-            token=token_from_env(),
             checkpoint_path=args.checkpoint,
             from_start=args.from_start,
             from_end=args.from_end,

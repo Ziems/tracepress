@@ -66,11 +66,9 @@ def wait_until(predicate, timeout: float = 3.0) -> bool:
     return False
 
 
-def open_events(base_url: str, *, rollout_id: str = "r1", last_event_id: str | None = None, token: str | None = None):
+def open_events(base_url: str, *, rollout_id: str = "r1", last_event_id: str | None = None):
     query = urlencode({"output": "alerts", "field": "rollout_id", "rollout_id": rollout_id})
     headers = {"Accept": "text/event-stream"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     if last_event_id is not None:
         headers["Last-Event-ID"] = last_event_id
     return urlopen(Request(f"{base_url}/v1/events?{query}", headers=headers), timeout=5)
@@ -146,20 +144,6 @@ def test_last_event_id_resumes_after_the_cursor(tmp_path: Path) -> None:
         server.close()
 
 
-def test_token_is_required_when_set(tmp_path: Path) -> None:
-    config = write_project(tmp_path, STAGES, CONFIG, {"input.jsonl": []})
-    server = start_serve(config, port=0, token="secret", poll_interval=30, progress=False)
-    try:
-        with pytest.raises(TraceMinerError, match="401"):
-            Client(server.url).post_step({"rollout_id": "r1"})
-        with pytest.raises(TraceMinerError, match="401"):
-            Client(server.url, token="nope").post_step({"rollout_id": "r1"})
-        Client(server.url, token="secret").post_step({"rollout_id": "r1", "flag": True, "reason": "slow"})
-        assert wait_until(lambda: read_jsonl(tmp_path / "alerts.jsonl") != [])
-    finally:
-        server.close()
-
-
 def test_unknown_output_name_is_rejected(tmp_path: Path) -> None:
     config = write_project(tmp_path, STAGES, CONFIG, {"input.jsonl": []})
     server = start_serve(config, port=0, poll_interval=30, progress=False)
@@ -219,12 +203,6 @@ pipelines:
         start_serve(config, port=0, progress=False)
 
 
-def test_non_loopback_bind_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("TRACE_MINER_TOKEN", raising=False)
-    with pytest.raises(PipelineExecutionError, match="TRACE_MINER_TOKEN"):
-        start_serve("missing.yaml", host="0.0.0.0", port=0)
-
-
 def test_duplicate_pipeline_name_fails_at_load(tmp_path: Path) -> None:
     config = write_project(
         tmp_path,
@@ -247,10 +225,8 @@ pipelines:
         load_config(config)
 
 
-def post(base_url: str, body: bytes, token: str | None = None) -> None:
+def post(base_url: str, body: bytes) -> None:
     headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     request = Request(base_url + "/v1/records", data=body, method="POST", headers=headers)
     try:
         with urlopen(request, timeout=5) as response:

@@ -41,7 +41,7 @@ trace-miner stats
 
 `stream` processes each JSONL line as it is appended. `--reset-checkpoint` starts at byte 0. `--from-end` skips lines already in the file.
 
-`serve` runs a stream and accepts steps over HTTP. A client watches a named pipeline for alerts. Bind beyond localhost with `--host` and `TRACE_MINER_TOKEN`.
+`serve` runs a stream and accepts steps over HTTP. A client watches a named pipeline for alerts. Bind beyond localhost with `--host`.
 
 `replay` appends records into a live file. `--reset` truncates first. `--limit 1` sends one record.
 
@@ -118,7 +118,7 @@ Summaries append to `output/stream_summaries.jsonl`. Checkpoints live in `.trace
 On the pipeline host:
 
 ```bash
-TRACE_MINER_TOKEN=... trace-miner serve pipeline.yaml --host 0.0.0.0 --port 8765
+trace-miner serve pipeline.yaml --host 0.0.0.0 --port 8765
 ```
 
 On the eval host:
