@@ -33,22 +33,17 @@ _KNOWN_TOP_LEVEL = {"from", "defaults", "id_field", "pipelines", "concurrency", 
 _KNOWN_LM_KEYS = {"cache", "default", "max_concurrent", "provider"}
 _KNOWN_STEP_OPTIONS = {"stage", "lm"}
 _KNOWN_PER_STEP_LM_KEYS = {"model"}
-_KNOWN_DEFAULTS = {"on_child_error", "on_group_incomplete", "ordered"}
+_KNOWN_DEFAULTS = {"on_child_error", "ordered"}
 _STEP_KEYS = {"map", "filter", "stage", "tee", "alert", "group"}
 _GROUP_KEYS = {
     "expand",
-    "by",
-    "every",
     "pipeline",
     "reduce",
     "on_child_error",
-    "on_group_incomplete",
     "ordered",
     "sidechannels",
 }
-_GROUP_FORMS = {"expand", "by", "every"}
 _CHILD_ERROR_POLICIES = {"fail", "partial", "skip"}
-_INCOMPLETE_POLICIES = {"fail", "partial"}
 
 
 def load_config(path: str | Path) -> Config:
@@ -111,15 +106,12 @@ def _parse_defaults(raw: Any) -> Defaults:
     if unknown:
         raise ConfigError(f"Unknown defaults key(s): {sorted(unknown)}")
     on_child_error = raw.get("on_child_error", "fail")
-    on_group_incomplete = raw.get("on_group_incomplete", "fail")
     ordered = raw.get("ordered", True)
     if on_child_error not in _CHILD_ERROR_POLICIES:
         raise ConfigError("`defaults.on_child_error` must be fail, partial, or skip.")
-    if on_group_incomplete not in _INCOMPLETE_POLICIES:
-        raise ConfigError("`defaults.on_group_incomplete` must be fail or partial.")
     if not isinstance(ordered, bool):
         raise ConfigError("`defaults.ordered` must be a boolean.")
-    return Defaults(on_child_error, on_group_incomplete, ordered)
+    return Defaults(on_child_error, ordered)
 
 
 def _parse_lm_config(raw: Any) -> tuple[str, str, int, bool]:
@@ -139,9 +131,8 @@ def _parse_lm_config(raw: Any) -> tuple[str, str, int, bool]:
     default = raw.get("default")
     if default is None:
         default = DEFAULT_LM_MODEL
-    if default is not None and not isinstance(default, str):
-        raise ConfigError("`lm.default` must be a string when provided.")
-    _require_supported_model(provider, default)
+    if not isinstance(default, str) or not default:
+        raise ConfigError("`lm.default` must be a non-empty string when provided.")
     max_concurrent = raw.get("max_concurrent", DEFAULT_LM_MAX_CONCURRENT)
     if not isinstance(max_concurrent, int) or max_concurrent <= 0:
         raise ConfigError("`lm.max_concurrent` must be a positive integer when provided.")
@@ -224,46 +215,33 @@ def _parse_group(
 ) -> GroupSpec:
     if not isinstance(raw, dict):
         raise ConfigError(f"{where} must be a mapping.")
+    if "by" in raw or "every" in raw:
+        raise ConfigError(f"{where} only supports `expand`.")
+    if "on_group_incomplete" in raw:
+        raise ConfigError(f"{where} does not support `on_group_incomplete`.")
     unknown = set(raw) - _GROUP_KEYS
     if unknown:
         raise ConfigError(f"Unknown group key(s) in {where}: {sorted(unknown)}")
     if "sidechannels" in raw:
         raise ConfigError("`sidechannels` is post-MVP and is not supported yet.")
-    present_forms = [key for key in _GROUP_FORMS if key in raw]
-    if len(present_forms) != 1:
-        raise ConfigError(f"{where} must declare exactly one of expand, by, or every.")
+    if "expand" not in raw:
+        raise ConfigError(f"{where} must declare `expand`.")
     if "reduce" not in raw:
         raise ConfigError(f"{where} missing required key: `reduce`.")
 
     on_child_error = raw.get("on_child_error", defaults.on_child_error)
-    on_group_incomplete = raw.get("on_group_incomplete", defaults.on_group_incomplete)
     ordered = raw.get("ordered", defaults.ordered)
     if on_child_error not in _CHILD_ERROR_POLICIES:
         raise ConfigError(f"{where} `on_child_error` must be fail, partial, or skip.")
-    if on_group_incomplete not in _INCOMPLETE_POLICIES:
-        raise ConfigError(f"{where} `on_group_incomplete` must be fail or partial.")
     if not isinstance(ordered, bool):
         raise ConfigError(f"{where} `ordered` must be a boolean.")
 
-    kind = present_forms[0]
-    expand = _resolve_stage(raw["expand"], module, lm_provider, lm_default_model, role="expand") if kind == "expand" else None
-    by: str | StageRef | None = None
-    every: int | None = None
-    if kind == "by":
-        if isinstance(raw["by"], dict):
-            by = _resolve_stage(raw["by"], module, lm_provider, lm_default_model, role="by")
-        elif not isinstance(raw["by"], str):
-            raise ConfigError(f"{where} `by` must be a field or stage name.")
-        else:
-            by = _resolve_stage(raw["by"], module, lm_provider, lm_default_model, role="by", missing_ok=True) or raw["by"]
-    elif kind == "every":
-        every = raw["every"]
-        if not isinstance(every, int) or every <= 0:
-            raise ConfigError(f"{where} `every` must be a positive integer.")
-
+    expand = _resolve_stage(raw["expand"], module, lm_provider, lm_default_model, role="expand")
+    assert expand is not None
     child_steps = _parse_steps(raw.get("pipeline", []), base_dir, module, defaults, lm_provider, lm_default_model, where)
     reduce = _resolve_stage(raw["reduce"], module, lm_provider, lm_default_model, role="reduce")
-    return GroupSpec(kind, expand, by, every, child_steps, reduce, on_child_error, on_group_incomplete, ordered)
+    assert reduce is not None
+    return GroupSpec(expand, child_steps, reduce, on_child_error, ordered)
 
 
 def _resolve_stage(
@@ -287,7 +265,8 @@ def _resolve_stage(
                 f"DSPy stage `{name}` must expose a signature with `input_fields` and `output_fields`."
             )
         model = step_model or lm_default_model
-        _require_supported_model(lm_provider, model)
+        if not model:
+            raise ConfigError(f"LM stage `{name}` needs a model.")
         _validate_lm_stage(name, role, lm_signature)
         return StageRef(name, fn, kind="lm", role=role, lm_signature=lm_signature, lm_model=model, lm_provider=lm_provider)
     if _is_dspy_signature(fn):
@@ -334,14 +313,6 @@ def _parse_stage_selector(raw: Any) -> tuple[str, str | None]:
     if not isinstance(model, str):
         raise ConfigError("Per-step `lm.model` must be a string.")
     return name, model
-
-
-def _require_supported_model(provider: str, model: str) -> None:
-    supported = LM_PROVIDERS[provider].models
-    if model in supported:
-        return
-    names = ", ".join(supported)
-    raise ConfigError(f"Unknown model `{model}` for `{provider}`. Supported models: {names}.")
 
 
 def _is_dspy_module(target: Any) -> bool:
@@ -410,8 +381,6 @@ def _validate_lm_stage(name: str, role: str, signature: LmSignature) -> None:
         list_inputs = [field for field in signature.input_fields if _is_list_annotation(field.annotation)]
         if len(list_inputs) != 1:
             raise ConfigError(f"LM reduce `{name}` must have exactly one list input field.")
-    elif role == "by":
-        raise ConfigError(f"LM stage `{name}` cannot be used as `by`; use a Python key stage.")
 
 
 def _is_bool_annotation(annotation: Any) -> bool:

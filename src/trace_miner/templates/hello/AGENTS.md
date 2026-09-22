@@ -190,7 +190,7 @@ Rules:
   `out`, they run in that order.
 - `id_field` is for error messages, not grouping.
 - `lm.provider` is `openrouter`, `openai`, or `anthropic`. The default is `openrouter`.
-- `lm.default` must be a model for that provider. OpenRouter: `deepseek/deepseek-v4.1-flash`, `openai/gpt-4o`, `anthropic/claude-sonnet-4`. OpenAI: `gpt-4o-mini`, `gpt-4o`, `gpt-6-astra`. Anthropic: `claude-haiku-4-5`, `claude-sonnet-5`, `claude-opus-5-5`.
+- `lm.default` is any model id for that provider. The built-in default is `deepseek/deepseek-v4.1-flash`.
 - `lm.max_concurrent` caps simultaneous LM calls. Keep it at least 64
   unless the user asks otherwise.
 - `lm.cache` defaults to true and uses DSPy's request cache in
@@ -206,7 +206,7 @@ Rules:
 | `stage: name` | No emit-count assertion |
 | `tee: path.jsonl` | Write the current records aside; stream continues unchanged |
 | `alert: name` | Publish an alert; the record continues unchanged |
-| `group:` | Expand/by/every children, run a child pipeline, then reduce |
+| `group:` | Expand children, run a child pipeline, then reduce |
 
 `map`, `filter`, and `stage` are the same mechanism. The label is an assertion.
 
@@ -219,10 +219,7 @@ children, then one reduce.
   finishes.
 - `pipeline` runs on every child.
 - `reduce` runs once per group with the surviving children.
-- `by: field` groups by a key and only fires after all input is read. Avoid it
-  unless the user wants a global aggregation. Streaming rejects `by` until there
-  is a close condition for unbounded streams.
-- `every: N` is a fixed-size window.
+- `by` and `every` are load errors.
 
 `on_child_error` is `fail` by default. Use `partial` to reduce over survivors,
 or `skip` to drop the whole group.
@@ -263,7 +260,7 @@ def aggregate_findings(steps, ctx):
   `session_id` or `_path` should read it there instead of copying it through
   every child.
 
-Useful `ctx` fields: `emit`, `parent`, `group_id`, `key`, `index`, `path`,
+Useful `ctx` fields: `emit`, `parent`, `group_id`, `index`, `path`,
 `depth`, `failures`, `log`. `ctx.side` is not supported.
 
 ### LM stages

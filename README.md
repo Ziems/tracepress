@@ -93,7 +93,7 @@ class DetectFailure(dspy.Signature):
 detect_failure = dspy.Predict(DetectFailure)
 ```
 
-Steps are `map`, `filter`, `stage`, `tee`, `alert`, and `group`. Groups can `expand`, `by`, or `every` in batch. Streams support `expand` and `every`.
+Steps are `map`, `filter`, `stage`, `tee`, `alert`, and `group`. A group expands one parent, runs a child pipeline, then reduces.
 
 ## Streaming
 

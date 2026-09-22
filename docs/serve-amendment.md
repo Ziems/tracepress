@@ -2,7 +2,7 @@
 
 An amendment to [`pipeline-spec.md`](pipeline-spec.md) and [`streaming-amendment.md`](streaming-amendment.md). Read those first. This document adds a network boundary so an eval process on one machine can send steps to a pipeline on another and hear alerts.
 
-JSONL paths, checkpoints, and the journal stay on the pipeline host. The client only has a base URL.
+JSONL paths and checkpoints stay on the pipeline host. The client only has a base URL.
 
 ## N1. What this adds
 
@@ -17,7 +17,7 @@ trace-miner serve pipeline.yaml --host 0.0.0.0 --port 8765
 - `POST /v1/records` appends one JSON object as a newline-terminated line to the single root input and returns `202` once that append is flushed. It does not wait for the pipeline.
 - `GET /v1/events` is a Server-Sent Events response for one named pipeline's alert log.
 
-A config with more than one root input is a startup error. `by` groups are still rejected, because `serve` is streaming mode.
+A config with more than one root input is a startup error.
 
 ## N2. Names
 

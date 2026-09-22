@@ -40,8 +40,7 @@ In scope for the LM MVP:
   defaults, top-level overrides, and per-step model override.
 - Field mapping, passthrough, and clear missing-field errors.
 - Load-time signature validation for `filter`, `expand`, and `reduce`.
-- Reduce field resolution from gathered children plus parent fields, including synthetic parent
-  fields for `by` groups.
+- Reduce field resolution from gathered children plus parent fields.
 - Mixed Python and LM stages in one pipeline.
 - Invalid LM outputs raise from the adapter and flow through the base `on_child_error` policy.
 - Bounded concurrent LM invocation with `lm.max_concurrent`.
@@ -179,10 +178,6 @@ merge = dspy.Predict(Merge)
 Gathering follows base spec section 9. When `ordered: true`, children are sorted by emit path
 before the field is assembled, so the list order is deterministic.
 
-For a `by` group, there is no natural parent record. If `by` names a record field, provide a
-synthetic parent mapping `{field_name: key}` to reduce field resolution. If `by` names a stage,
-there is no parent field unless a later config form gives that key a name.
-
 ## A7. Config additions
 
 The only new MVP config surface is provider and model selection. If `lm` is omitted, Trace Miner
@@ -228,15 +223,8 @@ Trace Miner calls `dspy.LM("{provider}/{model}")`. The API keys are `OPENROUTER_
 `OPENAI_API_KEY`, and `ANTHROPIC_API_KEY`. OpenRouter also asks for cost in the usage payload.
 The default provider is `openrouter`.
 
-`lm.default` and per-step `lm.model` must be one of that provider's models:
-
-| Provider | Models |
-| --- | --- |
-| `openrouter` | `deepseek/deepseek-v4.1-flash`, `openai/gpt-4o`, `anthropic/claude-sonnet-4` |
-| `openai` | `gpt-4o-mini`, `gpt-4o`, `gpt-6-astra` |
-| `anthropic` | `claude-haiku-4-5`, `claude-sonnet-5`, `claude-opus-5-5` |
-
-Any other model id is a load error. The default model is `deepseek/deepseek-v4.1-flash`.
+`lm.default` and per-step `lm.model` are model ids for that provider. Any non-empty string is
+accepted. The default model is `deepseek/deepseek-v4.1-flash`.
 
 `lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 64 and must be a
 positive integer.
@@ -326,8 +314,8 @@ Add:
 
 ## A12. Amends section 16, build order
 
-Insert after the base MVP is correct. The barrier, ordering, nesting, and all three group
-constructors should already be tested before LM stages enter the picture.
+Insert after the base MVP is correct. Expand groups, ordering, and nesting should already be
+tested before LM stages enter the picture.
 
 ### LM MVP
 
@@ -338,7 +326,7 @@ constructors should already be tested before LM stages enter the picture.
 4. LM `map`, including passthrough, output merge, and missing-field errors.
 5. Load-time signature validation for LM `filter`, `expand`, and `reduce`, A5.
 6. LM `filter` and `expand`, adapted onto the existing emit-count behavior.
-7. LM `reduce` field resolution, including synthetic parent fields for `by` groups, A6.
+7. LM `reduce` field resolution from gathered children plus parent fields, A6.
 8. Bounded concurrent LM invocation with `lm.max_concurrent`.
 9. Mixed Python and LM stages, with adapter-raised errors flowing through `on_child_error`.
 
@@ -376,10 +364,10 @@ Additive to base spec section 17. Numbering continues from 27.
     still a load error.
 36. **Built-in LM defaults.** A config that uses an LM stage without an `lm` block resolves to
     `provider: openrouter` and `default: deepseek/deepseek-v4.1-flash`.
-37. **Supported providers and models.** `openrouter`, `openai`, and `anthropic` are accepted.
+37. **Supported providers.** `openrouter`, `openai`, and `anthropic` are accepted.
     `lm.provider: openai` with model `gpt-4o-mini` invokes `dspy.LM` as `openai/gpt-4o-mini`
     and requires `OPENAI_API_KEY`. Any other provider is a load error naming that list.
-    A model id outside that provider's list is a load error naming the supported models.
+    Any non-empty model id is accepted.
 38. **Python stage with LM options.** A per-step `lm` block on a Python stage is a load error.
 
 **Semantics**
@@ -394,8 +382,6 @@ Additive to base spec section 17. Numbering continues from 27.
     default for that stage.
 44. **Default OpenRouter call.** With the built-in provider, a DSPy LM stage invokes `dspy.LM`
     with the `openrouter/<model>` id, `OPENROUTER_API_KEY`, and usage included.
-45. **`by` synthetic parent.** An LM reduce in a `by` group can receive the named grouping key as
-    a parent-derived input field.
 
 **Policy**
 

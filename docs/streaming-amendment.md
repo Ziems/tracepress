@@ -37,61 +37,27 @@ In scope for streaming MVP:
 - Treat a newline-terminated JSONL line as the unit of ingestion.
 - Ignore partial trailing lines until the newline arrives.
 - Append to pipeline `out` and `tee` files instead of overwriting them.
-- Maintain an append-only execution journal and derive input checkpoints from it.
-- Resume from the journal/checkpoint by default.
+- Remember one byte offset per root input, and resume from that checkpoint by default.
 - Support `map`, `filter`, `stage`, `tee`, `alert`, and `expand` groups.
-- Support `every` groups for complete windows.
-- Flush incomplete `every` windows on graceful shutdown.
 - Preserve the existing async stage and LM concurrency behavior.
 - Reuse the existing compact progress reporting, but make it rate-oriented rather than
   finite-total-oriented where useful.
 
 Explicitly deferred:
 
-- `by` groups that close during an endless stream.
 - Watermarks, event time, lateness, and window triggers.
 - File rotation discovery.
 - Multiple writers to the same input.
 - Exactly-once delivery across crashes.
 - Persisting open group state.
-- Rebuilding output files from the journal.
 - Backpressure across the whole pipeline DAG.
 - Network sources, message queues, databases, webhooks, or sockets.
 
-## S3. Why `by` is not in the streaming MVP
+## S3. Groups in a stream
 
-`by` has no natural close in an unbounded stream. In batch mode, end-of-file closes all `by`
-groups. In streaming mode, there may never be an end-of-file, so a `by` group would either stay
-open forever or require a new completion rule.
-
-For the streaming MVP, reject configs that contain `by` groups when running `trace-miner stream`,
-with a clear error:
-
-```text
-`by` groups need a close condition in streaming mode; use batch mode or wait for complete_when.
-```
-
-This is intentionally conservative. The later feature should probably be:
-
-```yaml
-- group:
-    by: session_id
-    complete_when:
-      field: event_type
-      equals: session_end
-    pipeline:
-      - map: label
-    reduce: summarize_session
-```
-
-Other plausible later close conditions:
-
-- `idle_for: 5m`
-- `max_age: 1h`
-- `watermark: timestamp`
-- `count: 100`
-
-Do not add these until the simple tailing runtime is solid.
+A stream processes one complete JSONL line at a time, including that line's expand groups and any
+downstream pipelines. The next line is read after the current line's outputs are written. `by` and
+`every` are load errors in every mode, because a group has to close when its expand stage returns.
 
 ## S4. Input semantics
 
@@ -110,50 +76,10 @@ a newline, Trace Miner waits. When the newline appears, it parses the full line.
 Invalid JSON is a run error by default. Later, we can add a dead-letter file, but for MVP a bad
 line should stop loudly rather than silently corrupting the stream.
 
-## S5. Execution Journal and Checkpoints
+## S5. Checkpoints
 
-Use a small append-only execution journal, not just a mutable checkpoint file.
-
-This is the bridge between offline search and streaming. A batch run over a fixed file and a
-streaming run over a growing file should both be understandable as "admit JSONL records in
-order, append runtime facts to the journal, and advance the durable cursor after effects
-complete."
-
-The journal is not a full database WAL. It does not promise to reconstruct every output file or
-recover arbitrary in-flight group state. It is an audit and recovery log for the ingestion
-boundary.
-
-Default journal location:
-
-```text
-.trace-miner/runs/<run-id>/journal.jsonl
-```
-
-Each journal line is a small JSON object. MVP event types:
-
-```json
-{"type":"run_started","run_id":"...","config":"/abs/path/pipeline.yaml"}
-{"type":"input_admitted","path":"/abs/path/events.jsonl","offset":0,"next_offset":82,"record_id":"abc"}
-{"type":"input_committed","path":"/abs/path/events.jsonl","offset":0,"next_offset":82,"record_id":"abc"}
-{"type":"run_stopped","reason":"sigint"}
-```
-
-Optional but useful soon after MVP:
-
-```json
-{"type":"stage_failed","stage":"label","record_id":"abc","error":"..."}
-{"type":"group_reduced","group_id":"g12","stage":"summarize","children":30}
-{"type":"output_written","path":"/abs/path/out.jsonl","record_id":"abc"}
-```
-
-The important distinction:
-
-- `input_admitted` means the runtime has started processing the line.
-- `input_committed` means every declared effect for that input line completed.
-
-On restart, resume from the highest committed `next_offset` for each root input. If the journal
-ends with admitted-but-uncommitted records, replay them. This gives explicit at-least-once
-behavior instead of hiding the edge case inside a checkpoint file.
+Store one byte offset per root input. Write it after that line's outputs, tees, and downstream
+pipelines have been written. Resume from those offsets.
 
 Checkpoint state lives next to the config by default:
 
@@ -161,13 +87,10 @@ Checkpoint state lives next to the config by default:
 .trace-miner/checkpoints/<config-hash>.json
 ```
 
-The checkpoint is a compact snapshot derived from the journal:
-
 ```json
 {
   "version": 1,
   "config": "/abs/path/pipeline.yaml",
-  "journal": "/abs/path/.trace-miner/runs/<run-id>/journal.jsonl",
   "inputs": {
     "/abs/path/events.jsonl": {
       "offset": 12345
@@ -176,10 +99,8 @@ The checkpoint is a compact snapshot derived from the journal:
 }
 ```
 
-Update the journal first, then update the checkpoint after all effects for a line have
-completed: output writes, tee writes, manifest updates, and downstream pipeline writes. A crash
-after journal commit but before checkpoint update can be repaired by scanning the journal tail.
-A crash before journal commit may replay the last record.
+Write the checkpoint atomically with temp-file-and-rename. A crash before that write replays the
+last line. A crash after it does not.
 
 Exactly-once behavior is explicitly out of scope. Users who need idempotence should include a
 stable id in their output records and deduplicate downstream.
@@ -219,42 +140,19 @@ one process per intermediate file.
 
 ## S8. Group semantics
 
-### `expand`
-
-`expand` is streaming-friendly because each parent record opens its own group. The expand stage
-finishes, the sentinel drops, and the reduce can fire for that parent.
-
-In the MVP, expand stages are still ordinary sync or async functions. Generator and async
-generator expand stages remain a later improvement.
-
-### `every`
-
-`every` can emit complete windows during the stream.
-
-If `every: 50`, the reduce fires after records 1-50, 51-100, and so on. The final short window
-does not fire during normal operation because there is no natural final record in an endless
-stream.
-
-On graceful shutdown, flush incomplete `every` windows. On crash, open windows are lost and the
-checkpoint should only advance through records whose effects completed.
-
-### `by`
-
-Rejected in streaming MVP. See S3.
+`expand` closes when the expand stage returns, so a parent record's group finishes before the
+stream reads the next line. Generator expand stages remain a later improvement.
 
 ## S9. Shutdown
 
 Handle `SIGINT` and `SIGTERM` gracefully:
 
 1. Stop reading new input.
-2. Finish records already admitted into the runtime.
-3. Flush incomplete `every` windows.
-4. Write final outputs and manifest entries.
-5. Update checkpoint offsets for completed records.
-6. Exit zero.
+2. Finish the line already being processed.
+3. Exit zero. That line's checkpoint was written when its effects completed.
 
-A hard crash or `SIGKILL` may replay the last completed-but-uncheckpointed record on restart.
-That is acceptable for MVP and should be documented.
+A hard crash or `SIGKILL` may replay the last line if the process died before the checkpoint
+write. That is acceptable for MVP and should be documented.
 
 ## S10. Progress and logging
 
@@ -279,11 +177,8 @@ If `--progress` is disabled, do not print periodic status. Errors still go to st
      by repeatedly calling the batch runner.
 
 2. Add checkpoint support.
-   - Define a small `ExecutionJournal` and `CheckpointStore`.
-   - Append `input_admitted` before processing a line.
-   - Append `input_committed` after all effects for that line complete.
    - Store offsets by normalized absolute input path.
-   - Derive checkpoint offsets from committed journal entries.
+   - Write the checkpoint after each line's effects complete.
    - Write checkpoints atomically with temp-file-and-rename.
 
 3. Add a JSONL follower.
@@ -295,44 +190,25 @@ If `--progress` is disabled, do not print periodic status. Errors still go to st
 4. Add `trace-miner stream`.
    - Parse `--from-start`, `--from-end`, `--reset-checkpoint`, `--checkpoint`, `--poll-interval`,
      `--progress`, and `--no-progress`.
-   - Reuse config validation.
-   - Add a stream-mode validation pass that rejects `by` groups.
+   - Reuse config validation. `by` and `every` already fail at load time.
 
 5. Implement streaming DAG routing.
    - Build producer-to-consumer edges from normalized `out` and `tee` paths, just like batch.
    - Tail only root input files.
    - Route upstream outputs to downstream pipelines in memory.
 
-6. Add streaming `every` state.
-   - Keep open windows in memory.
-   - Fire full windows immediately.
-   - Flush short windows only during graceful shutdown.
-
-7. Add tests.
+6. Add tests.
    - Processes appended lines after startup.
    - Ignores partial line until newline arrives.
    - Resumes from checkpoint.
    - `--from-end` skips existing lines.
    - Appends outputs instead of truncating.
    - Routes through a two-pipeline DAG.
-   - Rejects `by` groups in stream mode.
-   - Flushes incomplete `every` group on graceful shutdown.
-   - Replays at least once if a crash happens before `input_committed`.
-   - Recovers committed offsets from journal if checkpoint is stale.
+   - Rejects `by` and `every` at load time.
 
 ## S12. Later features
 
-After the MVP works, the most useful next layer is explicit group closing:
-
-```yaml
-complete_when:
-  field: event_type
-  equals: session_end
-```
-
-That unlocks `by` groups for session-style streams without inventing watermarks too early.
-
-After that, consider:
+After the MVP works, consider:
 
 - Dead-letter files for invalid JSON or stage failures.
 - File rotation support by inode tracking.

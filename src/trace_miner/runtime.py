@@ -7,7 +7,6 @@ import json
 import os
 import signal
 import sys
-import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -38,7 +37,6 @@ from trace_miner.telemetry import capture_run_finished_async, record_command_run
 
 
 _PROGRESS_NCOLS = 120
-_lm_usage_tls = threading.local()
 
 
 @dataclass
@@ -46,15 +44,6 @@ class _Envelope:
     record: Any
     path: tuple[int, ...]
     group: _GroupState | None = None
-    stream_tokens: tuple[_StreamToken, ...] = ()
-
-
-@dataclass(frozen=True)
-class _StreamToken:
-    path: Path
-    offset: int
-    next_offset: int
-    record_id: str
 
 
 @dataclass(frozen=True)
@@ -70,12 +59,6 @@ class _JsonlLine:
     next_offset: int
     record: Any
     blank: bool = False
-
-
-@dataclass
-class _StreamEveryState:
-    buffer: list[_Envelope] = field(default_factory=list)
-    window_index: int = 0
 
 
 @dataclass
@@ -121,55 +104,19 @@ class _GroupSkipped(Exception):
 class _GroupState:
     runtime: _Runtime
     spec: GroupSpec
-    parent_env: _Envelope | None
-    key: Any
+    parent_env: _Envelope
     depth: int
     group_id: str
-    outstanding: int = 1
     fired: bool = False
     skipped: bool = False
-    children: list[_Envelope] = field(default_factory=list)
     failures: list[Failure] = field(default_factory=list)
-    reduce_outputs: list[_Envelope] = field(default_factory=list)
     reduce_progress: _ProgressTask | None = None
 
     @property
     def parent_record(self) -> Any:
-        if self.parent_env is not None:
-            return self.parent_env.record
-        if self.spec.kind == "by" and isinstance(self.spec.by, str):
-            return {self.spec.by: self.key}
-        return None
+        return self.parent_env.record
 
-    def increment(self, count: int = 1) -> None:
-        self.outstanding += count
-
-    async def decrement(self, count: int = 1) -> None:
-        self.outstanding -= count
-        if self.outstanding < 0:
-            raise PipelineExecutionError(f"Group {self.group_id} accounting went negative.")
-        if self.outstanding == 0:
-            await self.reduce()
-
-    async def adjust_for_outputs(self, count: int) -> None:
-        if count == 0:
-            await self.decrement()
-        elif count > 1:
-            self.increment(count - 1)
-
-    async def adjust_for_replacement(self, input_count: int, output_count: int) -> None:
-        delta = output_count - input_count
-        if delta > 0:
-            self.increment(delta)
-        elif delta < 0:
-            await self.decrement(-delta)
-
-    async def arrive(self, env: _Envelope) -> None:
-        self.children.append(env)
-        self.runtime.stats.retired += 1
-        await self.decrement()
-
-    async def fail_child(self, env: _Envelope, stage_name: str, error: BaseException) -> list[_Envelope]:
+    async def fail_child(self, env: _Envelope, stage_name: str, error: BaseException) -> None:
         self.runtime.stats.failed += 1
         identity = self.runtime.record_identity(env.record, env.path)
         failure = Failure(stage_name, identity, self.group_id, str(error))
@@ -180,8 +127,7 @@ class _GroupState:
         if self.spec.on_child_error == "partial":
             self.failures.append(failure)
             self.runtime.stats.retired += 1
-            await self.decrement()
-            return []
+            return
         self.skip(failure)
         raise _GroupSkipped()
 
@@ -194,53 +140,43 @@ class _GroupState:
         self.runtime.manifest.skipped_groups.append(
             {
                 "group_id": self.group_id,
-                "parent": self.runtime.record_identity(
-                    self.parent_record,
-                    self.parent_env.path if self.parent_env is not None else (),
-                ),
+                "parent": self.runtime.record_identity(self.parent_record, self.parent_env.path),
                 "failing_child": failure.record_identity,
                 "stage": failure.stage,
                 "error": failure.error,
             }
         )
 
-    async def close_producer(self) -> None:
-        await self.decrement()
-
-    async def reduce(self) -> None:
+    async def reduce(self, children: list[_Envelope]) -> list[_Envelope]:
         if self.fired:
-            return
+            return []
         self.fired = True
         if self.skipped:
-            return
-        children = self.children
+            return []
         if self.spec.ordered:
             children = sorted(children, key=lambda env: env.path)
-        child_records = [env.record for env in children]
-        ctx_path = self.parent_env.path if self.parent_env is not None else ()
+        self.runtime.stats.retired += len(children)
         if self.reduce_progress is not None:
             self.reduce_progress.open()
         outputs = await self.runtime.call_stage(
             self.spec.reduce,
-            child_records,
+            [env.record for env in children],
             source=self.parent_env,
             parent=self.parent_record,
             group_id=self.group_id,
-            key=self.key,
+            key=None,
             index=None,
-            path=ctx_path,
+            path=self.parent_env.path,
             depth=self.depth,
             failures=self.failures,
         )
-        base_path = self.parent_env.path if self.parent_env is not None else (self.runtime.next_root_index(),)
-        stream_tokens = _group_stream_tokens(children, self.parent_env)
-        self.reduce_outputs = [
-            _Envelope(record, base_path + (i,), None, stream_tokens)
-            for i, record in enumerate(outputs, start=1)
-        ]
         self.runtime.stats.groups_reduced += 1
         if self.reduce_progress is not None:
             self.reduce_progress.advance()
+        return [
+            _Envelope(record, self.parent_env.path + (i,), None)
+            for i, record in enumerate(outputs, start=1)
+        ]
 
 
 class _Runtime:
@@ -264,9 +200,6 @@ class _Runtime:
         self.append_outputs = append_outputs
         self.capture_writes = capture_writes
         self.write_events: list[_WriteEvent] = []
-        self.completed_stream_tokens: list[_StreamToken] = []
-        self.stream_every: dict[tuple[int, tuple[int, ...]], _StreamEveryState] = {}
-        self.held_stream_tokens: set[_StreamToken] = set()
         self._alert_log: Path | None = None
         self._prepare_dspy_lms()
 
@@ -323,7 +256,7 @@ class _Runtime:
         previous = self._alert_log
         self._alert_log = alert_log_path(self.config, pipeline)
         try:
-            outputs = await self.apply_stream_steps(envelopes, pipeline.steps, pipeline.source_index, ())
+            outputs = await self.apply_steps(envelopes, pipeline.steps, active_group=None)
             self._write_envelopes(pipeline.output, outputs, append=True)
             self.stats.retired += len(outputs)
             return outputs
@@ -367,123 +300,6 @@ class _Runtime:
                 raise AssertionError(f"Unhandled step kind: {step.kind}")
         return current
 
-    async def apply_stream_steps(
-        self,
-        envelopes: list[_Envelope],
-        steps: tuple[Step, ...],
-        pipeline_index: int,
-        step_path: tuple[int, ...],
-    ) -> list[_Envelope]:
-        current = envelopes
-        for idx, step in enumerate(steps):
-            current_path = step_path + (idx,)
-            if step.kind in {"map", "filter", "stage"}:
-                current = await self._apply_stage_step(current, step, active_group=None)
-            elif step.kind == "alert":
-                current = await self._apply_alert_step(current, step, active_group=None)
-            elif step.kind == "tee":
-                assert step.path is not None
-                self._write_envelopes(step.path, current, append=True)
-            elif step.kind == "group":
-                assert step.group is not None
-                if step.group.kind == "every":
-                    current = await self._apply_stream_every_step(current, step.group, pipeline_index, current_path)
-                else:
-                    current = await self._apply_group_step(current, step.group, active_group=None)
-            else:
-                raise AssertionError(f"Unhandled step kind: {step.kind}")
-        return current
-
-    async def flush_stream_pipeline(self, pipeline: PipelineSpec) -> list[_Envelope]:
-        previous = self._alert_log
-        self._alert_log = alert_log_path(self.config, pipeline)
-        try:
-            outputs = await self.flush_stream_steps(pipeline.steps, pipeline.source_index, ())
-            self._write_envelopes(pipeline.output, outputs, append=True)
-            self.stats.retired += len(outputs)
-            return outputs
-        finally:
-            self._alert_log = previous
-
-    async def flush_stream_steps(
-        self,
-        steps: tuple[Step, ...],
-        pipeline_index: int,
-        step_path: tuple[int, ...],
-    ) -> list[_Envelope]:
-        flushed: list[_Envelope] = []
-        for idx, step in enumerate(steps):
-            current_path = step_path + (idx,)
-            if step.kind != "group" or step.group is None or step.group.kind != "every":
-                continue
-            outputs = await self._flush_stream_every_step(step.group, pipeline_index, current_path)
-            if outputs:
-                outputs = await self.apply_stream_steps(outputs, steps[idx + 1 :], pipeline_index, current_path)
-                flushed.extend(outputs)
-        return flushed
-
-    async def _apply_stream_every_step(
-        self,
-        envelopes: list[_Envelope],
-        spec: GroupSpec,
-        pipeline_index: int,
-        step_path: tuple[int, ...],
-    ) -> list[_Envelope]:
-        assert spec.every is not None
-        state = self.stream_every.setdefault((pipeline_index, step_path), _StreamEveryState())
-        state.buffer.extend(envelopes)
-        for env in envelopes:
-            self.held_stream_tokens.update(env.stream_tokens)
-
-        outputs: list[_Envelope] = []
-        while len(state.buffer) >= spec.every:
-            window = state.buffer[: spec.every]
-            del state.buffer[: spec.every]
-            for env in window:
-                self.held_stream_tokens.difference_update(env.stream_tokens)
-            state.window_index += 1
-            outputs.extend(await self._run_every_window(spec, window, state.window_index, active_group=None))
-        return outputs
-
-    async def _flush_stream_every_step(
-        self,
-        spec: GroupSpec,
-        pipeline_index: int,
-        step_path: tuple[int, ...],
-    ) -> list[_Envelope]:
-        state = self.stream_every.get((pipeline_index, step_path))
-        if state is None or not state.buffer:
-            return []
-        window = state.buffer
-        state.buffer = []
-        for env in window:
-            self.held_stream_tokens.difference_update(env.stream_tokens)
-        state.window_index += 1
-        return await self._run_every_window(spec, window, state.window_index, active_group=None)
-
-    async def _run_every_window(
-        self,
-        spec: GroupSpec,
-        window: list[_Envelope],
-        window_index: int,
-        active_group: _GroupState | None,
-    ) -> list[_Envelope]:
-        group = self._open_group(spec, None, key=window_index, depth=self._depth_for(active_group))
-        child_envs = []
-        for i, env in enumerate(window, start=1):
-            group.increment()
-            child_envs.append(_Envelope(env.record, env.path + (i,), group, env.stream_tokens))
-        await group.close_producer()
-        try:
-            await self._run_group_children(group, child_envs)
-        except _GroupSkipped:
-            nested_outputs = []
-        else:
-            nested_outputs = group.reduce_outputs
-        if active_group is not None:
-            await active_group.adjust_for_replacement(len(window), len(nested_outputs))
-        return [_Envelope(out.record, out.path, active_group, out.stream_tokens) for out in nested_outputs]
-
     async def _apply_alert_step(
         self,
         envelopes: list[_Envelope],
@@ -511,7 +327,7 @@ class _Runtime:
                     continue
                 body = self._alert_body(step.stage, result)
                 if body is not None:
-                    fired.append(_Envelope(self._alert_record(step.stage.name, body, env), env.path, active_group, ()))
+                    fired.append(_Envelope(self._alert_record(step.stage.name, body, env), env.path, active_group))
                 kept.append(env)
             if fired and self._alert_log is not None:
                 self._write_envelopes(self._alert_log, fired, append=True)
@@ -572,26 +388,18 @@ class _Runtime:
                 results.append(await self._call_stage_for_env_result(step.stage, env, task))
         try:
             for env, result in results:
-                failed_under_policy = False
                 if isinstance(result, Exception):
                     if active_group is None:
                         raise result
-                    emitted = await active_group.fail_child(env, step.stage.name, result)
-                    failed_under_policy = True
-                else:
-                    emitted = result
-                if failed_under_policy:
+                    await active_group.fail_child(env, step.stage.name, result)
                     continue
+                emitted = result
                 self._assert_emit_count(step, env, emitted)
-                if active_group is not None:
-                    await active_group.adjust_for_outputs(len(emitted))
                 if not emitted:
                     self.stats.dropped += 1
-                    if active_group is None:
-                        self.completed_stream_tokens.extend(env.stream_tokens)
                     continue
                 for i, record in enumerate(emitted, start=1):
-                    output.append(_Envelope(record, env.path + (i,), active_group, env.stream_tokens))
+                    output.append(_Envelope(record, env.path + (i,), active_group))
             return output
         finally:
             task.close()
@@ -615,34 +423,26 @@ class _Runtime:
         spec: GroupSpec,
         active_group: _GroupState | None,
     ) -> list[_Envelope]:
-        if spec.kind == "expand":
-            task = self.progress.start(
-                "reduce",
-                spec.reduce.name,
-                len(envelopes),
-                display_immediately=False,
-                close_after_advance=True,
-            )
-            outputs = []
-            try:
-                for env in envelopes:
-                    nested_outputs = await self._process_expand_group(
-                        spec,
-                        env,
-                        depth=self._depth_for(active_group),
-                        reduce_progress=task,
-                    )
-                    if active_group is not None:
-                        await active_group.adjust_for_outputs(len(nested_outputs))
-                    outputs.extend(_Envelope(out.record, out.path, active_group, out.stream_tokens) for out in nested_outputs)
-                return outputs
-            finally:
-                task.close()
-        if spec.kind == "by":
-            return await self._process_by_groups(spec, envelopes, active_group)
-        if spec.kind == "every":
-            return await self._process_every_groups(spec, envelopes, active_group)
-        raise AssertionError(f"Unhandled group kind: {spec.kind}")
+        task = self.progress.start(
+            "reduce",
+            spec.reduce.name,
+            len(envelopes),
+            display_immediately=False,
+            close_after_advance=True,
+        )
+        outputs = []
+        try:
+            for env in envelopes:
+                nested_outputs = await self._process_expand_group(
+                    spec,
+                    env,
+                    depth=self._depth_for(active_group),
+                    reduce_progress=task,
+                )
+                outputs.extend(_Envelope(out.record, out.path, active_group) for out in nested_outputs)
+            return outputs
+        finally:
+            task.close()
 
     async def _process_expand_group(
         self,
@@ -651,9 +451,8 @@ class _Runtime:
         depth: int,
         reduce_progress: _ProgressTask | None,
     ) -> list[_Envelope]:
-        group = self._open_group(spec, env, key=None, depth=depth, reduce_progress=reduce_progress)
+        group = self._open_group(spec, env, depth=depth, reduce_progress=reduce_progress)
         try:
-            assert spec.expand is not None
             try:
                 emitted = await self.call_stage_for_env(
                     spec.expand,
@@ -670,129 +469,17 @@ class _Runtime:
                 raise PipelineExecutionError(
                     f"Group {group.group_id} expand stage `{spec.expand.name}` failed: {exc}"
                 ) from exc
-            child_envs = []
-            for i, record in enumerate(emitted, start=1):
-                group.increment()
-                child_envs.append(_Envelope(record, env.path + (i,), group, env.stream_tokens))
-            await group.close_producer()
-            if group.skipped:
-                return []
-            await self._run_group_children(group, child_envs)
+            child_envs = [_Envelope(record, env.path + (i,), group) for i, record in enumerate(emitted, start=1)]
+            survivors = await self._run_group_children(group, child_envs)
         except _GroupSkipped:
             return []
-        return group.reduce_outputs
+        return await group.reduce(survivors)
 
-    async def _process_by_groups(
-        self,
-        spec: GroupSpec,
-        envelopes: list[_Envelope],
-        active_group: _GroupState | None,
-    ) -> list[_Envelope]:
-        grouped: dict[Any, list[_Envelope]] = {}
-        order: list[Any] = []
-        for env in envelopes:
-            key = await self._group_key(spec, env)
-            if key not in grouped:
-                grouped[key] = []
-                order.append(key)
-            grouped[key].append(env)
-
-        outputs: list[_Envelope] = []
-        task = self.progress.start(
-            "reduce",
-            spec.reduce.name,
-            len(order),
-            display_immediately=False,
-            close_after_advance=True,
-        )
-        try:
-            for key in order:
-                group = self._open_group(spec, None, key=key, depth=self._depth_for(active_group), reduce_progress=task)
-                child_envs: list[_Envelope] = []
-                for i, env in enumerate(grouped[key], start=1):
-                    group.increment()
-                    child_envs.append(_Envelope(env.record, env.path + (i,), group, env.stream_tokens))
-                await group.close_producer()
-                try:
-                    await self._run_group_children(group, child_envs)
-                except _GroupSkipped:
-                    nested_outputs = []
-                else:
-                    nested_outputs = group.reduce_outputs
-                outputs.extend(_Envelope(out.record, out.path, active_group, out.stream_tokens) for out in nested_outputs)
-            if active_group is not None:
-                await active_group.adjust_for_replacement(len(envelopes), len(outputs))
-            return outputs
-        finally:
-            task.close()
-
-    async def _process_every_groups(
-        self,
-        spec: GroupSpec,
-        envelopes: list[_Envelope],
-        active_group: _GroupState | None,
-    ) -> list[_Envelope]:
-        assert spec.every is not None
-        outputs: list[_Envelope] = []
-        total = (len(envelopes) + spec.every - 1) // spec.every
-        task = self.progress.start(
-            "reduce",
-            spec.reduce.name,
-            total,
-            display_immediately=False,
-            close_after_advance=True,
-        )
-        try:
-            for start in range(0, len(envelopes), spec.every):
-                window = envelopes[start : start + spec.every]
-                group = self._open_group(
-                    spec,
-                    None,
-                    key=start // spec.every + 1,
-                    depth=self._depth_for(active_group),
-                    reduce_progress=task,
-                )
-                child_envs = []
-                for i, env in enumerate(window, start=1):
-                    group.increment()
-                    child_envs.append(_Envelope(env.record, env.path + (i,), group, env.stream_tokens))
-                await group.close_producer()
-                try:
-                    await self._run_group_children(group, child_envs)
-                except _GroupSkipped:
-                    nested_outputs = []
-                else:
-                    nested_outputs = group.reduce_outputs
-                outputs.extend(_Envelope(out.record, out.path, active_group, out.stream_tokens) for out in nested_outputs)
-            if active_group is not None:
-                await active_group.adjust_for_replacement(len(envelopes), len(outputs))
-            return outputs
-        finally:
-            task.close()
-
-    async def _run_group_children(self, group: _GroupState, child_envs: list[_Envelope]) -> None:
-        if group.fired:
-            return
+    async def _run_group_children(self, group: _GroupState, child_envs: list[_Envelope]) -> list[_Envelope]:
         outputs = await self.apply_steps(child_envs, group.spec.pipeline, active_group=group)
-        for env in outputs:
-            if group.skipped:
-                raise _GroupSkipped()
-            await group.arrive(env)
-
-    async def _group_key(self, spec: GroupSpec, env: _Envelope) -> Any:
-        if isinstance(spec.by, StageRef):
-            emitted = await self.call_stage_for_env(spec.by, env)
-            if len(emitted) != 1:
-                raise PipelineExecutionError(
-                    f"`by` stage `{spec.by.name}` must emit exactly one key for record "
-                    f"{self.record_identity(env.record, env.path)}; got {len(emitted)}."
-                )
-            return _hashable_key(emitted[0])
-        if isinstance(env.record, dict) and spec.by in env.record:
-            return _hashable_key(env.record[spec.by])
-        raise PipelineExecutionError(
-            f"Record {self.record_identity(env.record, env.path)} has no grouping field `{spec.by}`."
-        )
+        if group.skipped:
+            raise _GroupSkipped()
+        return outputs
 
     async def call_stage_for_env(
         self,
@@ -811,7 +498,7 @@ class _Runtime:
             source=env,
             parent=parent if parent is not None else (source_group.parent_record if source_group else None),
             group_id=group_id if group_id is not None else (source_group.group_id if source_group else None),
-            key=key if key is not None else (source_group.key if source_group else None),
+            key=key,
             index=env.path[-1] if env.path else None,
             path=env.path,
             depth=depth if source_group is None else source_group.depth,
@@ -1008,13 +695,12 @@ class _Runtime:
     def _open_group(
         self,
         spec: GroupSpec,
-        parent_env: _Envelope | None,
-        key: Any,
+        parent_env: _Envelope,
         depth: int,
         reduce_progress: _ProgressTask | None = None,
     ) -> _GroupState:
         self._group_counter += 1
-        group = _GroupState(self, spec, parent_env, key, depth, f"g{self._group_counter}", reduce_progress=reduce_progress)
+        group = _GroupState(self, spec, parent_env, depth, f"g{self._group_counter}", reduce_progress=reduce_progress)
         self.stats.groups_opened += 1
         self._open_groups.append(group)
         return group
@@ -1140,34 +826,6 @@ class _ProgressTask:
             self._task_id = None
 
 
-class _ExecutionJournal:
-    def __init__(self, path: Path):
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-
-    def append(self, event: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, sort_keys=True, separators=(",", ":")))
-            handle.write("\n")
-            handle.flush()
-
-    def committed_offsets(self) -> dict[Path, int]:
-        offsets: dict[Path, int] = {}
-        if not self.path.exists():
-            return offsets
-        with self.path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                event = json.loads(line)
-                if event.get("type") != "input_committed":
-                    continue
-                path = Path(event["path"])
-                offsets[path] = max(offsets.get(path, 0), int(event["next_offset"]))
-        return offsets
-
-
 class _CheckpointStore:
     def __init__(self, path: Path):
         self.path = path
@@ -1177,12 +835,11 @@ class _CheckpointStore:
             return None
         return json.loads(self.path.read_text(encoding="utf-8"))
 
-    def write(self, config: Config, journal_path: Path, offsets: dict[Path, int]) -> None:
+    def write(self, config: Config, offsets: dict[Path, int]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": 1,
             "config": str(config.config_path),
-            "journal": str(journal_path),
             "inputs": {str(path): {"offset": offset} for path, offset in sorted(offsets.items())},
         }
         temp_path = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
@@ -1224,10 +881,8 @@ class _StreamRun:
         self.max_records = max_records
         self.stop_when_idle = stop_when_idle
         self.run_id = uuid.uuid4().hex
-        self.journal = _ExecutionJournal(_default_journal_path(config, self.run_id))
         self.offsets: dict[Path, int] = {}
         self.read_offsets: dict[Path, int] = {}
-        self.completed: dict[Path, dict[int, _StreamToken]] = {}
         self.root_inputs: tuple[Path, ...] = ()
         self.consumers: dict[Path, list[PipelineSpec]] = {}
         self.root_consumers: dict[Path, list[PipelineSpec]] = {}
@@ -1244,11 +899,9 @@ class _StreamRun:
         record_command_run_id(self.run_id)
         caught: BaseException | None = None
         try:
-            _validate_streamable(self.config)
             self._build_graph()
             self._load_offsets()
-            self.checkpoint.write(self.config, self.journal.path, self.offsets)
-            self.journal.append({"type": "run_started", "run_id": self.run_id, "config": str(self.config.config_path)})
+            self.checkpoint.write(self.config, self.offsets)
             self._init_publish_offsets()
             stop_event = self.stop_event or asyncio.Event()
             _bind_stop_signals(stop_event)
@@ -1264,17 +917,11 @@ class _StreamRun:
                         await self._process_line(line)
                         self.progress.render(self.runtime.stats)
                         if self.max_records is not None and processed >= self.max_records:
-                            await self._flush()
-                            self.journal.append({"type": "run_stopped", "reason": "max_records"})
                             return RunResult(self.runtime.stats, self.runtime.manifest)
                 if self.stop_when_idle and not made_progress:
-                    await self._flush()
-                    self.journal.append({"type": "run_stopped", "reason": "idle"})
                     return RunResult(self.runtime.stats, self.runtime.manifest)
                 if not made_progress:
                     await self._wait_for_input(stop_event)
-            await self._flush()
-            self.journal.append({"type": "run_stopped", "reason": "signal"})
             return RunResult(self.runtime.stats, self.runtime.manifest)
         except BaseException as exc:
             caught = exc
@@ -1314,14 +961,9 @@ class _StreamRun:
     def _load_offsets(self) -> None:
         checkpoint = None if self.reset_checkpoint else self.checkpoint.load()
         checkpoint_offsets: dict[Path, int] = {}
-        checkpoint_journal: Path | None = None
         if checkpoint and not self.from_start and not self.from_end:
-            checkpoint_journal = Path(checkpoint.get("journal", ""))
             for raw_path, item in checkpoint.get("inputs", {}).items():
                 checkpoint_offsets[Path(raw_path)] = int(item.get("offset", 0))
-        if checkpoint_journal and checkpoint_journal.exists():
-            for path, offset in _ExecutionJournal(checkpoint_journal).committed_offsets().items():
-                checkpoint_offsets[path] = max(checkpoint_offsets.get(path, 0), offset)
 
         for path in self.root_inputs:
             if self.from_end:
@@ -1333,55 +975,23 @@ class _StreamRun:
             self.read_offsets[path] = self.offsets[path]
 
     async def _process_line(self, line: _JsonlLine) -> None:
-        if line.blank:
-            token = _StreamToken(line.path, line.offset, line.next_offset, "<blank>")
-            self.journal.append(
-                {
-                    "type": "input_admitted",
-                    "path": str(line.path),
-                    "offset": line.offset,
-                    "next_offset": line.next_offset,
-                    "record_id": token.record_id,
-                }
-            )
-            self.read_offsets[line.path] = line.next_offset
-            self._mark_tokens_complete([token])
-            return
-        path_tuple = (self.runtime.next_root_index(),)
-        record_id = self.runtime.record_identity(line.record, path_tuple)
-        token = _StreamToken(line.path, line.offset, line.next_offset, record_id)
-        self.journal.append(
-            {
-                "type": "input_admitted",
-                "path": str(line.path),
-                "offset": line.offset,
-                "next_offset": line.next_offset,
-                "record_id": record_id,
-            }
-        )
-        self.runtime.stats.records_read += 1
         self.read_offsets[line.path] = line.next_offset
-        envelope = _Envelope(line.record, path_tuple, None, (token,))
-        for pipeline in self.root_consumers.get(line.path, []):
-            await self.runtime.process_stream_pipeline_envelopes(pipeline, [envelope])
-        terminal_tokens = await self._drain_writes()
-        terminal_tokens.extend(self.runtime.completed_stream_tokens)
-        self.runtime.completed_stream_tokens.clear()
-        self._mark_tokens_complete([*terminal_tokens, token])
+        if not line.blank:
+            self.runtime.stats.records_read += 1
+            envelope = _Envelope(line.record, (self.runtime.next_root_index(),), None)
+            for pipeline in self.root_consumers.get(line.path, []):
+                await self.runtime.process_stream_pipeline_envelopes(pipeline, [envelope])
+            await self._drain_writes()
+        self.offsets[line.path] = line.next_offset
+        self.checkpoint.write(self.config, self.offsets)
 
-    async def _drain_writes(self) -> list[_StreamToken]:
-        terminal_tokens: list[_StreamToken] = []
+    async def _drain_writes(self) -> None:
         while self._write_cursor < len(self.runtime.write_events):
             event = self.runtime.write_events[self._write_cursor]
             self._write_cursor += 1
             self._publish_new_outputs(event.path)
-            downstream = self.consumers.get(event.path, [])
-            if downstream:
-                for pipeline in downstream:
-                    await self.runtime.process_stream_pipeline_envelopes(pipeline, list(event.envelopes))
-            else:
-                terminal_tokens.extend(_envelope_stream_tokens(event.envelopes))
-        return terminal_tokens
+            for pipeline in self.consumers.get(event.path, []):
+                await self.runtime.process_stream_pipeline_envelopes(pipeline, list(event.envelopes))
 
     async def _wait_for_input(self, stop_event: asyncio.Event) -> None:
         if self.wake_event is not None and self.wake_event.is_set():
@@ -1431,45 +1041,6 @@ class _StreamRun:
                     continue
                 self.on_write(name, path, record, next_offset)
 
-    async def _flush(self) -> None:
-        for pipeline in self.config.pipelines:
-            await self.runtime.flush_stream_pipeline(pipeline)
-            terminal_tokens = await self._drain_writes()
-            terminal_tokens.extend(self.runtime.completed_stream_tokens)
-            self.runtime.completed_stream_tokens.clear()
-            self._mark_tokens_complete(terminal_tokens)
-
-    def _mark_tokens_complete(self, tokens: Iterable[_StreamToken]) -> None:
-        changed = False
-        for token in tokens:
-            if token in self.runtime.held_stream_tokens:
-                continue
-            if self.offsets.get(token.path, 0) > token.offset:
-                continue
-            self.completed.setdefault(token.path, {})[token.offset] = token
-
-        for path, by_offset in self.completed.items():
-            current = self.offsets.get(path, 0)
-            while current in by_offset:
-                token = by_offset.pop(current)
-                if token in self.runtime.held_stream_tokens:
-                    by_offset[token.offset] = token
-                    break
-                self.journal.append(
-                    {
-                        "type": "input_committed",
-                        "path": str(token.path),
-                        "offset": token.offset,
-                        "next_offset": token.next_offset,
-                        "record_id": token.record_id,
-                    }
-                )
-                current = token.next_offset
-                self.offsets[path] = current
-                changed = True
-        if changed:
-            self.checkpoint.write(self.config, self.journal.path, self.offsets)
-
 
 class _StreamProgress:
     def __init__(self, enabled: bool | None, stream: TextIO | None):
@@ -1491,20 +1062,6 @@ class _StreamProgress:
         if self.enabled:
             self.stream.write("\n")
             self.stream.flush()
-
-
-def _validate_streamable(config: Config) -> None:
-    for pipeline in config.pipelines:
-        _validate_streamable_steps(pipeline.steps)
-
-
-def _validate_streamable_steps(steps: tuple[Step, ...]) -> None:
-    for step in steps:
-        if step.kind != "group" or step.group is None:
-            continue
-        if step.group.kind == "by":
-            raise PipelineExecutionError("`by` groups need a close condition in streaming mode; use batch mode or wait for complete_when.")
-        _validate_streamable_steps(step.group.pipeline)
 
 
 def _collect_runtime_tee_paths(steps: tuple[Step, ...]) -> tuple[Path, ...]:
@@ -1546,10 +1103,6 @@ def _default_checkpoint_path(config: Config) -> Path:
     return config.base_dir / ".trace-miner" / "checkpoints" / f"{digest}.json"
 
 
-def _default_journal_path(config: Config, run_id: str) -> Path:
-    return config.base_dir / ".trace-miner" / "runs" / run_id / "journal.jsonl"
-
-
 def _bind_stop_signals(event: asyncio.Event) -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -1580,25 +1133,6 @@ def published_outputs(config: Config) -> dict[str, tuple[Path, ...]]:
             continue
         found[pipeline.name] = (alert_log_path(config, pipeline),)
     return found
-
-
-def _group_stream_tokens(children: list[_Envelope], parent_env: _Envelope | None) -> tuple[_StreamToken, ...]:
-    tokens = _envelope_stream_tokens(children)
-    if tokens:
-        return tuple(tokens)
-    return parent_env.stream_tokens if parent_env is not None else ()
-
-
-def _envelope_stream_tokens(envelopes: Iterable[_Envelope]) -> list[_StreamToken]:
-    seen: set[_StreamToken] = set()
-    tokens: list[_StreamToken] = []
-    for env in envelopes:
-        for token in env.stream_tokens:
-            if token in seen:
-                continue
-            seen.add(token)
-            tokens.append(token)
-    return tokens
 
 
 async def run_config_async(
@@ -1694,14 +1228,6 @@ def run_stream(
     raise PipelineExecutionError("`run_stream` cannot be called from a running event loop; use `run_stream_async`.")
 
 
-def _hashable_key(value: Any) -> Any:
-    try:
-        hash(value)
-    except TypeError as exc:
-        raise PipelineExecutionError(f"Group key is not hashable: {value!r}") from exc
-    return value
-
-
 def _lm_alert_flag(stage: StageRef) -> str:
     assert stage.lm_signature is not None
     names = [
@@ -1745,10 +1271,7 @@ def _iter_stages(config: Config) -> Iterable[StageRef]:
                 yield step.stage
             if step.group is None:
                 continue
-            if step.group.expand is not None:
-                yield step.group.expand
-            if isinstance(step.group.by, StageRef):
-                yield step.group.by
+            yield step.group.expand
             yield step.group.reduce
             yield from walk(step.group.pipeline)
 
@@ -1768,75 +1291,16 @@ def _make_lm(
     kwargs: dict[str, Any] = {"api_key": api_key, "cache": cache}
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
-    lm = dspy.LM(f"{provider}/{model}", **kwargs)
-    _install_usage_probe(lm)
-    return lm
-
-
-def _install_usage_probe(lm: Any) -> None:
-    finalize = getattr(lm, "_finalize_lm_response", None)
-    if finalize is None:
-        return
-
-    def probed(request: Any, response: Any) -> Any:
-        result = finalize(request, response)
-        _note_lm_usage(_usage_from_lm_response(result))
-        return result
-
-    lm._finalize_lm_response = probed
+    return dspy.LM(f"{provider}/{model}", **kwargs)
 
 
 def _invoke_dspy_sync(target: Any, kwargs: dict[str, Any], lm: Any) -> tuple[Any, LmUsage]:
     import dspy
 
-    _begin_lm_usage()
     with dspy.context(lm=lm):
         with dspy.track_usage() as tracker:
             prediction = target(**kwargs)
-    return prediction, _lm_usage_from_dspy(lm, tracker)
-
-
-def _begin_lm_usage() -> None:
-    _lm_usage_tls.entries = []
-
-
-def _note_lm_usage(usage: LmUsage) -> None:
-    entries = getattr(_lm_usage_tls, "entries", None)
-    if entries is None:
-        entries = []
-        _lm_usage_tls.entries = entries
-    entries.append(usage)
-
-
-def _take_lm_usage() -> tuple[LmUsage, int]:
-    entries = getattr(_lm_usage_tls, "entries", None) or []
-    _lm_usage_tls.entries = []
-    return (
-        LmUsage(
-            prompt_tokens=sum(entry.prompt_tokens for entry in entries),
-            completion_tokens=sum(entry.completion_tokens for entry in entries),
-            cost_usd=sum(entry.cost_usd for entry in entries),
-        ),
-        len(entries),
-    )
-
-
-def _usage_from_lm_response(response: Any) -> LmUsage:
-    usage = getattr(response, "usage", None)
-    if hasattr(usage, "model_dump"):
-        usage_dict = usage.model_dump()
-    elif isinstance(usage, dict):
-        usage_dict = usage
-    else:
-        usage_dict = {}
-    cost = _as_float(getattr(response, "cost", None))
-    if cost == 0.0:
-        cost = _as_float(usage_dict.get("cost") or usage_dict.get("response_cost"))
-    return LmUsage(
-        prompt_tokens=_as_int(usage_dict.get("prompt_tokens") or usage_dict.get("input_tokens")),
-        completion_tokens=_as_int(usage_dict.get("completion_tokens") or usage_dict.get("output_tokens")),
-        cost_usd=cost,
-    )
+    return prediction, _usage_from_tracker(tracker)
 
 
 def _usage_from_tracker(tracker: Any) -> LmUsage:
@@ -1851,33 +1315,6 @@ def _usage_from_tracker(tracker: Any) -> LmUsage:
         completion += _as_int(entry.get("completion_tokens") or entry.get("output_tokens"))
         cost += _as_float(entry.get("cost") or entry.get("response_cost"))
     return LmUsage(prompt_tokens=prompt, completion_tokens=completion, cost_usd=cost)
-
-
-def _lm_usage_from_dspy(lm: Any, tracker: Any) -> LmUsage:
-    noted, noted_calls = _take_lm_usage()
-    tracked = _usage_from_tracker(tracker)
-    if noted_calls:
-        return LmUsage(
-            prompt_tokens=noted.prompt_tokens or tracked.prompt_tokens,
-            completion_tokens=noted.completion_tokens or tracked.completion_tokens,
-            cost_usd=noted.cost_usd or tracked.cost_usd,
-        )
-    history = getattr(lm, "history", None) or []
-    if not history:
-        return tracked
-    last = history[-1]
-    usage = last.get("usage") if hasattr(last, "get") else getattr(last, "usage", None)
-    prompt = tracked.prompt_tokens
-    completion = tracked.completion_tokens
-    if isinstance(usage, dict):
-        prompt = prompt or _as_int(usage.get("prompt_tokens") or usage.get("input_tokens"))
-        completion = completion or _as_int(usage.get("completion_tokens") or usage.get("output_tokens"))
-    raw_cost = last.get("cost") if hasattr(last, "get") else getattr(last, "cost", None)
-    return LmUsage(
-        prompt_tokens=prompt,
-        completion_tokens=completion,
-        cost_usd=tracked.cost_usd or _as_float(raw_cost),
-    )
 
 
 def _is_unconfigured_dspy(exc: BaseException) -> bool:

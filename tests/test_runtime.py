@@ -44,9 +44,6 @@ def install_fake_lm(
     cost: float | list[float] = 0.0021,
     note_usage: bool = True,
 ) -> type[dspy.BaseLM]:
-    from trace_miner.model import LmUsage
-    from trace_miner.runtime import _note_lm_usage
-
     costs = list(cost) if isinstance(cost, list) else None
     cost_lock = threading.Lock()
 
@@ -78,15 +75,16 @@ def install_fake_lm(
                 if note_usage:
                     with cost_lock:
                         this_cost = costs.pop(0) if costs else cost
-                    _note_lm_usage(
-                        LmUsage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=this_cost)
-                    )
-                    self.history.append(
-                        {
-                            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
-                            "cost": this_cost,
-                        }
-                    )
+                    tracker = dspy.settings.usage_tracker
+                    if tracker is not None:
+                        tracker.add_usage(
+                            self.model,
+                            {
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "cost": this_cost,
+                            },
+                        )
                 return [content]
             finally:
                 with type(self)._gate:
@@ -386,6 +384,9 @@ def test_progress_bar_reports_reduce_progress(tmp_path: Path) -> None:
     config = write_project(
         tmp_path,
         """
+def split(record, ctx):
+    ctx.emit(record)
+
 def merge(children):
     return {"count": len(children)}
 """,
@@ -396,11 +397,11 @@ pipelines:
     out: output.jsonl
     pipeline:
       - group:
-          every: 2
+          expand: split
           pipeline: []
           reduce: merge
 """,
-        [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+        [{"id": "a"}, {"id": "b"}],
     )
     stream = io.StringIO()
 
@@ -449,34 +450,6 @@ pipelines:
     assert len(checkpoints) == 1
     checkpoint = json.loads(checkpoints[0].read_text(encoding="utf-8"))
     assert checkpoint["inputs"][str(tmp_path / "input.jsonl")]["offset"] == (tmp_path / "input.jsonl").stat().st_size
-
-
-def test_stream_recreates_missing_journal_parent_before_commit(tmp_path: Path) -> None:
-    config = write_project(
-        tmp_path,
-        """
-from pathlib import Path
-import shutil
-
-def remove_journal_parent(record):
-    shutil.rmtree(Path(__file__).parent / ".trace-miner" / "runs")
-    return record
-""",
-        """
-from: ./stages
-pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
-      - map: remove_journal_parent
-""",
-        [{"id": "a"}],
-    )
-
-    run_stream(config, max_records=1, poll_interval=0.01, progress=False)
-
-    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a"}]
-    assert list((tmp_path / ".trace-miner" / "runs").glob("*/journal.jsonl"))
 
 
 def test_stream_ignores_partial_line_until_newline(tmp_path: Path) -> None:
@@ -619,13 +592,14 @@ pipelines:
     assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "value": 5}]
 
 
-def test_stream_rejects_by_groups(tmp_path: Path) -> None:
-    config = write_project(
-        tmp_path,
-        """
+def test_by_and_every_groups_are_rejected(tmp_path: Path) -> None:
+    stages = """
 def total(children):
     return {"total": len(children)}
-""",
+"""
+    by_group = write_project(
+        tmp_path / "by",
+        stages,
         """
 from: ./stages
 pipelines:
@@ -638,18 +612,12 @@ pipelines:
 """,
         [{"id": "a", "kind": "x"}],
     )
+    with pytest.raises(ConfigError, match="only supports `expand`"):
+        load_config(by_group)
 
-    with pytest.raises(PipelineExecutionError, match="close condition"):
-        run_stream(config, max_records=1, progress=False)
-
-
-def test_stream_flushes_incomplete_every_on_shutdown(tmp_path: Path) -> None:
-    config = write_project(
-        tmp_path,
-        """
-def merge(children, ctx):
-    return {"window": ctx.key, "ids": [child["id"] for child in children]}
-""",
+    every_group = write_project(
+        tmp_path / "every",
+        stages,
         """
 from: ./stages
 pipelines:
@@ -658,17 +626,12 @@ pipelines:
     pipeline:
       - group:
           every: 2
-          reduce: merge
+          reduce: total
 """,
-        [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+        [{"id": "a"}],
     )
-
-    run_stream(config, max_records=3, poll_interval=0.01, progress=False)
-
-    assert read_jsonl(tmp_path / "output.jsonl") == [
-        {"ids": ["a", "b"], "window": 1},
-        {"ids": ["c"], "window": 2},
-    ]
+    with pytest.raises(ConfigError, match="only supports `expand`"):
+        load_config(every_group)
 
 
 def test_expand_group_handles_varying_sizes_and_empty_groups(tmp_path: Path) -> None:
@@ -767,112 +730,6 @@ pipelines:
     ]
     assert result.stats.groups_opened == 3
     assert result.stats.groups_reduced == 3
-
-
-def test_by_groups_reduce_at_end_of_input(tmp_path: Path) -> None:
-    config = write_project(
-        tmp_path,
-        """
-def total(children, ctx):
-    return {"key": ctx.key, "total": sum(child["value"] for child in children)}
-""",
-        """
-from: ./stages
-pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
-      - group:
-          by: kind
-          reduce: total
-""",
-        [
-            {"id": 1, "kind": "x", "value": 2},
-            {"id": 2, "kind": "y", "value": 5},
-            {"id": 3, "kind": "x", "value": 7},
-        ],
-    )
-
-    run_config(config)
-
-    assert read_jsonl(tmp_path / "output.jsonl") == [
-        {"key": "x", "total": 9},
-        {"key": "y", "total": 5},
-    ]
-
-
-def test_nested_by_group_replaces_outer_obligations_as_a_batch(tmp_path: Path) -> None:
-    config = write_project(
-        tmp_path,
-        """
-def split(record, ctx):
-    for item in record["items"]:
-        ctx.emit(item)
-
-def merge_kind(children, ctx):
-    return {"kind": ctx.key, "total": sum(child["value"] for child in children)}
-
-def merge_parent(children, ctx):
-    return {"parent": ctx.parent["id"], "children": children}
-""",
-        """
-from: ./stages
-pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
-      - group:
-          expand: split
-          pipeline:
-            - group:
-                by: kind
-                reduce: merge_kind
-          reduce: merge_parent
-""",
-        [
-            {
-                "id": "p",
-                "items": [
-                    {"kind": "same", "value": 2},
-                    {"kind": "same", "value": 3},
-                ],
-            }
-        ],
-    )
-
-    run_config(config)
-
-    assert read_jsonl(tmp_path / "output.jsonl") == [
-        {"children": [{"kind": "same", "total": 5}], "parent": "p"}
-    ]
-
-
-def test_every_groups_final_short_window(tmp_path: Path) -> None:
-    config = write_project(
-        tmp_path,
-        """
-def merge(children, ctx):
-    return {"window": ctx.key, "ids": [child["id"] for child in children]}
-""",
-        """
-from: ./stages
-pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
-      - group:
-          every: 2
-          reduce: merge
-""",
-        [{"id": 1}, {"id": 2}, {"id": 3}],
-    )
-
-    run_config(config)
-
-    assert read_jsonl(tmp_path / "output.jsonl") == [
-        {"ids": [1, 2], "window": 1},
-        {"ids": [3], "window": 2},
-    ]
 
 
 def test_stage_contract_errors(tmp_path: Path) -> None:
@@ -1260,8 +1117,8 @@ pipelines:
 """,
         [{"id": "a", "text": "hello"}],
     )
-    with pytest.raises(ConfigError, match="Unknown model `gpt-4o-mini-not-a-model` for `openai`"):
-        load_config(unknown_model)
+    loaded_model = load_config(unknown_model)
+    assert loaded_model.pipelines[0].steps[0].stage.lm_model == "gpt-4o-mini-not-a-model"
 
 
 def test_lm_openrouter_default_provider_invocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1706,17 +1563,14 @@ pipelines:
     assert result.stats.lm_cost_usd == pytest.approx(0.005)
 
 
-def test_usage_from_lm_response_reads_openrouter_cost() -> None:
-    from types import SimpleNamespace
+def test_usage_from_tracker_reads_cost() -> None:
+    from trace_miner.runtime import _usage_from_tracker
 
-    from trace_miner.runtime import _usage_from_lm_response
+    class Tracker:
+        def get_total_tokens(self) -> dict[str, dict[str, float]]:
+            return {"openrouter/model": {"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.0015}}
 
-    usage = _usage_from_lm_response(
-        SimpleNamespace(
-            cost=None,
-            usage={"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.0015},
-        )
-    )
+    usage = _usage_from_tracker(Tracker())
     assert usage.prompt_tokens == 100
     assert usage.completion_tokens == 20
     assert usage.cost_usd == 0.0015
@@ -1974,55 +1828,6 @@ pipelines:
     assert read_jsonl(tmp_path / "output.jsonl") == [
         {"summary": "A:hot", "text": "session", "trace": "A", "id": "trace-a"}
     ]
-
-
-def test_lm_reduce_by_group_gets_synthetic_parent_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = write_project(
-        tmp_path,
-        """
-import dspy
-
-
-class MergeSig(dspy.Signature):
-    kind: str = dspy.InputField()
-    value: list[int] = dspy.InputField()
-    summary: str = dspy.OutputField()
-
-
-class Merge(dspy.Module):
-    def __init__(self):
-        super().__init__()
-        self.signature = MergeSig
-
-    def forward(self, kind, value):
-        return dspy.Prediction(summary=f"{kind}={sum(value)}")
-
-
-merge = Merge()
-""",
-        """
-from: ./stages
-lm:
-  default: deepseek/deepseek-v4.1-flash
-pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
-      - group:
-          by: kind
-          reduce: merge
-""",
-        [
-            {"id": 1, "kind": "ore", "value": 2},
-            {"id": 2, "kind": "ore", "value": 5},
-        ],
-    )
-    install_fake_lm(monkeypatch)
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-
-    run_config(config)
-
-    assert read_jsonl(tmp_path / "output.jsonl") == [{"kind": "ore", "summary": "ore=7"}]
 
 
 def test_lm_invalid_output_flows_through_child_error_policy(
