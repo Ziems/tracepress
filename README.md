@@ -1,8 +1,8 @@
 # Trace Miner
 
-YAML pipelines over JSONL traces. Stage logic is ordinary Python or a DSPy signature.
+Find failures, PII, frustration, or misbehavior in agent traces.
 
-Use it to find failures, PII, frustration, or misbehavior in long agent runs.
+YAML names the pipeline. Stage logic is ordinary Python or a DSPy signature.
 
 ## Setup
 
@@ -21,7 +21,7 @@ cd my-trace-pipelines
 trace-miner summarize.yaml
 ```
 
-That writes shared stages, four batch pipelines, a live-tail stream, and three example traces. Open `output/summaries.jsonl` when it finishes, then try `pii.yaml`, `frustration.yaml`, or `category.yaml` on the same traces.
+That writes `stages.py`, three example traces, and six demo pipelines: `summarize.yaml`, `pii.yaml`, `frustration.yaml`, `category.yaml`, `stream.yaml`, and `alerts.yaml`. Open `output/summaries.jsonl` when it finishes.
 
 ## Commands
 
@@ -29,9 +29,9 @@ That writes shared stages, four batch pipelines, a live-tail stream, and three e
 trace-miner init [directory] [--force]
 trace-miner <config.yaml> [--progress]
 trace-miner run <config.yaml> [--progress]
-trace-miner stream <config.yaml> [--reset-checkpoint] [--progress]
+trace-miner stream <config.yaml> [--reset-checkpoint] [--from-end] [--progress]
 trace-miner serve <config.yaml> [--host 127.0.0.1] [--port 8765]
-trace-miner replay <source.jsonl> --into <live.jsonl> [--interval 3] [--reset]
+trace-miner replay <source.jsonl> --into <live.jsonl> [--interval 3] [--limit N] [--reset]
 trace-miner stats
 ```
 
@@ -51,7 +51,7 @@ trace-miner stats
 
 ```yaml
 from: ./stages                  # module where stage names are resolved
-id_field: session_id            # optional; used in error messages
+id_field: session_id            # optional; names the record in errors and alerts
 
 lm:                             # optional LM defaults
   provider: openrouter
@@ -71,7 +71,7 @@ pipelines:
           reduce: diagnose_trajectory
 ```
 
-A stage name is a Python function or a DSPy module:
+A stage name is a module-level function or DSPy module. YAML uses that attribute (`detect_failure`), not the class.
 
 ```python
 def has_steps(record):
@@ -93,9 +93,7 @@ class DetectFailure(dspy.Signature):
 detect_failure = dspy.Predict(DetectFailure)
 ```
 
-Steps are `map`, `filter`, `stage`, `tee`, and `group`. Groups can `expand`, `by`, or `every` in batch. Streams support `expand` and `every`.
-
-LM stages use OpenRouter. Cache and usage live in `~/.trace-miner/`. `trace-miner stats` prints totals.
+Steps are `map`, `filter`, `stage`, `tee`, `alert`, and `group`. Groups can `expand`, `by`, or `every` in batch. Streams support `expand` and `every`.
 
 ## Streaming
 
@@ -105,7 +103,7 @@ In one terminal:
 trace-miner stream stream.yaml --reset-checkpoint --progress
 ```
 
-In another (simulating data streaming in):
+In another:
 
 ```bash
 trace-miner replay input/trajectories.jsonl --into input/live.jsonl --reset
@@ -118,8 +116,10 @@ Summaries append to `output/stream_summaries.jsonl`. Checkpoints live in `.trace
 On the pipeline host:
 
 ```bash
-trace-miner serve pipeline.yaml --host 0.0.0.0 --port 8765
+trace-miner serve alerts.yaml --host 0.0.0.0 --port 8765
 ```
+
+`alerts.yaml` names the pipeline `alerts`. `flag_sensitive_step` returns a reason for a planted SSN, phone number, or "taking forever". The step is written to `output/alerts.jsonl`. The alert is written under `.trace-miner/alerts/`.
 
 On the eval host:
 
@@ -127,17 +127,21 @@ On the eval host:
 from trace_miner.client import Client
 
 client = Client("http://pipeline-host:8765")
-
-with client.watch("alerts", rollout_id="r1") as alerts:
-    for step in agent.run():
-        if alerts.latest:
-            raise EvalAborted(alerts.latest.reason)
-        client.post_step(step)
+with client.watch("alerts", session_id="r1") as alerts:
+    client.post_step(step)
+    if alerts.latest:
+        raise SystemExit(alerts.latest.reason)
 ```
 
-`pipeline.yaml` names the pipeline. `alert` steps in it append to that pipeline's alert log. The eval machine does not read the files. `alerts.latest` stays empty until an alert fires.
+`alerts.latest` stays empty until an alert fires. The eval machine does not read the files.
 
-Each posted rollout is split into steps, summarized, then reduced. The reduce decides whether the agent is stuck doing the same thing over and over. The alert step publishes that judgment:
+`python client_demo.py` in the new project replays the bundled traces and stops on the planted SSN:
+
+```text
+aborted terminal-bench/atrx-vep-crispr step 2: ssn
+```
+
+To judge the whole rollout, expand the steps, reduce, then alert. A `list` input on the reduce is gathered from the children. Other reduce outputs merge onto the rollout. The alert event copies `id_field` (`session_id` here). The alert step returns a reason or `None`.
 
 ```yaml
 - group:
@@ -177,6 +181,4 @@ def flag_doom_loop(record):
     return record.get("pattern") or "stuck repeating itself"
 ```
 
-`step_summary` on the reduce is the list gathered from the steps. The other reduce outputs merge onto the rollout, which still carries `id_field`. When `doom_loop` is true, the alert event is `{"name": "flag_doom_loop", "reason": "retrying the same pytest command", "rollout_id": "r1"}`.
-
-`trace-miner init` writes this loop as `alerts.yaml` and `client_demo.py`. Serve with `trace-miner serve alerts.yaml`, then run `python client_demo.py` in the new project. The script replays the bundled traces and stops when `flag_sensitive_step` returns a reason.
+When `doom_loop` is true, the event is `{"name": "flag_doom_loop", "reason": "retrying the same pytest command", "session_id": "r1"}`.
