@@ -189,7 +189,9 @@ Rules:
 - One YAML file can hold multiple pipeline blocks. If one's `in` is another's
   `out`, they run in that order.
 - `id_field` is for error messages, not grouping.
-- `lm.max_concurrent` caps simultaneous OpenRouter calls. Keep it at least 64
+- `lm.provider` is `openrouter`, `openai`, or `anthropic`. The default is `openrouter`.
+- `lm.default` must be a model for that provider. OpenRouter: `deepseek/deepseek-v4.1-flash`, `openai/gpt-4o`, `anthropic/claude-sonnet-4`. OpenAI: `gpt-4o-mini`, `gpt-4o`, `gpt-6-astra`. Anthropic: `claude-haiku-4-5`, `claude-sonnet-5`, `claude-opus-5-5`.
+- `lm.max_concurrent` caps simultaneous LM calls. Keep it at least 64
   unless the user asks otherwise.
 - `lm.cache` defaults to true and uses DSPy's request cache in
   `~/.trace-miner/cache`. Set `cache: false` to force a fresh call every time.

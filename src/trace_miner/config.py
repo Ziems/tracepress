@@ -17,6 +17,7 @@ from trace_miner.model import (
     DEFAULT_LM_MODEL,
     DEFAULT_LM_MAX_CONCURRENT,
     DEFAULT_LM_PROVIDER,
+    LM_PROVIDERS,
     Config,
     Defaults,
     GroupSpec,
@@ -132,13 +133,15 @@ def _parse_lm_config(raw: Any) -> tuple[str, str, int, bool]:
     provider = raw.get("provider", DEFAULT_LM_PROVIDER)
     if not isinstance(provider, str):
         raise ConfigError("`lm.provider` must be a string when provided.")
-    if provider != "openrouter":
-        raise ConfigError("Only `lm.provider: openrouter` is supported in the LM MVP.")
+    if provider not in LM_PROVIDERS:
+        supported = ", ".join(sorted(LM_PROVIDERS))
+        raise ConfigError(f"`lm.provider` must be one of: {supported}.")
     default = raw.get("default")
     if default is None:
         default = DEFAULT_LM_MODEL
     if default is not None and not isinstance(default, str):
         raise ConfigError("`lm.default` must be a string when provided.")
+    _require_supported_model(provider, default)
     max_concurrent = raw.get("max_concurrent", DEFAULT_LM_MAX_CONCURRENT)
     if not isinstance(max_concurrent, int) or max_concurrent <= 0:
         raise ConfigError("`lm.max_concurrent` must be a positive integer when provided.")
@@ -277,11 +280,20 @@ def _resolve_stage(
             return None
         raise ConfigError(f"Unknown stage `{name}`.")
     fn = getattr(module, name)
-    lm_signature = _lm_signature(fn)
-    if lm_signature is not None:
+    if _is_dspy_module(fn):
+        lm_signature = _lm_signature(fn)
+        if lm_signature is None:
+            raise ConfigError(
+                f"DSPy stage `{name}` must expose a signature with `input_fields` and `output_fields`."
+            )
         model = step_model or lm_default_model
+        _require_supported_model(lm_provider, model)
         _validate_lm_stage(name, role, lm_signature)
         return StageRef(name, fn, kind="lm", role=role, lm_signature=lm_signature, lm_model=model, lm_provider=lm_provider)
+    if _is_dspy_signature(fn):
+        raise ConfigError(f"Stage `{name}` is a DSPy signature. Use `dspy.Predict` or another `dspy.Module`.")
+    if _lm_signature(fn) is not None:
+        raise ConfigError(f"Stage `{name}` is not a DSPy module. LM stages must be `dspy.Predict` or another `dspy.Module`.")
     if step_model is not None:
         raise ConfigError(f"Python stage `{name}` cannot declare `lm` options.")
     if not callable(fn):
@@ -322,6 +334,28 @@ def _parse_stage_selector(raw: Any) -> tuple[str, str | None]:
     if not isinstance(model, str):
         raise ConfigError("Per-step `lm.model` must be a string.")
     return name, model
+
+
+def _require_supported_model(provider: str, model: str) -> None:
+    supported = LM_PROVIDERS[provider].models
+    if model in supported:
+        return
+    names = ", ".join(supported)
+    raise ConfigError(f"Unknown model `{model}` for `{provider}`. Supported models: {names}.")
+
+
+def _is_dspy_module(target: Any) -> bool:
+    import dspy
+
+    return isinstance(target, dspy.Module)
+
+
+def _is_dspy_signature(target: Any) -> bool:
+    import dspy
+
+    if isinstance(target, dspy.Signature):
+        return True
+    return isinstance(target, type) and issubclass(target, dspy.Signature)
 
 
 def _lm_signature(target: Any) -> LmSignature | None:
