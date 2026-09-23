@@ -23,6 +23,7 @@ from trace_miner.model import (
     Config,
     Defaults,
     GroupSpec,
+    LmChoice,
     LmField,
     LmModels,
     LmSignature,
@@ -35,7 +36,8 @@ from trace_miner.model import (
 _KNOWN_TOP_LEVEL = {"from", "defaults", "id_field", "pipelines", "concurrency", "lm"}
 _KNOWN_LM_KEYS = {"cache", "default", "max_concurrent", "provider", *LM_MODEL_ROLES}
 _KNOWN_STEP_OPTIONS = {"stage", "lm"}
-_KNOWN_PER_STEP_LM_KEYS = {"model"}
+_KNOWN_PER_STEP_LM_KEYS = {"model", "provider"}
+_KNOWN_LM_CHOICE_KEYS = {"model", "provider"}
 _KNOWN_DEFAULTS = {"on_child_error", "ordered"}
 _STEP_KEYS = {"map", "filter", "stage", "tee", "alert", "group"}
 _GROUP_KEYS = {
@@ -71,7 +73,7 @@ def load_config(path: str | Path) -> Config:
 
     module = _load_stage_module(raw["from"], base_dir)
     defaults = _parse_defaults(raw.get("defaults", {}))
-    lm_provider, lm_models, lm_max_concurrent, lm_cache = _parse_lm_config(raw.get("lm"))
+    lm_models, lm_max_concurrent, lm_cache = _parse_lm_config(raw.get("lm"))
     id_field = raw.get("id_field")
     if id_field is not None and not isinstance(id_field, str):
         raise ConfigError("`id_field` must be a string when provided.")
@@ -81,7 +83,7 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError("`pipelines` must be a non-empty list.")
 
     pipelines = tuple(
-        _parse_pipeline(block, i, base_dir, module, defaults, lm_provider, lm_models)
+        _parse_pipeline(block, i, base_dir, module, defaults, lm_models)
         for i, block in enumerate(pipelines_raw)
     )
     pipelines = _sort_pipelines(pipelines)
@@ -92,8 +94,8 @@ def load_config(path: str | Path) -> Config:
         module,
         defaults,
         id_field,
-        lm_provider,
-        lm_models.default,
+        lm_models.default.provider,
+        lm_models.default.model,
         lm_max_concurrent,
         lm_cache,
         pipelines,
@@ -117,11 +119,10 @@ def _parse_defaults(raw: Any) -> Defaults:
     return Defaults(on_child_error, ordered)
 
 
-def _parse_lm_config(raw: Any) -> tuple[str, LmModels, int, bool]:
+def _parse_lm_config(raw: Any) -> tuple[LmModels, int, bool]:
     if raw is None:
         return (
-            DEFAULT_LM_PROVIDER,
-            _lm_models(DEFAULT_LM_MODEL, {}, default_was_set=False),
+            _lm_models(DEFAULT_LM_PROVIDER, None, {}, default_was_set=False),
             DEFAULT_LM_MAX_CONCURRENT,
             DEFAULT_LM_CACHE,
         )
@@ -130,38 +131,72 @@ def _parse_lm_config(raw: Any) -> tuple[str, LmModels, int, bool]:
     unknown = set(raw) - _KNOWN_LM_KEYS
     if unknown:
         raise ConfigError(f"Unsupported post-MVP `lm` key(s): {sorted(unknown)}")
-    provider = raw.get("provider", DEFAULT_LM_PROVIDER)
-    if not isinstance(provider, str):
-        raise ConfigError("`lm.provider` must be a string when provided.")
-    if provider not in LM_PROVIDERS:
-        supported = ", ".join(sorted(LM_PROVIDERS))
-        raise ConfigError(f"`lm.provider` must be one of: {supported}.")
+    provider = _parse_provider(raw.get("provider", DEFAULT_LM_PROVIDER), "`lm.provider`")
     default_was_set = "default" in raw
-    default = raw.get("default", DEFAULT_LM_MODEL)
-    if not isinstance(default, str) or not default:
-        raise ConfigError("`lm.default` must be a non-empty string when provided.")
-    by_role: dict[str, str] = {}
+    default = (
+        _parse_lm_choice(raw["default"], where="lm.default", fallback_provider=provider, fallback_model=DEFAULT_LM_MODEL)
+        if default_was_set
+        else LmChoice(provider, DEFAULT_LM_MODEL)
+    )
+    by_role: dict[str, LmChoice] = {}
     for role in LM_MODEL_ROLES:
         if role not in raw:
             continue
-        model = raw[role]
-        if not isinstance(model, str) or not model:
-            raise ConfigError(f"`lm.{role}` must be a non-empty string when provided.")
-        by_role[role] = model
+        by_role[role] = _parse_lm_choice(
+            raw[role],
+            where=f"lm.{role}",
+            fallback_provider=default.provider,
+            fallback_model=default.model,
+        )
     max_concurrent = raw.get("max_concurrent", DEFAULT_LM_MAX_CONCURRENT)
     if not isinstance(max_concurrent, int) or max_concurrent <= 0:
         raise ConfigError("`lm.max_concurrent` must be a positive integer when provided.")
     cache = raw.get("cache", DEFAULT_LM_CACHE)
     if not isinstance(cache, bool):
         raise ConfigError("`lm.cache` must be a boolean when provided.")
-    return provider, _lm_models(default, by_role, default_was_set=default_was_set), max_concurrent, cache
+    return _lm_models(provider, default, by_role, default_was_set=default_was_set), max_concurrent, cache
 
 
-def _lm_models(default: str, by_role: dict[str, str], *, default_was_set: bool) -> LmModels:
+def _lm_models(
+    provider: str,
+    default: LmChoice | None,
+    by_role: dict[str, LmChoice],
+    *,
+    default_was_set: bool,
+) -> LmModels:
+    choice = default or LmChoice(provider, DEFAULT_LM_MODEL)
     resolved = dict(by_role)
-    if not default_was_set:
-        resolved.setdefault("reduce", DEFAULT_REDUCE_LM_MODEL)
-    return LmModels(default, resolved)
+    if not default_was_set and "reduce" not in resolved:
+        resolved["reduce"] = LmChoice(choice.provider, DEFAULT_REDUCE_LM_MODEL)
+    return LmModels(choice, resolved)
+
+
+def _parse_lm_choice(raw: Any, *, where: str, fallback_provider: str, fallback_model: str) -> LmChoice:
+    if isinstance(raw, str):
+        if not raw:
+            raise ConfigError(f"`{where}` must be a non-empty string when provided.")
+        return LmChoice(fallback_provider, raw)
+    if not isinstance(raw, dict):
+        raise ConfigError(f"`{where}` must be a model id or a mapping with `provider` and `model`.")
+    unknown = set(raw) - _KNOWN_LM_CHOICE_KEYS
+    if unknown:
+        raise ConfigError(f"Unknown `{where}` key(s): {sorted(unknown)}")
+    if "provider" not in raw and "model" not in raw:
+        raise ConfigError(f"`{where}` needs `provider` or `model`.")
+    provider = _parse_provider(raw.get("provider", fallback_provider), f"`{where}.provider`")
+    model = raw.get("model", fallback_model)
+    if not isinstance(model, str) or not model:
+        raise ConfigError(f"`{where}.model` must be a non-empty string when provided.")
+    return LmChoice(provider, model)
+
+
+def _parse_provider(provider: Any, where: str) -> str:
+    if not isinstance(provider, str):
+        raise ConfigError(f"{where} must be a string when provided.")
+    if provider not in LM_PROVIDERS:
+        supported = ", ".join(sorted(LM_PROVIDERS))
+        raise ConfigError(f"{where} must be one of: {supported}.")
+    return provider
 
 
 def _parse_pipeline(
@@ -170,7 +205,6 @@ def _parse_pipeline(
     base_dir: Path,
     module: ModuleType,
     defaults: Defaults,
-    lm_provider: str,
     lm_models: LmModels,
 ) -> PipelineSpec:
     if not isinstance(raw, dict):
@@ -190,7 +224,7 @@ def _parse_pipeline(
         raise ConfigError(f"Pipeline {source_index + 1} must have at least one input.")
     inputs = tuple(_normalize_path(item, base_dir, f"pipeline {source_index + 1} input") for item in input_items)
     output = _normalize_path(raw["out"], base_dir, f"pipeline {source_index + 1} output")
-    steps = _parse_steps(raw["pipeline"], base_dir, module, defaults, lm_provider, lm_models, f"pipeline {source_index + 1}")
+    steps = _parse_steps(raw["pipeline"], base_dir, module, defaults, lm_models, f"pipeline {source_index + 1}")
     return PipelineSpec(inputs, output, steps, source_index, name)
 
 
@@ -199,7 +233,6 @@ def _parse_steps(
     base_dir: Path,
     module: ModuleType,
     defaults: Defaults,
-    lm_provider: str,
     lm_models: LmModels,
     where: str,
 ) -> tuple[Step, ...]:
@@ -213,14 +246,14 @@ def _parse_steps(
         if key not in _STEP_KEYS:
             raise ConfigError(f"Unknown step key `{key}` in {where} step {idx}.")
         if key in {"map", "filter", "stage", "alert"}:
-            steps.append(Step(kind=key, stage=_resolve_stage(value, module, lm_provider, lm_models, role=key)))
+            steps.append(Step(kind=key, stage=_resolve_stage(value, module, lm_models, role=key)))
         elif key == "tee":
             steps.append(Step(kind="tee", path=_normalize_path(value, base_dir, f"{where} tee")))
         else:
             steps.append(
                 Step(
                     kind="group",
-                    group=_parse_group(value, base_dir, module, defaults, lm_provider, lm_models, f"{where} group step {idx}"),
+                    group=_parse_group(value, base_dir, module, defaults, lm_models, f"{where} group step {idx}"),
                 )
             )
     return tuple(steps)
@@ -231,7 +264,6 @@ def _parse_group(
     base_dir: Path,
     module: ModuleType,
     defaults: Defaults,
-    lm_provider: str,
     lm_models: LmModels,
     where: str,
 ) -> GroupSpec:
@@ -258,10 +290,10 @@ def _parse_group(
     if not isinstance(ordered, bool):
         raise ConfigError(f"{where} `ordered` must be a boolean.")
 
-    expand = _resolve_stage(raw["expand"], module, lm_provider, lm_models, role="expand")
+    expand = _resolve_stage(raw["expand"], module, lm_models, role="expand")
     assert expand is not None
-    child_steps = _parse_steps(raw.get("pipeline", []), base_dir, module, defaults, lm_provider, lm_models, where)
-    reduce = _resolve_stage(raw["reduce"], module, lm_provider, lm_models, role="reduce")
+    child_steps = _parse_steps(raw.get("pipeline", []), base_dir, module, defaults, lm_models, where)
+    reduce = _resolve_stage(raw["reduce"], module, lm_models, role="reduce")
     assert reduce is not None
     return GroupSpec(expand, child_steps, reduce, on_child_error, ordered)
 
@@ -269,12 +301,11 @@ def _parse_group(
 def _resolve_stage(
     raw: Any,
     module: ModuleType,
-    lm_provider: str,
     lm_models: LmModels,
     role: str,
     missing_ok: bool = False,
 ) -> StageRef | None:
-    name, step_model = _parse_stage_selector(raw)
+    name, step_model, step_provider = _parse_stage_selector(raw)
     if not hasattr(module, name):
         if missing_ok:
             return None
@@ -286,16 +317,18 @@ def _resolve_stage(
             raise ConfigError(
                 f"DSPy stage `{name}` must expose a signature with `input_fields` and `output_fields`."
             )
-        model = step_model or lm_models.for_role(role)
+        choice = lm_models.for_role(role)
+        model = step_model or choice.model
+        provider = step_provider or choice.provider
         if not model:
             raise ConfigError(f"LM stage `{name}` needs a model.")
         _validate_lm_stage(name, role, lm_signature)
-        return StageRef(name, fn, kind="lm", role=role, lm_signature=lm_signature, lm_model=model, lm_provider=lm_provider)
+        return StageRef(name, fn, kind="lm", role=role, lm_signature=lm_signature, lm_model=model, lm_provider=provider)
     if _is_dspy_signature(fn):
         raise ConfigError(f"Stage `{name}` is a DSPy signature. Use `dspy.Predict` or another `dspy.Module`.")
     if _lm_signature(fn) is not None:
         raise ConfigError(f"Stage `{name}` is not a DSPy module. LM stages must be `dspy.Predict` or another `dspy.Module`.")
-    if step_model is not None:
+    if step_model is not None or step_provider is not None:
         raise ConfigError(f"Python stage `{name}` cannot declare `lm` options.")
     if not callable(fn):
         raise ConfigError(f"Stage `{name}` is not callable.")
@@ -310,9 +343,9 @@ def _resolve_stage(
     return StageRef(name, fn, kind="python", role=role, accepts_ctx=two_arg, is_async=inspect.iscoroutinefunction(fn))
 
 
-def _parse_stage_selector(raw: Any) -> tuple[str, str | None]:
+def _parse_stage_selector(raw: Any) -> tuple[str, str | None, str | None]:
     if isinstance(raw, str):
-        return raw, None
+        return raw, None, None
     if not isinstance(raw, dict):
         raise ConfigError("Stage names must be strings or mappings with `stage`.")
     unknown = set(raw) - _KNOWN_STEP_OPTIONS
@@ -325,16 +358,21 @@ def _parse_stage_selector(raw: Any) -> tuple[str, str | None]:
         raise ConfigError("`stage` must be a string.")
     lm_raw = raw.get("lm")
     if lm_raw is None:
-        return name, None
+        return name, None, None
     if not isinstance(lm_raw, dict):
         raise ConfigError("Per-step `lm` must be a mapping.")
     unknown_lm = set(lm_raw) - _KNOWN_PER_STEP_LM_KEYS
     if unknown_lm:
         raise ConfigError(f"Unsupported post-MVP per-step `lm` key(s): {sorted(unknown_lm)}")
+    if "model" not in lm_raw and "provider" not in lm_raw:
+        raise ConfigError("Per-step `lm` needs `provider` or `model`.")
     model = lm_raw.get("model")
-    if not isinstance(model, str):
-        raise ConfigError("Per-step `lm.model` must be a string.")
-    return name, model
+    if model is not None and (not isinstance(model, str) or not model):
+        raise ConfigError("Per-step `lm.model` must be a non-empty string when provided.")
+    provider = lm_raw.get("provider")
+    if provider is not None:
+        provider = _parse_provider(provider, "Per-step `lm.provider`")
+    return name, model, provider
 
 
 def _is_dspy_module(target: Any) -> bool:

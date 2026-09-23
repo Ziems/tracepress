@@ -77,8 +77,8 @@ DSPy is the supported authoring dependency. An LM stage is a `dspy.Module`, such
 `input_fields` and `output_fields`, is a load error.
 
 DSPy modules are executed by DSPy (`dspy.Predict` via stock `dspy.LM`). The provider and model
-still come from config: `lm.provider`, `lm.default`, role keys such as `lm.map` and `lm.reduce`, and
-per-step `lm.model`.
+still come from config: `lm.default`, role blocks such as `lm.map` and `lm.reduce`, and
+per-step `lm.provider` / `lm.model`. Each block names a provider and a model together.
 
 ## A3. Amends section 3, stage contract
 
@@ -186,24 +186,32 @@ uses:
 
 ```yaml
 lm:
-  provider: openrouter
-  default: deepseek/deepseek-v4.1-flash
-  reduce: anthropic/claude-sonnet-5
   max_concurrent: 64
   cache: true
+  default:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+  reduce:
+    provider: openrouter
+    model: anthropic/claude-sonnet-5
 ```
 
-The default model id is the OpenRouter slug for DeepSeek V4.1 Flash. That model is used for
+The default model id is the OpenRouter slug for DeepSeek V4.1 Flash. That choice is used for
 `map`, `filter`, `expand`, and `alert`. `reduce` is the exception: when `lm.default` is omitted,
-an LM reduce uses `anthropic/claude-sonnet-5`.
+an LM reduce uses OpenRouter `anthropic/claude-sonnet-5`.
 
 ```yaml
 lm:
-  provider: openrouter
-  default: deepseek/deepseek-v4.1-flash
-  map: deepseek/deepseek-v4.1-flash
-  reduce: anthropic/claude-sonnet-5
   max_concurrent: 64
+  default:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+  map:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+  reduce:
+    provider: openrouter
+    model: anthropic/claude-sonnet-5
 
 pipelines:
   - in: traces.jsonl
@@ -212,31 +220,34 @@ pipelines:
       - filter: keep
       - map:
           stage: label
-          lm: {model: openai/gpt-4o}
+          lm: {provider: openai, model: gpt-4o}
 ```
 
 The expanded step form, a mapping with `stage:` plus options, must also work for Python stages.
 Do not create two step grammars.
 
-`lm.map`, `lm.filter`, `lm.expand`, `lm.reduce`, and `lm.alert` set the model for that step
-kind. Each value is a non-empty model id. A per-step `lm.model` overrides the role model.
+`lm.default`, `lm.map`, `lm.filter`, `lm.expand`, `lm.reduce`, and `lm.alert` each name the
+provider and model for that step kind. A role block may be a mapping with `provider` and
+`model`, or a model-id string. A missing `provider` inherits the default provider. A missing
+role uses `default`. A per-step `lm.provider` or `lm.model` overrides the role for that stage.
+Either per-step key may be omitted; the omitted half stays on the role choice.
 
-If any LM stage is used, a model is resolved from the per-step `lm.model`, the role key
-(`lm.map`, `lm.reduce`, and the other LM step kinds), top-level `lm.default`, or the built-in
-default, in that order. Setting `lm.default` also covers reduce. The reduce built-in
-`anthropic/claude-sonnet-5` applies only when both `lm.default` and `lm.reduce` are omitted.
-A per-step `lm` block on a Python stage is a load error, because model selection only has
-meaning for LM stages.
+If any LM stage is used, its choice is resolved from the per-step `lm` block, the role block,
+`lm.default`, or the built-in default, in that order. Setting `lm.default` also covers reduce.
+The reduce built-in applies only when both `lm.default` and `lm.reduce` are omitted: provider
+`openrouter`, model `anthropic/claude-sonnet-5`. A per-step `lm` block on a Python stage is a
+load error, because model selection only has meaning for LM stages.
 
-`lm.provider` is one of `openrouter`, `openai`, or `anthropic`. Anything else is a load error.
-Trace Miner calls `dspy.LM("{provider}/{model}")`. The API keys are `OPENROUTER_API_KEY`,
-`OPENAI_API_KEY`, and `ANTHROPIC_API_KEY`. OpenRouter also asks for cost in the usage payload.
-The default provider is `openrouter`.
+A top-level `lm.provider` is the fallback provider when a choice does not set its own. It is
+one of `openrouter`, `openai`, or `anthropic`. Anything else is a load error. Trace Miner calls
+`dspy.LM("{provider}/{model}")`. The API keys are `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, and
+`ANTHROPIC_API_KEY`. OpenRouter also asks for cost in the usage payload. The default provider
+is `openrouter`.
 
-`lm.default`, role keys such as `lm.map` and `lm.reduce`, and per-step `lm.model` are model ids
-for that provider. Any non-empty string is accepted. The default model is
+Model ids are any non-empty string for that provider. The default model is
 `deepseek/deepseek-v4.1-flash`, except an LM reduce with no `lm.default` and no `lm.reduce`,
-which uses `anthropic/claude-sonnet-5`.
+which uses `anthropic/claude-sonnet-5` on OpenRouter. A string value such as
+`default: gpt-4o-mini` is the model id on the inherited provider.
 
 `lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 64 and must be a
 positive integer.
@@ -253,8 +264,9 @@ Post-MVP, this `lm` block may grow policy fields such as:
 
 ```yaml
 lm:
-  provider: openrouter
-  default: deepseek/deepseek-v4.1-flash
+  default:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
   retries: 3
   on_invalid: repair        # repair | fail
 ```

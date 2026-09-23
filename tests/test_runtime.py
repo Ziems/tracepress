@@ -1170,7 +1170,10 @@ pipelines:
     loaded = load_config(builtin)
     group = loaded.pipelines[0].steps[0].group
     assert group is not None
+    assert group.pipeline[0].stage is not None
+    assert group.pipeline[0].stage.lm_provider == DEFAULT_LM_PROVIDER
     assert group.pipeline[0].stage.lm_model == DEFAULT_LM_MODEL
+    assert group.reduce.lm_provider == DEFAULT_LM_PROVIDER
     assert group.reduce.lm_model == DEFAULT_REDUCE_LM_MODEL
 
     explicit_default = write_project(
@@ -1263,6 +1266,60 @@ pipelines:
         {"id": "a", "summary": "done", "text": "ore"}
     ]
     assert {lm.model for lm in FakeLM.instances} == {map_model, reduce_model}
+
+    split_providers = write_project(
+        tmp_path / "split-providers",
+        stages,
+        """
+from: ./stages
+lm:
+  default:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+  map:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+  reduce:
+    provider: anthropic
+    model: claude-sonnet-5
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          expand: split
+          pipeline:
+            - map: label
+          reduce: merge
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    loaded_split = load_config(split_providers)
+    split_group = loaded_split.pipelines[0].steps[0].group
+    assert split_group is not None
+    assert split_group.pipeline[0].stage is not None
+    assert split_group.pipeline[0].stage.lm_provider == "openrouter"
+    assert split_group.reduce.lm_provider == "anthropic"
+    assert split_group.reduce.lm_model == "claude-sonnet-5"
+    assert loaded_split.lm_provider == "openrouter"
+    assert loaded_split.lm_default_model == "deepseek/deepseek-v4.1-flash"
+
+    SplitLM = install_fake_lm(
+        monkeypatch,
+        {
+            map_model: chat_completion(label="ORE"),
+            "anthropic/claude-sonnet-5": chat_completion(summary="done"),
+        },
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+
+    run_config(split_providers)
+
+    by_model = {lm.model: lm for lm in SplitLM.instances}
+    assert by_model[map_model].api_key == "test-key"
+    assert by_model[map_model].extra_body == {"usage": {"include": True}}
+    assert by_model["anthropic/claude-sonnet-5"].api_key == "anthropic-key"
+    assert by_model["anthropic/claude-sonnet-5"].extra_body is None
 
 
 def test_lm_openrouter_default_provider_invocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

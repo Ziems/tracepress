@@ -19,13 +19,19 @@ LM_MODEL_ROLES = ("alert", "expand", "filter", "map", "reduce")
 
 
 @dataclass(frozen=True)
+class LmChoice:
+    provider: str
+    model: str
+
+
+@dataclass(frozen=True)
 class LmModels:
-    """Fallback model plus any role overrides. Role keys win over `default`."""
+    """Default provider and model, plus any role overrides."""
 
-    default: str
-    by_role: dict[str, str]
+    default: LmChoice
+    by_role: dict[str, LmChoice]
 
-    def for_role(self, role: str) -> str:
+    def for_role(self, role: str) -> LmChoice:
         return self.by_role.get(role, self.default)
 
 

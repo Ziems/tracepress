@@ -201,7 +201,7 @@ class _Runtime:
         self._root_counter = 0
         self._open_groups: list[_GroupState] = []
         self._lm_semaphore: asyncio.Semaphore | None = None
-        self._dspy_lms: dict[str, Any] = {}
+        self._dspy_lms: dict[tuple[str, str], Any] = {}
         self.progress = _ProgressReporter(progress, progress_stream)
         self.append_outputs = append_outputs
         self.capture_writes = capture_writes
@@ -648,24 +648,30 @@ class _Runtime:
         self._stage_kinds.append(stage.role)
 
     def _prepare_dspy_lms(self) -> None:
-        models = {
-            stage.lm_model
+        choices = {
+            (stage.lm_provider, stage.lm_model)
             for stage in _iter_stages(self.config)
-            if stage.kind == "lm" and stage.lm_model
+            if stage.kind == "lm" and stage.lm_provider and stage.lm_model
         }
-        if not models:
+        if not choices:
             return
-        provider = LM_PROVIDERS[self.config.lm_provider]
-        api_key = os.environ.get(provider.api_key_env)
-        if not api_key:
-            raise PipelineExecutionError(
-                f"{provider.api_key_env} is required for `{self.config.lm_provider}` LM stages."
-            )
         configure_lm_cache()
-        self._dspy_lms = {
-            model: _make_lm(self.config.lm_provider, model, api_key, self.config.lm_cache, provider.extra_body)
-            for model in models
-        }
+        lms: dict[tuple[str, str], Any] = {}
+        api_keys: dict[str, str] = {}
+        for provider_name, model in choices:
+            provider = LM_PROVIDERS[provider_name]
+            api_key = api_keys.get(provider_name)
+            if api_key is None:
+                api_key = os.environ.get(provider.api_key_env)
+                if not api_key:
+                    raise PipelineExecutionError(
+                        f"{provider.api_key_env} is required for `{provider_name}` LM stages."
+                    )
+                api_keys[provider_name] = api_key
+            lms[(provider_name, model)] = _make_lm(
+                provider_name, model, api_key, self.config.lm_cache, provider.extra_body
+            )
+        self._dspy_lms = lms
 
     def _lm_slot(self) -> asyncio.Semaphore:
         if self._lm_semaphore is None:
@@ -676,8 +682,8 @@ class _Runtime:
         return await self._invoke_dspy(stage, kwargs)
 
     async def _invoke_dspy(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
-        assert stage.lm_model is not None
-        lm = self._dspy_lms[stage.lm_model]
+        assert stage.lm_provider is not None and stage.lm_model is not None
+        lm = self._dspy_lms[(stage.lm_provider, stage.lm_model)]
         async with self._lm_slot():
             prediction, usage = await asyncio.to_thread(_invoke_dspy_sync, stage.target, kwargs, lm)
         self.stats.record_lm(usage)

@@ -178,10 +178,16 @@ from: ./stages
 id_field: session_id
 
 lm:
-  provider: openrouter
-  default: deepseek/deepseek-v4.1-flash
-  reduce: anthropic/claude-sonnet-5
   max_concurrent: 64
+  default:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+  map:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+  reduce:
+    provider: openrouter
+    model: anthropic/claude-sonnet-5
 
 pipelines:
   - in: input/trajectories.jsonl
@@ -201,14 +207,14 @@ Rules:
 - One YAML file can hold multiple pipeline blocks. If one's `in` is another's
   `out`, they run in that order.
 - `id_field` is for error messages, not grouping.
-- `lm.provider` is `openrouter`, `openai`, or `anthropic`. The default is `openrouter`.
-- `lm.default` is the model for LM steps that do not set their own. The built-in is `deepseek/deepseek-v4.1-flash`.
-- `lm.map`, `lm.filter`, `lm.expand`, `lm.reduce`, and `lm.alert` override that for one step kind. When `lm.default` is omitted, reduce uses `anthropic/claude-sonnet-5`.
+- `lm.default`, `lm.map`, `lm.filter`, `lm.expand`, `lm.reduce`, and `lm.alert` each take `provider` and `model`. Providers are `openrouter`, `openai`, and `anthropic`.
+- A missing role uses `default`. A missing `provider` uses the default provider. When `default` is omitted, reduce uses OpenRouter `anthropic/claude-sonnet-5` and other LM steps use OpenRouter `deepseek/deepseek-v4.1-flash`.
+- A string such as `reduce: some-model` is still a model id on the inherited provider.
 - `lm.max_concurrent` caps simultaneous LM calls. Keep it at least 64
   unless the user asks otherwise.
 - `lm.cache` defaults to true and uses DSPy's request cache in
   `~/.trace-miner/cache`. Set `cache: false` to force a fresh call every time.
-- Override one step with `lm: {model: ...}` only on LM stages. That wins over the role default.
+- Override one step with `lm: {provider: ..., model: ...}` only on LM stages. That wins over the role.
 
 ### Step forms
 

@@ -47,11 +47,17 @@ from: ./stages                  # module where stage names are resolved
 id_field: session_id            # optional; names the record in errors and alerts
 
 lm:                             # optional LM defaults
-  provider: openrouter          # openrouter, openai, or anthropic
-  default: deepseek/deepseek-v4.1-flash  # map, filter, expand, and alert
-  reduce: anthropic/claude-sonnet-5      # LM reduce; also the built-in
   max_concurrent: 64
   cache: true                   # LM cache under ~/.trace-miner/cache
+  default:
+    provider: openrouter        # openrouter, openai, or anthropic
+    model: deepseek/deepseek-v4.1-flash
+  map:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+  reduce:
+    provider: openrouter
+    model: anthropic/claude-sonnet-5
 
 pipelines:
   - in: input/trajectories.jsonl
@@ -65,7 +71,7 @@ pipelines:
           reduce: diagnose_trajectory
 ```
 
-`lm.map`, `lm.filter`, `lm.expand`, `lm.reduce`, and `lm.alert` set the model for that step kind. A per-step `lm.model` overrides them. If `lm.default` is omitted, reduce uses `anthropic/claude-sonnet-5` and every other LM step uses `deepseek/deepseek-v4.1-flash`. Setting `lm.default` applies that model to reduce too, unless `lm.reduce` is set.
+`default`, `map`, `filter`, `expand`, `reduce`, and `alert` each take a `provider` and `model`. A missing role uses `default`. A missing `provider` inside a role uses the default provider. If `default` is omitted, reduce uses OpenRouter `anthropic/claude-sonnet-5` and every other LM step uses OpenRouter `deepseek/deepseek-v4.1-flash`. A string such as `reduce: some-model` is the model id on the inherited provider. A per-step `lm.provider` or `lm.model` overrides the role.
 
 A stage name is a module-level function or DSPy module. YAML uses that attribute (`detect_failure`), not the class.
 

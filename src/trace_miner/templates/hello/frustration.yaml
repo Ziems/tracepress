@@ -2,9 +2,10 @@ from: ./stages
 id_field: session_id
 
 lm:
-  provider: openrouter
-  default: deepseek/deepseek-v4.1-flash
   max_concurrent: 64
+  default:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
 
 pipelines:
   - in: input/trajectories.jsonl
