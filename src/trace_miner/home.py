@@ -100,7 +100,7 @@ def format_usage(stats: dict[str, Any] | None = None) -> str:
         lines.append(f"{runs} runs")
 
     parts = []
-    for name in ("init", "run", "stream", "serve", "replay"):
+    for name in ("init", "run", "serve"):
         count = int(commands.get(name) or 0)
         if count:
             parts.append(f"{name} {count}")

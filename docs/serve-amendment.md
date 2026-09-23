@@ -6,13 +6,13 @@ JSONL paths and checkpoints stay on the pipeline host. The client only has a bas
 
 ## N1. What this adds
 
-`stream` and `replay` stay the same-machine tools. Across machines:
+`serve` is the live path. It runs the follow runtime and an HTTP server in one process:
 
 ```bash
 trace-miner serve pipeline.yaml --host 0.0.0.0 --port 8765
 ```
 
-`serve` runs the streaming runtime and an HTTP server in one process. It binds `127.0.0.1` unless `--host` is set.
+It binds `127.0.0.1` unless `--host` is set.
 
 - `POST /v1/records` appends one JSON object as a newline-terminated line to the single root input and returns `202` once that append is flushed. It does not wait for the pipeline.
 - `GET /v1/events` is a Server-Sent Events response for one named pipeline's alert log.
@@ -26,7 +26,7 @@ A pipeline may declare `name`. The name is optional, unique, and is the only pub
 ```yaml
 pipelines:
   - name: alerts
-    in: input/live.jsonl
+    in: input/alerts.jsonl
     out: output/steps.jsonl
     pipeline:
       - group:

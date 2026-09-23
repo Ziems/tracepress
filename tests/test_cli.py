@@ -8,16 +8,15 @@ import pytest
 from trace_miner.cli import main
 from trace_miner.config import load_config
 from trace_miner.home import load_stats
-from trace_miner.replay import replay_jsonl
 
 
 def read_jsonl(path: Path) -> list[object]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
-def test_stream_rejects_conflicting_start_modes(capsys: pytest.CaptureFixture[str]) -> None:
+def test_serve_rejects_conflicting_start_modes(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
-        main(["stream", "pipeline.yaml", "--from-start", "--from-end"])
+        main(["serve", "pipeline.yaml", "--from-start", "--from-end"])
 
     assert exc.value.code == 2
     assert "not allowed with argument" in capsys.readouterr().err
@@ -35,10 +34,10 @@ def test_root_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
     out = capsys.readouterr().out
     assert "init" in out
     assert "run" in out
-    assert "stream" in out
     assert "serve" in out
-    assert "replay" in out
     assert "stats" in out
+    assert "stream" not in out
+    assert "replay" not in out
     assert "trace-miner pipeline.yaml" in out
 
 
@@ -51,20 +50,12 @@ def test_command_help_documents_usage(capsys: pytest.CaptureFixture[str]) -> Non
     assert "Pipeline YAML path" in run
     assert "--progress" in run
 
-    stream = _command_help(["stream", "--help"], capsys)
-    assert "Pipeline YAML path" in stream
-    assert "--reset-checkpoint" in stream
-    assert "--from-end" in stream
-
     serve = _command_help(["serve", "--help"], capsys)
     assert "Pipeline YAML path" in serve
     assert "--host" in serve
     assert "--port" in serve
-
-    replay = _command_help(["replay", "--help"], capsys)
-    assert "--into" in replay
-    assert "--reset" in replay
-    assert "--interval" in replay
+    assert "--reset-checkpoint" in serve
+    assert "--from-end" in serve
 
     stats = _command_help(["stats", "--help"], capsys)
     assert "~/.trace-miner" in stats
@@ -99,29 +90,29 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert "Created a hello-world project" in out
     assert "trace-miner summarize.yaml" in out
     assert "pii.yaml" in out
-    assert "stream.yaml" in out
     assert "alerts.yaml" in out
     assert "trace-miner serve alerts.yaml" in out
     assert "python client_demo.py" in out
     assert "AGENTS.md" in out
-    assert "trace-miner replay" in out
+    assert "stream.yaml" not in out
+    assert "trace-miner replay" not in out
     assert (dest / "summarize.yaml").is_file()
     assert (dest / "pii.yaml").is_file()
     assert (dest / "frustration.yaml").is_file()
     assert (dest / "category.yaml").is_file()
-    assert (dest / "stream.yaml").is_file()
     assert (dest / "alerts.yaml").is_file()
+    assert not (dest / "stream.yaml").exists()
     assert (dest / "client_demo.py").is_file()
     assert (dest / "stages.py").is_file()
     assert (dest / "AGENTS.md").is_file()
     assert (dest / "input" / "trajectories.jsonl").is_file()
-    assert (dest / "input" / "live.jsonl").is_file()
-    assert (dest / "input" / "live.jsonl").read_text(encoding="utf-8") == ""
+    assert not (dest / "input" / "live.jsonl").exists()
     assert (dest / "input" / "alerts.jsonl").read_text(encoding="utf-8") == ""
     assert not (dest / "simulate_stream.py").exists()
     agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
     assert "trace-miner summarize.yaml" in agents
-    assert "trace-miner replay" in agents
+    assert "trace-miner serve alerts.yaml" in agents
+    assert "trace-miner replay" not in agents
     assert "stages.py" in agents
 
     traces = (dest / "input" / "trajectories.jsonl").read_text(encoding="utf-8")
@@ -135,7 +126,7 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
         "terminal-bench/freecad-spring-clip",
     ]
 
-    for name in ("summarize.yaml", "pii.yaml", "frustration.yaml", "category.yaml", "stream.yaml", "alerts.yaml"):
+    for name in ("summarize.yaml", "pii.yaml", "frustration.yaml", "category.yaml", "alerts.yaml"):
         config = load_config(dest / name)
         assert config.pipelines[0].output.name.endswith(".jsonl")
     alerts = load_config(dest / "alerts.yaml")
@@ -245,86 +236,4 @@ def test_batch_does_not_print_output_on_failure(tmp_path: Path, capsys: pytest.C
     captured = capsys.readouterr()
     assert "Wrote " not in captured.out
     assert "trace-miner:" in captured.err
-
-
-def test_replay_appends_all_records_by_default(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    source = tmp_path / "source.jsonl"
-    dest = tmp_path / "live.jsonl"
-    source.write_text('{"id":"a"}\n{"id":"b"}\n\n{"id":"c"}\n', encoding="utf-8")
-    dest.write_text('{"id":"existing"}\n', encoding="utf-8")
-
-    assert main(["replay", str(source), "--into", str(dest), "--interval", "0"]) == 0
-    out = capsys.readouterr().out
-    assert "appended trajectory 3" in out
-    assert "done: appended 3 trajectories" in out
-    assert read_jsonl(dest) == [{"id": "existing"}, {"id": "a"}, {"id": "b"}, {"id": "c"}]
-
-
-def test_replay_limit_one_appends_a_single_record(tmp_path: Path) -> None:
-    source = tmp_path / "source.jsonl"
-    dest = tmp_path / "live.jsonl"
-    source.write_text('{"id":"a"}\n{"id":"b"}\n{"id":"c"}\n', encoding="utf-8")
-
-    assert main(["replay", str(source), "--into", str(dest), "--interval", "0", "--limit", "1"]) == 0
-    assert read_jsonl(dest) == [{"id": "a"}]
-
-
-def test_replay_reset_truncates_then_appends(tmp_path: Path) -> None:
-    source = tmp_path / "source.jsonl"
-    dest = tmp_path / "nested" / "live.jsonl"
-    source.write_text('{"id":"a"}\n{"id":"b"}\n', encoding="utf-8")
-    dest.parent.mkdir()
-    dest.write_text('{"id":"old"}\n', encoding="utf-8")
-
-    assert main(["replay", str(source), "--into", str(dest), "--interval", "0", "--reset"]) == 0
-    assert read_jsonl(dest) == [{"id": "a"}, {"id": "b"}]
-
-
-def test_replay_reset_only_truncates_without_appending(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    source = tmp_path / "source.jsonl"
-    dest = tmp_path / "live.jsonl"
-    source.write_text('{"id":"a"}\n', encoding="utf-8")
-    dest.write_text('{"id":"old"}\n', encoding="utf-8")
-
-    assert main(["replay", str(source), "--into", str(dest), "--reset-only"]) == 0
-    assert dest.read_text(encoding="utf-8") == ""
-    out = capsys.readouterr().out
-    assert "reset live input" in out
-    assert "appended" not in out
-
-
-def test_replay_rejects_negative_interval(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc:
-        main(["replay", "source.jsonl", "--into", "live.jsonl", "--interval", "-1"])
-
-    assert exc.value.code == 2
-    assert "--interval must be non-negative" in capsys.readouterr().err
-
-
-def test_replay_rejects_negative_limit(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc:
-        main(["replay", "source.jsonl", "--into", "live.jsonl", "--limit", "-1"])
-
-    assert exc.value.code == 2
-    assert "--limit must be non-negative" in capsys.readouterr().err
-
-
-def test_replay_missing_source(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    dest = tmp_path / "live.jsonl"
-    assert main(["replay", str(tmp_path / "missing.jsonl"), "--into", str(dest), "--interval", "0"]) == 1
-    assert "is not a file" in capsys.readouterr().err
-
-
-def test_replay_sleeps_between_records_not_after_last(tmp_path: Path) -> None:
-    source = tmp_path / "source.jsonl"
-    dest = tmp_path / "live.jsonl"
-    source.write_text('{"id":"a"}\n{"id":"b"}\n{"id":"c"}\n', encoding="utf-8")
-    sleeps: list[float] = []
-
-    replay_jsonl(source, dest, interval=3, limit=0, sleep=sleeps.append, log=lambda _: None)
-
-    assert sleeps == [3, 3]
-    assert read_jsonl(dest) == [{"id": "a"}, {"id": "b"}, {"id": "c"}]
 

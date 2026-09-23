@@ -170,7 +170,7 @@ def test_hello_client_demo_stops_on_the_planted_ssn(tmp_path: Path) -> None:
         )
         assert completed.returncode == 1
         assert "aborted terminal-bench/atrx-vep-crispr step 2: ssn" in completed.stderr
-        assert "replay terminal-bench/atrx-vep-crispr step 1" in completed.stdout
+        assert "post terminal-bench/atrx-vep-crispr step 1" in completed.stdout
         assert "photonic" not in completed.stdout
         alerts = read_jsonl(dest / ".trace-miner" / "alerts" / "alerts.jsonl")
         assert len(alerts) == 1

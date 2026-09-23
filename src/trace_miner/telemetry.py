@@ -38,8 +38,8 @@ _INVOKED_BY = (
     ("GEMINI_CLI", "gemini"),
 )
 
-# Labels a stream run as `serve` when the HTTP server owns it.
-run_command_name: ContextVar[str] = ContextVar("trace_miner_run_command", default="stream")
+# Labels a follow-runtime run. `serve` sets this to `serve` before it starts.
+run_command_name: ContextVar[str] = ContextVar("trace_miner_run_command", default="serve")
 
 _install_id: str | None = None
 _command_run_ids: list[str] = []
@@ -144,7 +144,7 @@ def command_telemetry_from_argv(
     options_for: Callable[[str], set[str]],
 ) -> tuple[str, str, list[str], bool]:
     """Return command, command path, registered flag names, and whether the config was bare."""
-    commands = {"init", "run", "stream", "serve", "replay", "stats"}
+    commands = {"init", "run", "serve", "stats"}
     if not argv or argv[0] in {"-h", "--help"}:
         flags = [argv[0]] if argv else []
         return "", "", flags, False

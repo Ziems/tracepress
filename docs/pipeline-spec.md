@@ -113,7 +113,7 @@ A DSPy `alert` stage has exactly one bool output. False stays quiet. True writes
 {"name": "detect_frustration", "session_id": "s1", "has_frustration": true, "evidence": "This is taking forever"}
 ```
 
-`name` is the stage name. `reason` is the string a Python stage returned. When `id_field` is set, that field is copied from the record. Inside a group it is copied from the parent when the child record does not have it. Named pipelines write `.trace-miner/alerts/<name>.jsonl`. A pipeline with no name writes `.trace-miner/alerts/<index>.jsonl`, using the pipeline's position in the file starting at 0. A batch run truncates that file at the start of the pipeline. A stream appends.
+`name` is the stage name. `reason` is the string a Python stage returned. When `id_field` is set, that field is copied from the record. Inside a group it is copied from the parent when the child record does not have it. Named pipelines write `.trace-miner/alerts/<name>.jsonl`. A pipeline with no name writes `.trace-miner/alerts/<index>.jsonl`, using the pipeline's position in the file starting at 0. A batch run truncates that file at the start of the pipeline. A serve run appends.
 
 ### Group block keys
 

@@ -83,13 +83,13 @@ def test_opt_out_skips_build_and_send(monkeypatch: pytest.MonkeyPatch, value: st
 def test_flag_parser_keeps_registered_names() -> None:
     options = {
         "run": {"--progress", "--no-progress", "-h", "--help"},
-        "stream": {"--poll-interval", "--from-end", "--progress", "-h", "--help"},
+        "serve": {"--poll-interval", "--from-end", "--progress", "-h", "--help"},
     }
     command, path, flags, bare = command_telemetry_from_argv(
-        ["stream", "pipe.yaml", "--poll-interval=2", "positional", "--from-end", "--", "--progress"],
+        ["serve", "pipe.yaml", "--poll-interval=2", "positional", "--from-end", "--", "--progress"],
         lambda name: options[name],
     )
-    assert (command, path, bare) == ("stream", "stream", False)
+    assert (command, path, bare) == ("serve", "serve", False)
     assert flags == ["--poll-interval", "--from-end"]
 
     command, path, flags, bare = command_telemetry_from_argv(

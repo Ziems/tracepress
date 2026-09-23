@@ -21,7 +21,7 @@ cd my-trace-pipelines
 trace-miner summarize.yaml
 ```
 
-That writes `stages.py`, three example traces, and six demo pipelines: `summarize.yaml`, `pii.yaml`, `frustration.yaml`, `category.yaml`, `stream.yaml`, and `alerts.yaml`. Open `output/summaries.jsonl` when it finishes.
+That writes `stages.py`, three example traces, and five demo pipelines: `summarize.yaml`, `pii.yaml`, `frustration.yaml`, `category.yaml`, and `alerts.yaml`. Open `output/summaries.jsonl` when it finishes.
 
 ## Commands
 
@@ -29,9 +29,7 @@ That writes `stages.py`, three example traces, and six demo pipelines: `summariz
 trace-miner init [directory] [--force]
 trace-miner <config.yaml> [--progress]
 trace-miner run <config.yaml> [--progress]
-trace-miner stream <config.yaml> [--reset-checkpoint] [--from-end] [--progress]
 trace-miner serve <config.yaml> [--host 127.0.0.1] [--port 8765]
-trace-miner replay <source.jsonl> --into <live.jsonl> [--interval 3] [--limit N] [--reset]
 trace-miner stats
 ```
 
@@ -39,11 +37,7 @@ trace-miner stats
 
 `run` and a bare config path are the same batch command. `--progress` always shows stage bars.
 
-`stream` processes each JSONL line as it is appended. `--reset-checkpoint` starts at byte 0. `--from-end` skips lines already in the file.
-
-`serve` runs a stream and accepts steps over HTTP. A client watches a named pipeline for alerts. Bind beyond localhost with `--host`.
-
-`replay` appends records into a live file. `--reset` truncates first. `--limit 1` sends one record.
+`serve` accepts steps over HTTP and pushes alerts. A client watches a named pipeline. Bind beyond localhost with `--host`.
 
 `stats` prints local usage totals from `~/.trace-miner/`.
 
@@ -95,23 +89,7 @@ detect_failure = dspy.Predict(DetectFailure)
 
 Steps are `map`, `filter`, `stage`, `tee`, `alert`, and `group`. A group expands one parent, runs a child pipeline, then reduces.
 
-## Streaming
-
-In one terminal:
-
-```bash
-trace-miner stream stream.yaml --reset-checkpoint --progress
-```
-
-In another:
-
-```bash
-trace-miner replay input/trajectories.jsonl --into input/live.jsonl --reset
-```
-
-Summaries append to `output/stream_summaries.jsonl`. Checkpoints live in `.trace-miner/` beside the config.
-
-## Remote alerts
+## Alerts
 
 On the pipeline host:
 
@@ -135,7 +113,7 @@ with client.watch("alerts", session_id="r1") as alerts:
 
 `alerts.latest` stays empty until an alert fires. The eval machine does not read the files.
 
-`python client_demo.py` in the new project replays the bundled traces and stops on the planted SSN:
+`python client_demo.py` in the new project posts the bundled traces and stops on the planted SSN:
 
 ```text
 aborted terminal-bench/atrx-vep-crispr step 2: ssn

@@ -61,13 +61,13 @@ def test_record_run_accumulates_usage(isolate_trace_miner_home: Path) -> None:
         extra={"config": "/tmp/pipeline.yaml"},
     )
     record_run(
-        "stream",
+        "serve",
         RunStats(records_read=1, retired=1, elapsed_s=0.5, lm_calls=1, lm_prompt_tokens=4, lm_cost_usd=0.002),
     )
 
     stats = load_stats()
     assert stats["runs"] == 2
-    assert stats["commands"] == {"run": 1, "stream": 1}
+    assert stats["commands"] == {"run": 1, "serve": 1}
     assert stats["records_read"] == 4
     assert stats["emitted"] == 4
     assert stats["retired"] == 3
@@ -81,18 +81,18 @@ def test_record_run_accumulates_usage(isolate_trace_miner_home: Path) -> None:
     assert stats["updated_at"]
 
     events = [json.loads(line) for line in runs_path().read_text(encoding="utf-8").splitlines()]
-    assert [event["command"] for event in events] == ["run", "stream"]
+    assert [event["command"] for event in events] == ["run", "serve"]
     assert events[0]["config"] == "/tmp/pipeline.yaml"
     assert events[0]["lm_calls"] == 2
 
 
 def test_record_command_counts_without_a_run(isolate_trace_miner_home: Path) -> None:
     record_command("init", extra={"directory": "/tmp/demo"})
-    record_command("replay")
+    record_command("serve")
 
     stats = load_stats()
     assert stats["runs"] == 0
-    assert stats["commands"] == {"init": 1, "replay": 1}
+    assert stats["commands"] == {"init": 1, "serve": 1}
     events = [json.loads(line) for line in runs_path().read_text(encoding="utf-8").splitlines()]
     assert events[0]["directory"] == "/tmp/demo"
 

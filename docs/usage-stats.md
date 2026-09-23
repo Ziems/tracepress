@@ -27,7 +27,7 @@ Both events include the app version, install source (`package`, `editable`, `sou
 Sent when a CLI invocation finishes, including errors and interrupts.
 
 - `schema`: `trace_miner.command_finished.v1`
-- `command` and `command_path`: `init`, `run`, `stream`, `serve`, `replay`, `stats`, or empty for root help and no args
+- `command` and `command_path`: `init`, `run`, `serve`, `stats`, or empty for root help and no args
 - `bare`: true when the config path was passed without `run`
 - `command_flags`: registered flag names only
 - `status`: `completed`, `errored`, or `interrupted`
@@ -38,11 +38,11 @@ Sent when a CLI invocation finishes, including errors and interrupts.
 
 ### `trace_miner.run_finished`
 
-Sent when a batch run, stream, or serve finishes, including handled errors and interrupts.
+Sent when a batch run or serve finishes, including handled errors and interrupts.
 
 - `schema`: `trace_miner.run_finished.v1`
 - `run_id`
-- `command`: `run`, `stream`, or `serve`
+- `command`: `run` or `serve`
 - `status`: `completed`, `errored`, or `interrupted`
 - `duration_seconds`
 - `exception_type`

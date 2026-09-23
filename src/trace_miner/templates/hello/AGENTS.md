@@ -11,22 +11,14 @@ bodies in YAML. Do not invent a second stage module unless the user asks.
 ```bash
 trace-miner <config.yaml> [--progress]
 trace-miner run <config.yaml> [--progress]
-trace-miner stream <config.yaml> [--reset-checkpoint] [--progress]
 trace-miner serve <config.yaml> [--host 127.0.0.1] [--port 8765]
-trace-miner replay <source.jsonl> --into <live.jsonl> [--interval 3] [--reset]
 trace-miner stats
 ```
 
 `run` and a bare config path are the same batch command. `--progress` always
 shows stage bars.
 
-`stream` processes each JSONL line as it is appended. `--reset-checkpoint`
-starts at byte 0. `--from-end` skips lines already in the file.
-
-`replay` appends records into a live file. `--reset` truncates first.
-`--limit 1` sends one record.
-
-`serve` runs a stream and accepts steps over HTTP. `alerts.yaml` is the
+`serve` accepts steps over HTTP and pushes alerts. `alerts.yaml` is the
 bundled example. Bind beyond localhost with `--host`.
 
 `stats` prints local usage totals from `~/.trace-miner/`.
@@ -51,21 +43,7 @@ trace-miner frustration.yaml
 trace-miner category.yaml
 ```
 
-`stream.yaml` is the live-tail sibling of `summarize.yaml`. In one terminal:
-
-```bash
-trace-miner stream stream.yaml --reset-checkpoint --progress
-```
-
-In another:
-
-```bash
-trace-miner replay input/trajectories.jsonl --into input/live.jsonl --reset
-```
-
-That replays all three traces. Use `--limit 1` to send a single trace.
-
-`alerts.yaml` serves an alert stream. In one terminal:
+`alerts.yaml` serves alerts. In one terminal:
 
 ```bash
 trace-miner serve alerts.yaml
@@ -77,7 +55,7 @@ In another, from this directory:
 python client_demo.py
 ```
 
-That replays `input/trajectories.jsonl` one step at a time and exits when
+That posts `input/trajectories.jsonl` one step at a time and exits when
 `flag_sensitive_step` returns a reason. The first hit is the planted SSN in
 the ATRX trace.
 
@@ -127,12 +105,10 @@ module's other outputs on `alerts.latest.record`.
 | Path | Role |
 | --- | --- |
 | `*.yaml` | Pipeline topology only: inputs, outputs, step order, model policy |
-| `stream.yaml` | Live-tail copy of `summarize.yaml`; `in: input/live.jsonl` |
 | `alerts.yaml` | Named `alerts` pipeline; `in: input/alerts.jsonl` |
 | `client_demo.py` | Posts trajectory steps to a running `serve` and stops on an abort |
 | `stages.py` | Shared Python functions and DSPy signatures |
 | `input/trajectories.jsonl` | Three slim harbor traces |
-| `input/live.jsonl` | Replay target. Starts empty. Gitignored. |
 | `input/alerts.jsonl` | Serve target for `alerts.yaml`. Starts empty. Gitignored. |
 | `output/` | Generated JSONL. Gitignored. Safe to overwrite |
 | `README.md` | Human walkthrough |
@@ -154,11 +130,10 @@ Three harbor traces with planted signals:
 | `pii.yaml` | expand steps → LM detect → Python reduce | `output/pii.jsonl` |
 | `frustration.yaml` | expand steps → LM detect → Python reduce | `output/frustration.jsonl` |
 | `category.yaml` | prepare → expand steps → LM summarize → LM categorize → compact | `output/categories.jsonl` |
-| `stream.yaml` | same as `summarize.yaml`, reading `input/live.jsonl` | `output/stream_summaries.jsonl` |
 | `alerts.yaml` | `alert: flag_sensitive_step` on posted steps | `output/alerts.jsonl` |
 
-Prefer copying one of these over inventing a new shape. Feed `stream.yaml` with
-`trace-miner replay`; do not write a helper script.
+Prefer copying one of these over inventing a new shape. Post live steps with
+`trace-miner serve`; do not write a helper script.
 
 ## How a pipeline is written
 
@@ -204,7 +179,7 @@ Rules:
 | `map: name` | Stage must emit exactly 1 |
 | `filter: name` | Stage must emit 0 or 1 |
 | `stage: name` | No emit-count assertion |
-| `tee: path.jsonl` | Write the current records aside; stream continues unchanged |
+| `tee: path.jsonl` | Write the current records aside; the pipeline continues unchanged |
 | `alert: name` | Publish an alert; the record continues unchanged |
 | `group:` | Expand children, run a child pipeline, then reduce |
 
@@ -314,7 +289,7 @@ give the signature `ctx`.
 ## Adding a pipeline
 
 1. Copy the closest YAML (`pii.yaml` for per-step detection, `summarize.yaml`
-   for trajectory diagnosis, `stream.yaml` for a live-tail of summarize).
+   for trajectory diagnosis, `alerts.yaml` for a served alert pipeline).
 2. Add or reuse stages in `stages.py`. Name the YAML keys exactly after those
    attributes.
 3. Point `out:` at a new file under `output/`.
@@ -338,7 +313,7 @@ shape is different. Clip long strings before they reach an LM.
 - Do not add `lm:` options to a Python stage.
 - Do not change `from:` unless the user wants a different module.
 - Do not edit files under `output/` as source. They are run products.
-- Do not invent a `simulate_stream.py`. Use `trace-miner replay`.
+- Do not invent a file-tail helper. Use `trace-miner serve` and `client_demo.py`.
 
 ## Debugging
 

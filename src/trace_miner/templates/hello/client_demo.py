@@ -1,4 +1,4 @@
-"""Replay the bundled traces into a served alerts pipeline and stop on the first abort."""
+"""Post the bundled traces into a served alerts pipeline and stop on the first abort."""
 
 import json
 import sys
@@ -20,12 +20,12 @@ def main() -> None:
                 if alerts.latest:
                     _stop(task, step.get("step_id"), alerts.latest)
                 record = _step_record(session_id, step)
-                print(f"replay {task} step {record['step_id']}", flush=True)
+                print(f"post {task} step {record['step_id']}", flush=True)
                 client.post_step(record)
                 _wait_for_alert(alerts, 1.0)
                 if alerts.latest:
                     _stop(task, record["step_id"], alerts.latest)
-    print("replayed every trace")
+    print("posted every trace")
 
 
 def _load_traces(path: Path) -> list[dict]:

@@ -1,10 +1,14 @@
-# Amendment: Streaming Runs
+# Amendment: Follow Runtime
 
-An amendment to [`pipeline-spec.md`](pipeline-spec.md). Read that first. This document adds a long-running
-execution mode that follows append-only JSONL inputs and processes records as they are written.
+An amendment to [`pipeline-spec.md`](pipeline-spec.md). Read that first. This document describes the
+long-running execution mode that follows append-only JSONL inputs and processes records as they
+are written.
+
+`trace-miner serve` is the only command that starts this runtime. Posted records are appended to
+the pipeline's root input, and serve follows that file. There is no `stream` or `replay` command.
 
 The goal is not to turn Trace Miner into a queue, scheduler, or distributed stream processor.
-The goal is a practical local command that can sit next to a growing `.jsonl` file and keep the
+The goal is a practical local process that can sit next to a growing `.jsonl` file and keep the
 declared pipelines moving.
 
 ## S1. What this adds
@@ -15,24 +19,24 @@ Batch mode stays the default:
 uv run trace-miner pipeline.yaml
 ```
 
-Streaming mode is explicit:
+Live mode is `serve`:
 
 ```bash
-uv run trace-miner stream pipeline.yaml
+uv run trace-miner serve pipeline.yaml
 ```
 
-`stream` watches root input files, reads complete appended JSONL lines, runs the configured
+The follow runtime watches root input files, reads complete appended JSONL lines, runs the configured
 pipelines, and appends outputs to their declared JSONL files.
 
 The config topology remains the same. A pipeline is still a pipeline; a stage still cannot name
-a downstream destination; `tee` still names an output path in config. Streaming changes the
+a downstream destination; `tee` still names an output path in config. Following changes the
 runtime's read/write policy, not the shape of the graph.
 
 ## S2. MVP boundary
 
-In scope for streaming MVP:
+In scope:
 
-- A new CLI subcommand, `trace-miner stream CONFIG`.
+- Started only by `trace-miner serve`.
 - Follow append-only root input files.
 - Treat a newline-terminated JSONL line as the unit of ingestion.
 - Ignore partial trailing lines until the newline arrives.
@@ -162,7 +166,7 @@ ongoing counters rather than a percentage.
 MVP display:
 
 ```text
-[trace-miner] stream: read=128 produced=256 done=256 failed=0 waiting=0
+[trace-miner] serve: read=128 produced=256 done=256 failed=0 waiting=0
 ```
 
 Update the display periodically, not on every record. A one-second interval is enough.
@@ -187,7 +191,7 @@ If `--progress` is disabled, do not print periodic status. Errors still go to st
    - Sleep briefly when no complete line is available.
    - Handle truncation by failing loudly in MVP.
 
-4. Add `trace-miner stream`.
+4. `trace-miner serve` owns the follower.
    - Parse `--from-start`, `--from-end`, `--reset-checkpoint`, `--checkpoint`, `--poll-interval`,
      `--progress`, and `--no-progress`.
    - Reuse config validation. `by` and `every` already fail at load time.
