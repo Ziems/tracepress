@@ -35,8 +35,10 @@ from trace_miner.model import (
     Step,
 )
 from trace_miner.telemetry import (
+    SERVE_SNAPSHOT_SECONDS,
     StageTelemetry,
     capture_pipeline_finished_async,
+    capture_pipeline_serving_async,
     record_command_run_id,
     run_command_name,
 )
@@ -285,6 +287,7 @@ class _Runtime:
             raise
         finally:
             self.stats.elapsed_s = time.perf_counter() - started
+            depth, width = _pipeline_span(self.config)
             capture_pipeline_finished_async(
                 command="run",
                 run_id=run_id,
@@ -294,6 +297,8 @@ class _Runtime:
                 stats=self.stats,
                 exception=caught,
                 stages=self.stage_telemetry(),
+                depth=depth,
+                width=width,
             )
 
     async def _run_pipeline(self, pipeline: PipelineSpec) -> None:
@@ -1021,6 +1026,8 @@ class _StreamRun:
         self.on_ready = on_ready
         self._published_by_path: dict[Path, str] = {}
         self._publish_offsets: dict[Path, int] = {}
+        self._serving_snapshot = 0
+        self._last_serving_snapshot = 0.0
 
     async def run(self) -> RunResult:
         started = time.perf_counter()
@@ -1035,6 +1042,7 @@ class _StreamRun:
             _bind_stop_signals(stop_event)
             if self.on_ready is not None:
                 self.on_ready()
+            self._note_serving_snapshot(started)
             processed = 0
             while not stop_event.is_set():
                 made_progress = False
@@ -1044,12 +1052,14 @@ class _StreamRun:
                         processed += 1
                         await self._process_line(line)
                         self.progress.render(self.runtime.stats)
+                        self._note_serving_snapshot(started)
                         if self.max_records is not None and processed >= self.max_records:
                             return RunResult(self.runtime.stats, self.runtime.manifest)
                 if self.stop_when_idle and not made_progress:
                     return RunResult(self.runtime.stats, self.runtime.manifest)
                 if not made_progress:
                     await self._wait_for_input(stop_event)
+                    self._note_serving_snapshot(started)
             return RunResult(self.runtime.stats, self.runtime.manifest)
         except BaseException as exc:
             caught = exc
@@ -1057,6 +1067,7 @@ class _StreamRun:
         finally:
             self.runtime.stats.elapsed_s = time.perf_counter() - started
             self.progress.close()
+            depth, width = _pipeline_span(self.config)
             capture_pipeline_finished_async(
                 command=run_command_name.get(),
                 run_id=self.run_id,
@@ -1066,7 +1077,29 @@ class _StreamRun:
                 stats=self.runtime.stats,
                 exception=caught,
                 stages=self.runtime.stage_telemetry(),
+                depth=depth,
+                width=width,
             )
+
+    def _note_serving_snapshot(self, started: float) -> None:
+        now = time.perf_counter()
+        if self._serving_snapshot and now - self._last_serving_snapshot < SERVE_SNAPSHOT_SECONDS:
+            return
+        self._serving_snapshot += 1
+        self._last_serving_snapshot = now
+        self.runtime.stats.elapsed_s = now - started
+        depth, width = _pipeline_span(self.config)
+        capture_pipeline_serving_async(
+            run_id=self.run_id,
+            pipeline_count=len(self.config.pipelines),
+            lm_provider=self.config.lm_provider,
+            lm_model=self.config.lm_default_model,
+            stats=self.runtime.stats,
+            stages=self.runtime.stage_telemetry(),
+            depth=depth,
+            width=width,
+            snapshot=self._serving_snapshot,
+        )
 
     def _build_graph(self) -> None:
         produced: set[Path] = set()
@@ -1191,6 +1224,28 @@ class _StreamProgress:
         if self.enabled:
             self.stream.write("\n")
             self.stream.flush()
+
+
+def _pipeline_span(config: Config) -> tuple[int, int]:
+    depth = 0
+    width = 0
+    for pipeline in config.pipelines:
+        step_depth, step_width = _step_span(pipeline.steps, 0)
+        depth = max(depth, step_depth)
+        width = max(width, step_width)
+    return depth, width
+
+
+def _step_span(steps: tuple[Step, ...], group_depth: int) -> tuple[int, int]:
+    depth = group_depth
+    width = len(steps)
+    for step in steps:
+        if step.group is None:
+            continue
+        child_depth, child_width = _step_span(step.group.pipeline, group_depth + 1)
+        depth = max(depth, child_depth)
+        width = max(width, child_width)
+    return depth, width
 
 
 def _collect_runtime_tee_paths(steps: tuple[Step, ...]) -> tuple[Path, ...]:

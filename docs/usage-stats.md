@@ -14,7 +14,9 @@ The install id is a random UUID stored at `~/.trace-miner/telemetry_id`. It is t
 
 After a pipeline command finishes, each event is posted by its own detached helper process. The timeout is 10 seconds. There is no retry. If the machine is offline, the event is dropped. A network failure does not change the command's result.
 
-A batch run posts one `pipeline_stage` event per configured stage, then `pipeline_run`. `serve` does the same with `pipeline_served` when the process stops. `init` posts `pipeline_init`. `stats`, help, and unknown commands do not send an event.
+A batch run posts one `pipeline_stage` event per configured stage, then `pipeline_run`. `serve` posts `pipeline_serve_start` when the process is ready, then a cumulative `pipeline_serving` snapshot every 5 minutes, because the process may never exit. Each of those includes the stage events for that moment. `pipeline_served` is sent only when the process actually stops. `init` posts `pipeline_init`. `stats`, help, and unknown commands do not send an event.
+
+Serve snapshots are cumulative. Keep the latest `snapshot` for a `run_id`, or use `pipeline_served` when the process has exited. Do not add the snapshots together.
 
 Person profiles and GeoIP are disabled on every event.
 
@@ -49,16 +51,35 @@ Sent when a batch run or a serve process finishes, including handled errors and 
 - `exit_code`
 - `exception_type`
 - `pipeline_count`
-- `stage_count`
+- `stage_count`: every stage, of any kind
+- `maps`, `filters`, `stages`, `alerts`, `expands`, `reduces`: how many stages of that kind the pipeline contains. `stages` counts steps whose kind is `stage`
+- `depth`: deepest group nesting. `0` when the pipeline has no group
+- `width`: most steps in any one step list, including nested groups. `tee` and `group` count as steps
 - `lm_provider` and `lm_model`, when a runtime started
 - `records_read`, `emitted`, `failed`
 - `lm_calls`, `lm_prompt_tokens`, `lm_completion_tokens`, `lm_cost_usd`
 
 Language-model fields are counts and totals for the whole run. They are not the text sent to or returned by the model.
 
+### `pipeline_serve_start` and `pipeline_serving`
+
+`pipeline_serve_start` is sent when `trace-miner serve` is ready. `pipeline_serving` follows every 5 minutes after that, including while the process is idle. `pipeline_served` is the separate event sent when the process stops.
+
+The fields match `pipeline_served`, with these differences:
+
+- `schema`: `pipeline_serve_start.v1` or `pipeline_serving.v1`
+- `status`: `running`
+- `snapshot`: `1` on `pipeline_serve_start`, then `2`, `3`, and so on for `pipeline_serving`
+- `duration_seconds`: time since the process started
+- `exit_code` and `exception_type` are omitted
+
+Counts on `pipeline_serving` are totals since the process started, not the change since the previous snapshot.
+
 ### `pipeline_stage`
 
-Sent once per configured stage when a run or serve finishes. Totals cover every record that stage handled. A stage that never ran, because an earlier stage failed or no records reached it, is still sent with `calls: 0`.
+Sent once per configured stage when a batch run finishes, and again with each serve snapshot and when serve stops. Totals cover every record that stage has handled so far. A stage that never ran, because an earlier stage failed or no records reached it, is still sent with `calls: 0`.
+
+Serve stage events include `snapshot`, matching the `pipeline_serve_start` or `pipeline_serving` event they belong to. The closing `pipeline_served` stage events omit `snapshot`.
 
 `tee` steps are file writes and do not produce a stage event.
 
@@ -76,6 +97,7 @@ Sent once per configured stage when a run or serve finishes. Totals cover every 
 - `status`: `completed`, `errored`, or `interrupted`
 - `lm_calls`, `lm_prompt_tokens`, `lm_completion_tokens`, `lm_cost_usd`
 - `lm_provider` and `lm_model`, for LM stages
+- `snapshot`: present on serve snapshots, omitted when a batch run or a serve process finishes
 
 ## Not collected
 

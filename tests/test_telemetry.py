@@ -85,6 +85,8 @@ def _run_capture(*, exception: BaseException | None = None, command: str = "run"
         duration_seconds=1.5,
         exception=exception,
         stages=[_stage()],
+        depth=1,
+        width=2,
     )
 
 
@@ -273,6 +275,10 @@ def test_sender_posts_allowlisted_metrics(monkeypatch: pytest.MonkeyPatch) -> No
     assert properties["lm_completion_tokens"] == 4
     assert properties["lm_cost_usd"] == 1.25
     assert properties["stage_count"] == 1
+    assert properties["maps"] == 1
+    assert properties["alerts"] == 0
+    assert properties["depth"] == 1
+    assert properties["width"] == 2
     assert set(stage_properties) <= telemetry_module._EVENT_PROPERTY_KEYS[PIPELINE_STAGE]
     assert set(properties) <= telemetry_module._EVENT_PROPERTY_KEYS[PIPELINE_RUN]
     assert "prompt" not in stage_properties

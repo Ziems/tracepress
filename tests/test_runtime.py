@@ -2016,6 +2016,14 @@ pipelines:
     assert run["command_flags"] == ["--progress"]
     assert run["pipeline_count"] == 1
     assert run["stage_count"] == 5
+    assert run["maps"] == 2
+    assert run["filters"] == 1
+    assert run["stages"] == 0
+    assert run["alerts"] == 0
+    assert run["expands"] == 1
+    assert run["reduces"] == 1
+    assert run["depth"] == 1
+    assert run["width"] == 3
     assert run["records_read"] == 2
     assert run["lm_calls"] == 1
     assert run["lm_prompt_tokens"] == 10
@@ -2083,6 +2091,9 @@ pipelines:
     assert skipped_stage["status"] == "completed"
     assert run["status"] == "errored"
     assert run["exception_type"] == "RuntimeError"
+    assert run["maps"] == 2
+    assert run["depth"] == 0
+    assert run["width"] == 2
     assert "boom_stage" not in json.dumps(sent)
     assert "later_stage" not in json.dumps(sent)
     assert "nope" not in json.dumps(sent)
