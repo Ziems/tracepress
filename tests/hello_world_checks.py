@@ -117,6 +117,35 @@ def check_pii(path: Path) -> None:
     )
 
 
+_DOMAINS = {"bioinformatics", "systems", "data_processing", "other"}
+_OUTCOMES = {"passed", "wrong_output", "env_setup", "incomplete", "other"}
+
+
+def check_categories(path: Path) -> None:
+    tasks = by_task(load_jsonl(path), path=path)
+
+    for name, row in tasks.items():
+        domain = row.get("domain")
+        outcome = row.get("outcome")
+        assert domain in _DOMAINS, f"{name} domain {domain!r} is not one of {sorted(_DOMAINS)}"
+        assert outcome in _OUTCOMES, f"{name} outcome {outcome!r} is not one of {sorted(_OUTCOMES)}"
+        assert str(row.get("trajectory_summary") or "").strip(), f"{name} missing summary"
+
+    assert tasks[ATRX]["domain"] == "bioinformatics", f"{ATRX} domain"
+    assert tasks[ATRX]["outcome"] != "passed", f"{ATRX} should not be categorized as passed"
+    assert tasks[PHOTONIC]["outcome"] != "passed", f"{PHOTONIC} should not be categorized as passed"
+    assert tasks[FREECAD]["outcome"] == "passed", f"{FREECAD} should be categorized as passed"
+
+
+def check_alerts(path: Path) -> None:
+    rows = load_jsonl(path)
+    assert len(rows) == 1, f"{path} expected one alert, got {len(rows)}"
+    alert = rows[0]
+    assert alert.get("name") == "flag_sensitive_step", f"alert name {alert.get('name')!r}"
+    assert alert.get("reason") == "ssn", f"alert reason {alert.get('reason')!r}"
+    assert alert.get("session_id"), "alert missing session_id"
+
+
 def check_frustration(path: Path) -> None:
     tasks = by_task(load_jsonl(path), path=path)
 
@@ -139,6 +168,8 @@ def check_project(project: Path) -> None:
     check_summaries(output / "summaries.jsonl")
     check_pii(output / "pii.jsonl")
     check_frustration(output / "frustration.jsonl")
+    check_categories(output / "categories.jsonl")
+    check_alerts(project / ".trace-miner" / "alerts" / "alerts.jsonl")
 
 
 def main(argv: list[str] | None = None) -> int:

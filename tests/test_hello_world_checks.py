@@ -9,6 +9,8 @@ from hello_world_checks import (
     ATRX,
     FREECAD,
     PHOTONIC,
+    check_alerts,
+    check_categories,
     check_frustration,
     check_pii,
     check_project,
@@ -61,6 +63,39 @@ def _pii_rows() -> list[dict[object, object]]:
             "has_pii": True,
             "findings": [{"kind": "phone", "evidence": "(555) 010-1234"}],
         },
+    ]
+
+
+def _category_rows() -> list[dict[object, object]]:
+    return [
+        {
+            "task_name": ATRX,
+            "domain": "bioinformatics",
+            "outcome": "wrong_output",
+            "trajectory_summary": "The agent catalogued ATRX variants but failed checks.",
+        },
+        {
+            "task_name": PHOTONIC,
+            "domain": "systems",
+            "outcome": "incomplete",
+            "trajectory_summary": "Waveguide routing hit an output-token limit.",
+        },
+        {
+            "task_name": FREECAD,
+            "domain": "other",
+            "outcome": "passed",
+            "trajectory_summary": "The agent built a parametric spring clip and passed.",
+        },
+    ]
+
+
+def _alert_rows() -> list[dict[object, object]]:
+    return [
+        {
+            "name": "flag_sensitive_step",
+            "reason": "ssn",
+            "session_id": "5927034d-40de-4882-8ac2-3fe2c7dbfc7d",
+        }
     ]
 
 
@@ -132,12 +167,38 @@ def test_check_frustration_rejects_quiet_photonic(tmp_path: Path) -> None:
         check_frustration(_write_jsonl(tmp_path / "frustration.jsonl", rows))
 
 
+def test_check_categories_accepts_planted_labels(tmp_path: Path) -> None:
+    check_categories(_write_jsonl(tmp_path / "categories.jsonl", _category_rows()))
+
+
+def test_check_categories_rejects_passed_failure(tmp_path: Path) -> None:
+    rows = _category_rows()
+    rows[0]["outcome"] = "passed"
+    with pytest.raises(AssertionError, match="atrx-vep-crispr"):
+        check_categories(_write_jsonl(tmp_path / "categories.jsonl", rows))
+
+
+def test_check_alerts_accepts_the_planted_ssn(tmp_path: Path) -> None:
+    check_alerts(_write_jsonl(tmp_path / "alerts.jsonl", _alert_rows()))
+
+
+def test_check_alerts_rejects_a_quiet_run(tmp_path: Path) -> None:
+    rows = _alert_rows()
+    rows[0]["reason"] = "phone number"
+    with pytest.raises(AssertionError, match="alert reason"):
+        check_alerts(_write_jsonl(tmp_path / "alerts.jsonl", rows))
+
+
 def test_check_project_and_cli(tmp_path: Path) -> None:
     output = tmp_path / "output"
     output.mkdir()
+    alerts = tmp_path / ".trace-miner" / "alerts"
+    alerts.mkdir(parents=True)
     _write_jsonl(output / "summaries.jsonl", _summary_rows())
     _write_jsonl(output / "pii.jsonl", _pii_rows())
     _write_jsonl(output / "frustration.jsonl", _frustration_rows())
+    _write_jsonl(output / "categories.jsonl", _category_rows())
+    _write_jsonl(alerts / "alerts.jsonl", _alert_rows())
     check_project(tmp_path)
     assert main([str(tmp_path)]) == 0
 

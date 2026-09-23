@@ -26,7 +26,7 @@ jobs:
 
   hello-world:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TRACE_MINER_TELEMETRY: "off"
@@ -60,12 +60,45 @@ jobs:
           pii_pid=$!
           trace-miner frustration.yaml --progress >"$log_dir/frustration.log" 2>&1 &
           frustration_pid=$!
+          trace-miner category.yaml --progress >"$log_dir/category.log" 2>&1 &
+          category_pid=$!
+          trace-miner serve alerts.yaml --port 8765 >"$log_dir/alerts.log" 2>&1 &
+          alerts_pid=$!
           status=0
+          if ! python3 - "$alerts_pid" <<'PY'
+          import socket
+          import sys
+          import time
+
+          pid = int(sys.argv[1])
+          deadline = time.monotonic() + 30
+          while time.monotonic() < deadline:
+              try:
+                  with socket.create_connection(("127.0.0.1", 8765), 0.2):
+                      raise SystemExit(0)
+              except OSError:
+                  time.sleep(0.1)
+          raise SystemExit(f"serve did not accept connections (pid {pid})")
+          PY
+          then
+            status=1
+          else
+            demo_python="$(uv tool dir)/trace-miner/bin/python"
+            demo_code=0
+            "$demo_python" client_demo.py >"$log_dir/client_demo.log" 2>&1 || demo_code=$?
+            if [ "$demo_code" -ne 1 ]; then
+              echo "client_demo.py exited $demo_code; expected 1" >&2
+              status=1
+            fi
+          fi
+          kill "$alerts_pid" 2>/dev/null || true
+          wait "$alerts_pid" || true
           wait "$summarize_pid" || status=1
           wait "$pii_pid" || status=1
           wait "$frustration_pid" || status=1
-          for name in summarize pii frustration; do
-            echo "::group::$name.yaml"
+          wait "$category_pid" || status=1
+          for name in summarize pii frustration category alerts client_demo; do
+            echo "::group::$name"
             cat "$log_dir/$name.log"
             echo "::endgroup::"
           done
