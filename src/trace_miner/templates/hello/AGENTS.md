@@ -180,6 +180,7 @@ id_field: session_id
 lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
+  reduce: anthropic/claude-sonnet-5
   max_concurrent: 64
 
 pipelines:
@@ -201,12 +202,13 @@ Rules:
   `out`, they run in that order.
 - `id_field` is for error messages, not grouping.
 - `lm.provider` is `openrouter`, `openai`, or `anthropic`. The default is `openrouter`.
-- `lm.default` is any model id for that provider. The built-in default is `deepseek/deepseek-v4.1-flash`.
+- `lm.default` is the model for LM steps that do not set their own. The built-in is `deepseek/deepseek-v4.1-flash`.
+- `lm.map`, `lm.filter`, `lm.expand`, `lm.reduce`, and `lm.alert` override that for one step kind. When `lm.default` is omitted, reduce uses `anthropic/claude-sonnet-5`.
 - `lm.max_concurrent` caps simultaneous LM calls. Keep it at least 64
   unless the user asks otherwise.
 - `lm.cache` defaults to true and uses DSPy's request cache in
   `~/.trace-miner/cache`. Set `cache: false` to force a fresh call every time.
-- Override a model on one step with `lm: {model: ...}` only on LM stages.
+- Override one step with `lm: {model: ...}` only on LM stages. That wins over the role default.
 
 ### Step forms
 

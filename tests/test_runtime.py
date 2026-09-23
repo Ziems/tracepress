@@ -15,7 +15,13 @@ import pytest
 import trace_miner.telemetry as telemetry_module
 from trace_miner.config import load_config
 from trace_miner.errors import ConfigError, PipelineExecutionError
-from trace_miner.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER, RunStats, format_run_profile
+from trace_miner.model import (
+    DEFAULT_LM_MODEL,
+    DEFAULT_LM_PROVIDER,
+    DEFAULT_REDUCE_LM_MODEL,
+    RunStats,
+    format_run_profile,
+)
 from trace_miner.runtime import run_config, run_config_async, run_stream, run_stream_async
 
 
@@ -1120,6 +1126,143 @@ pipelines:
     )
     loaded_model = load_config(unknown_model)
     assert loaded_model.pipelines[0].steps[0].stage.lm_model == "gpt-4o-mini-not-a-model"
+
+
+def test_lm_role_defaults_for_map_and_reduce(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    stages = """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+class Merge(dspy.Signature):
+    label: list[str] = dspy.InputField()
+    summary: str = dspy.OutputField()
+
+
+def split(record, ctx):
+    ctx.emit({"text": record["text"]})
+
+
+label = dspy.Predict(Label)
+merge = dspy.Predict(Merge)
+"""
+    builtin = write_project(
+        tmp_path / "builtin",
+        stages,
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          expand: split
+          pipeline:
+            - map: label
+          reduce: merge
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    loaded = load_config(builtin)
+    group = loaded.pipelines[0].steps[0].group
+    assert group is not None
+    assert group.pipeline[0].stage.lm_model == DEFAULT_LM_MODEL
+    assert group.reduce.lm_model == DEFAULT_REDUCE_LM_MODEL
+
+    explicit_default = write_project(
+        tmp_path / "explicit-default",
+        stages,
+        """
+from: ./stages
+lm:
+  default: openai/gpt-4o-mini
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          expand: split
+          pipeline:
+            - map: label
+          reduce: merge
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    loaded_default = load_config(explicit_default)
+    default_group = loaded_default.pipelines[0].steps[0].group
+    assert default_group is not None
+    assert default_group.pipeline[0].stage.lm_model == "openai/gpt-4o-mini"
+    assert default_group.reduce.lm_model == "openai/gpt-4o-mini"
+
+    role_override = write_project(
+        tmp_path / "role-override",
+        stages,
+        """
+from: ./stages
+lm:
+  default: openai/gpt-4o-mini
+  map: deepseek/deepseek-v4.1-flash
+  reduce: anthropic/claude-sonnet-5
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          expand: split
+          pipeline:
+            - map:
+                stage: label
+                lm:
+                  model: openai/gpt-4o
+          reduce: merge
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    loaded_roles = load_config(role_override)
+    role_group = loaded_roles.pipelines[0].steps[0].group
+    assert role_group is not None
+    assert role_group.pipeline[0].stage.lm_model == "openai/gpt-4o"
+    assert role_group.reduce.lm_model == "anthropic/claude-sonnet-5"
+
+    empty_role = write_project(
+        tmp_path / "empty-role",
+        stages,
+        """
+from: ./stages
+lm:
+  map: ""
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    with pytest.raises(ConfigError, match=r"`lm.map` must be a non-empty string"):
+        load_config(empty_role)
+
+    map_model = f"openrouter/{DEFAULT_LM_MODEL}"
+    reduce_model = f"openrouter/{DEFAULT_REDUCE_LM_MODEL}"
+    FakeLM = install_fake_lm(
+        monkeypatch,
+        {
+            map_model: chat_completion(label="ORE"),
+            reduce_model: chat_completion(summary="done"),
+        },
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    run_config(builtin)
+
+    assert read_jsonl(tmp_path / "builtin" / "output.jsonl") == [
+        {"id": "a", "summary": "done", "text": "ore"}
+    ]
+    assert {lm.model for lm in FakeLM.instances} == {map_model, reduce_model}
 
 
 def test_lm_openrouter_default_provider_invocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

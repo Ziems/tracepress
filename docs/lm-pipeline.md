@@ -77,7 +77,8 @@ DSPy is the supported authoring dependency. An LM stage is a `dspy.Module`, such
 `input_fields` and `output_fields`, is a load error.
 
 DSPy modules are executed by DSPy (`dspy.Predict` via stock `dspy.LM`). The provider and model
-still come from config: `lm.provider`, `lm.default`, and per-step `lm.model`.
+still come from config: `lm.provider`, `lm.default`, role keys such as `lm.map` and `lm.reduce`, and
+per-step `lm.model`.
 
 ## A3. Amends section 3, stage contract
 
@@ -187,16 +188,21 @@ uses:
 lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
+  reduce: anthropic/claude-sonnet-5
   max_concurrent: 64
   cache: true
 ```
 
-The default model id is the OpenRouter slug for DeepSeek V4.1 Flash.
+The default model id is the OpenRouter slug for DeepSeek V4.1 Flash. That model is used for
+`map`, `filter`, `expand`, and `alert`. `reduce` is the exception: when `lm.default` is omitted,
+an LM reduce uses `anthropic/claude-sonnet-5`.
 
 ```yaml
 lm:
   provider: openrouter
   default: deepseek/deepseek-v4.1-flash
+  map: deepseek/deepseek-v4.1-flash
+  reduce: anthropic/claude-sonnet-5
   max_concurrent: 64
 
 pipelines:
@@ -212,19 +218,25 @@ pipelines:
 The expanded step form, a mapping with `stage:` plus options, must also work for Python stages.
 Do not create two step grammars.
 
-A per-step `lm.model` overrides the top-level `lm.default` or built-in default for that stage.
+`lm.map`, `lm.filter`, `lm.expand`, `lm.reduce`, and `lm.alert` set the model for that step
+kind. Each value is a non-empty model id. A per-step `lm.model` overrides the role model.
 
-If any LM stage is used, a model is resolved from the per-step `lm.model`, top-level
-`lm.default`, or built-in default, in that order. A per-step `lm` block on a Python stage is a
-load error, because model selection only has meaning for LM stages.
+If any LM stage is used, a model is resolved from the per-step `lm.model`, the role key
+(`lm.map`, `lm.reduce`, and the other LM step kinds), top-level `lm.default`, or the built-in
+default, in that order. Setting `lm.default` also covers reduce. The reduce built-in
+`anthropic/claude-sonnet-5` applies only when both `lm.default` and `lm.reduce` are omitted.
+A per-step `lm` block on a Python stage is a load error, because model selection only has
+meaning for LM stages.
 
 `lm.provider` is one of `openrouter`, `openai`, or `anthropic`. Anything else is a load error.
 Trace Miner calls `dspy.LM("{provider}/{model}")`. The API keys are `OPENROUTER_API_KEY`,
 `OPENAI_API_KEY`, and `ANTHROPIC_API_KEY`. OpenRouter also asks for cost in the usage payload.
 The default provider is `openrouter`.
 
-`lm.default` and per-step `lm.model` are model ids for that provider. Any non-empty string is
-accepted. The default model is `deepseek/deepseek-v4.1-flash`.
+`lm.default`, role keys such as `lm.map` and `lm.reduce`, and per-step `lm.model` are model ids
+for that provider. Any non-empty string is accepted. The default model is
+`deepseek/deepseek-v4.1-flash`, except an LM reduce with no `lm.default` and no `lm.reduce`,
+which uses `anthropic/claude-sonnet-5`.
 
 `lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 64 and must be a
 positive integer.

@@ -12,8 +12,21 @@ ChildErrorPolicy = Literal["fail", "partial", "skip"]
 
 DEFAULT_LM_PROVIDER = "openrouter"
 DEFAULT_LM_MODEL = "deepseek/deepseek-v4.1-flash"
+DEFAULT_REDUCE_LM_MODEL = "anthropic/claude-sonnet-5"
 DEFAULT_LM_MAX_CONCURRENT = 64
 DEFAULT_LM_CACHE = True
+LM_MODEL_ROLES = ("alert", "expand", "filter", "map", "reduce")
+
+
+@dataclass(frozen=True)
+class LmModels:
+    """Fallback model plus any role overrides. Role keys win over `default`."""
+
+    default: str
+    by_role: dict[str, str]
+
+    def for_role(self, role: str) -> str:
+        return self.by_role.get(role, self.default)
 
 
 @dataclass(frozen=True)

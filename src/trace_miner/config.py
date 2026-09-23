@@ -17,11 +17,14 @@ from trace_miner.model import (
     DEFAULT_LM_MODEL,
     DEFAULT_LM_MAX_CONCURRENT,
     DEFAULT_LM_PROVIDER,
+    DEFAULT_REDUCE_LM_MODEL,
+    LM_MODEL_ROLES,
     LM_PROVIDERS,
     Config,
     Defaults,
     GroupSpec,
     LmField,
+    LmModels,
     LmSignature,
     PipelineSpec,
     StageRef,
@@ -30,7 +33,7 @@ from trace_miner.model import (
 
 
 _KNOWN_TOP_LEVEL = {"from", "defaults", "id_field", "pipelines", "concurrency", "lm"}
-_KNOWN_LM_KEYS = {"cache", "default", "max_concurrent", "provider"}
+_KNOWN_LM_KEYS = {"cache", "default", "max_concurrent", "provider", *LM_MODEL_ROLES}
 _KNOWN_STEP_OPTIONS = {"stage", "lm"}
 _KNOWN_PER_STEP_LM_KEYS = {"model"}
 _KNOWN_DEFAULTS = {"on_child_error", "ordered"}
@@ -68,7 +71,7 @@ def load_config(path: str | Path) -> Config:
 
     module = _load_stage_module(raw["from"], base_dir)
     defaults = _parse_defaults(raw.get("defaults", {}))
-    lm_provider, lm_default_model, lm_max_concurrent, lm_cache = _parse_lm_config(raw.get("lm"))
+    lm_provider, lm_models, lm_max_concurrent, lm_cache = _parse_lm_config(raw.get("lm"))
     id_field = raw.get("id_field")
     if id_field is not None and not isinstance(id_field, str):
         raise ConfigError("`id_field` must be a string when provided.")
@@ -78,7 +81,7 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError("`pipelines` must be a non-empty list.")
 
     pipelines = tuple(
-        _parse_pipeline(block, i, base_dir, module, defaults, lm_provider, lm_default_model)
+        _parse_pipeline(block, i, base_dir, module, defaults, lm_provider, lm_models)
         for i, block in enumerate(pipelines_raw)
     )
     pipelines = _sort_pipelines(pipelines)
@@ -90,7 +93,7 @@ def load_config(path: str | Path) -> Config:
         defaults,
         id_field,
         lm_provider,
-        lm_default_model,
+        lm_models.default,
         lm_max_concurrent,
         lm_cache,
         pipelines,
@@ -114,9 +117,14 @@ def _parse_defaults(raw: Any) -> Defaults:
     return Defaults(on_child_error, ordered)
 
 
-def _parse_lm_config(raw: Any) -> tuple[str, str, int, bool]:
+def _parse_lm_config(raw: Any) -> tuple[str, LmModels, int, bool]:
     if raw is None:
-        return DEFAULT_LM_PROVIDER, DEFAULT_LM_MODEL, DEFAULT_LM_MAX_CONCURRENT, DEFAULT_LM_CACHE
+        return (
+            DEFAULT_LM_PROVIDER,
+            _lm_models(DEFAULT_LM_MODEL, {}, default_was_set=False),
+            DEFAULT_LM_MAX_CONCURRENT,
+            DEFAULT_LM_CACHE,
+        )
     if not isinstance(raw, dict):
         raise ConfigError("`lm` must be a mapping.")
     unknown = set(raw) - _KNOWN_LM_KEYS
@@ -128,18 +136,32 @@ def _parse_lm_config(raw: Any) -> tuple[str, str, int, bool]:
     if provider not in LM_PROVIDERS:
         supported = ", ".join(sorted(LM_PROVIDERS))
         raise ConfigError(f"`lm.provider` must be one of: {supported}.")
-    default = raw.get("default")
-    if default is None:
-        default = DEFAULT_LM_MODEL
+    default_was_set = "default" in raw
+    default = raw.get("default", DEFAULT_LM_MODEL)
     if not isinstance(default, str) or not default:
         raise ConfigError("`lm.default` must be a non-empty string when provided.")
+    by_role: dict[str, str] = {}
+    for role in LM_MODEL_ROLES:
+        if role not in raw:
+            continue
+        model = raw[role]
+        if not isinstance(model, str) or not model:
+            raise ConfigError(f"`lm.{role}` must be a non-empty string when provided.")
+        by_role[role] = model
     max_concurrent = raw.get("max_concurrent", DEFAULT_LM_MAX_CONCURRENT)
     if not isinstance(max_concurrent, int) or max_concurrent <= 0:
         raise ConfigError("`lm.max_concurrent` must be a positive integer when provided.")
     cache = raw.get("cache", DEFAULT_LM_CACHE)
     if not isinstance(cache, bool):
         raise ConfigError("`lm.cache` must be a boolean when provided.")
-    return provider, default, max_concurrent, cache
+    return provider, _lm_models(default, by_role, default_was_set=default_was_set), max_concurrent, cache
+
+
+def _lm_models(default: str, by_role: dict[str, str], *, default_was_set: bool) -> LmModels:
+    resolved = dict(by_role)
+    if not default_was_set:
+        resolved.setdefault("reduce", DEFAULT_REDUCE_LM_MODEL)
+    return LmModels(default, resolved)
 
 
 def _parse_pipeline(
@@ -149,7 +171,7 @@ def _parse_pipeline(
     module: ModuleType,
     defaults: Defaults,
     lm_provider: str,
-    lm_default_model: str,
+    lm_models: LmModels,
 ) -> PipelineSpec:
     if not isinstance(raw, dict):
         raise ConfigError(f"Pipeline {source_index + 1} must be a mapping.")
@@ -168,7 +190,7 @@ def _parse_pipeline(
         raise ConfigError(f"Pipeline {source_index + 1} must have at least one input.")
     inputs = tuple(_normalize_path(item, base_dir, f"pipeline {source_index + 1} input") for item in input_items)
     output = _normalize_path(raw["out"], base_dir, f"pipeline {source_index + 1} output")
-    steps = _parse_steps(raw["pipeline"], base_dir, module, defaults, lm_provider, lm_default_model, f"pipeline {source_index + 1}")
+    steps = _parse_steps(raw["pipeline"], base_dir, module, defaults, lm_provider, lm_models, f"pipeline {source_index + 1}")
     return PipelineSpec(inputs, output, steps, source_index, name)
 
 
@@ -178,7 +200,7 @@ def _parse_steps(
     module: ModuleType,
     defaults: Defaults,
     lm_provider: str,
-    lm_default_model: str,
+    lm_models: LmModels,
     where: str,
 ) -> tuple[Step, ...]:
     if not isinstance(raw, list):
@@ -191,14 +213,14 @@ def _parse_steps(
         if key not in _STEP_KEYS:
             raise ConfigError(f"Unknown step key `{key}` in {where} step {idx}.")
         if key in {"map", "filter", "stage", "alert"}:
-            steps.append(Step(kind=key, stage=_resolve_stage(value, module, lm_provider, lm_default_model, role=key)))
+            steps.append(Step(kind=key, stage=_resolve_stage(value, module, lm_provider, lm_models, role=key)))
         elif key == "tee":
             steps.append(Step(kind="tee", path=_normalize_path(value, base_dir, f"{where} tee")))
         else:
             steps.append(
                 Step(
                     kind="group",
-                    group=_parse_group(value, base_dir, module, defaults, lm_provider, lm_default_model, f"{where} group step {idx}"),
+                    group=_parse_group(value, base_dir, module, defaults, lm_provider, lm_models, f"{where} group step {idx}"),
                 )
             )
     return tuple(steps)
@@ -210,7 +232,7 @@ def _parse_group(
     module: ModuleType,
     defaults: Defaults,
     lm_provider: str,
-    lm_default_model: str,
+    lm_models: LmModels,
     where: str,
 ) -> GroupSpec:
     if not isinstance(raw, dict):
@@ -236,10 +258,10 @@ def _parse_group(
     if not isinstance(ordered, bool):
         raise ConfigError(f"{where} `ordered` must be a boolean.")
 
-    expand = _resolve_stage(raw["expand"], module, lm_provider, lm_default_model, role="expand")
+    expand = _resolve_stage(raw["expand"], module, lm_provider, lm_models, role="expand")
     assert expand is not None
-    child_steps = _parse_steps(raw.get("pipeline", []), base_dir, module, defaults, lm_provider, lm_default_model, where)
-    reduce = _resolve_stage(raw["reduce"], module, lm_provider, lm_default_model, role="reduce")
+    child_steps = _parse_steps(raw.get("pipeline", []), base_dir, module, defaults, lm_provider, lm_models, where)
+    reduce = _resolve_stage(raw["reduce"], module, lm_provider, lm_models, role="reduce")
     assert reduce is not None
     return GroupSpec(expand, child_steps, reduce, on_child_error, ordered)
 
@@ -248,7 +270,7 @@ def _resolve_stage(
     raw: Any,
     module: ModuleType,
     lm_provider: str,
-    lm_default_model: str,
+    lm_models: LmModels,
     role: str,
     missing_ok: bool = False,
 ) -> StageRef | None:
@@ -264,7 +286,7 @@ def _resolve_stage(
             raise ConfigError(
                 f"DSPy stage `{name}` must expose a signature with `input_fields` and `output_fields`."
             )
-        model = step_model or lm_default_model
+        model = step_model or lm_models.for_role(role)
         if not model:
             raise ConfigError(f"LM stage `{name}` needs a model.")
         _validate_lm_stage(name, role, lm_signature)

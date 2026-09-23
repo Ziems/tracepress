@@ -48,7 +48,8 @@ id_field: session_id            # optional; names the record in errors and alert
 
 lm:                             # optional LM defaults
   provider: openrouter          # openrouter, openai, or anthropic
-  default: deepseek/deepseek-v4.1-flash  # must be a model for that provider
+  default: deepseek/deepseek-v4.1-flash  # map, filter, expand, and alert
+  reduce: anthropic/claude-sonnet-5      # LM reduce; also the built-in
   max_concurrent: 64
   cache: true                   # LM cache under ~/.trace-miner/cache
 
@@ -63,6 +64,8 @@ pipelines:
             - map: detect_failure  # LM stage; once per child
           reduce: diagnose_trajectory
 ```
+
+`lm.map`, `lm.filter`, `lm.expand`, `lm.reduce`, and `lm.alert` set the model for that step kind. A per-step `lm.model` overrides them. If `lm.default` is omitted, reduce uses `anthropic/claude-sonnet-5` and every other LM step uses `deepseek/deepseek-v4.1-flash`. Setting `lm.default` applies that model to reduce too, unless `lm.reduce` is set.
 
 A stage name is a module-level function or DSPy module. YAML uses that attribute (`detect_failure`), not the class.
 
