@@ -89,8 +89,11 @@ def _run_trace(client: Client, session_id: str, task: str, steps: list[dict]) ->
             if outcome is not None:
                 return outcome
         # Posting outruns processing on a long trace, so give the server real
-        # time to drain its backlog and deliver the last step's verdict.
-        _wait_for_alert(alerts, 60.0)
+        # time to drain its backlog and deliver the last step's verdict. 60s
+        # was measured too short here: six traces posted back to back build a
+        # real backlog, and a trace's own verdict doesn't arrive until the
+        # server has worked through everything queued ahead of it too.
+        _wait_for_alert(alerts, 300.0)
         outcome = _outcome_from_alert(alerts, task, len(steps))
         if outcome is not None:
             return outcome

@@ -118,7 +118,6 @@ class Client:
             request = Request(url, headers=headers)
             try:
                 response = urlopen(request, timeout=5)
-                response.fp.raw._sock.settimeout(0.5)
             except HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace").strip()
                 if not connected:
@@ -194,13 +193,18 @@ class _WatchSession:
 
 
 def _iter_sse(response: Any, stop: threading.Event) -> Iterator[tuple[str | None, str]]:
+    # A blocking read with no socket-level timeout, by design: interrupting a
+    # read on a chunked-transfer connection mid-chunk (as a raw socket
+    # timeout can do) corrupts http.client's internal chunk-decoder state,
+    # silently breaking the stream without raising anything obvious — and
+    # since a fresh reconnect has no Last-Event-ID to replay from, whatever
+    # event arrived during the broken window is gone for good, not just
+    # delayed. `session.close()` already interrupts a pending read cleanly
+    # via `socket.shutdown()` when the caller actually wants to stop.
     event_id: str | None = None
     data: list[str] = []
     while not stop.is_set():
-        try:
-            raw = response.readline()
-        except TimeoutError:
-            continue
+        raw = response.readline()
         if not raw:
             break
         line = raw.decode("utf-8").rstrip("\r\n")
