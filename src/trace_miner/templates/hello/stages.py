@@ -3,8 +3,16 @@ from typing import Literal
 
 import dspy
 from pydantic import BaseModel, Field
+from typesafe_sdk import TypeSafeAPIConnectionError, TypeSafeAPITimeoutError, TypeSafeInternalServerError, TypeSafeRateLimitError
 
 from trace_miner.jev import JevPredict
+
+_JEV_SOFT_FAIL = (
+    TypeSafeAPIConnectionError,
+    TypeSafeAPITimeoutError,
+    TypeSafeInternalServerError,
+    TypeSafeRateLimitError,
+)
 
 
 def prepare_harbor_trajectory(record):
@@ -340,7 +348,10 @@ class _DetectDoomLoop(dspy.Module):
         self._explain = dspy.Predict(_ExplainDoomLoop)
 
     def forward(self, step_summary):
-        flag = self._flag(step_summary=step_summary)
+        try:
+            flag = self._flag(step_summary=step_summary)
+        except _JEV_SOFT_FAIL:
+            return dspy.Prediction(doom_loop=False, pattern="")
         if not flag.doom_loop:
             return dspy.Prediction(doom_loop=False, pattern="")
         explained = self._explain(step_summary=step_summary)

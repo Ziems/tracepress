@@ -653,7 +653,7 @@ class _Runtime:
 
     def _prepare_dspy_lms(self) -> None:
         stages = tuple(_iter_stages(self.config))
-        if any(stage.uses_jev for stage in stages) and not os.environ.get("OPENROUTER_API_KEY"):
+        if any(_stage_needs_jev(stage) for stage in stages) and not os.environ.get("OPENROUTER_API_KEY"):
             raise PipelineExecutionError("OPENROUTER_API_KEY is required for Jev stages.")
         choices = {
             (stage.lm_provider, stage.lm_model)
@@ -1112,9 +1112,14 @@ class _StreamRun:
         if not line.blank:
             self.runtime.stats.records_read += 1
             envelope = _Envelope(line.record, (self.runtime.next_root_index(),), None)
-            for pipeline in self.root_consumers.get(line.path, []):
-                await self.runtime.process_stream_pipeline_envelopes(pipeline, [envelope])
-            await self._drain_writes()
+            try:
+                for pipeline in self.root_consumers.get(line.path, []):
+                    await self.runtime.process_stream_pipeline_envelopes(pipeline, [envelope])
+                await self._drain_writes()
+            except Exception as exc:
+                self.runtime.stats.failed += 1
+                identity = self.runtime.record_identity(envelope.record, envelope.path)
+                print(f"[trace-miner] skipped {identity}: {exc}", file=sys.stderr, flush=True)
         self.offsets[line.path] = line.next_offset
         self.checkpoint.write(self.config, self.offsets)
 
@@ -1470,6 +1475,28 @@ def _usage_from_tracker(tracker: Any) -> LmUsage:
         completion += _as_int(entry.get("completion_tokens") or entry.get("output_tokens"))
         cost += _as_float(entry.get("cost") or entry.get("response_cost"))
     return LmUsage(prompt_tokens=prompt, completion_tokens=completion, cost_usd=cost)
+
+
+def _stage_needs_jev(stage: StageRef) -> bool:
+    return _module_uses_jev(stage.target)
+
+
+def _module_uses_jev(target: Any, _seen: set[int] | None = None) -> bool:
+    if getattr(target, "uses_jev", False):
+        return True
+    identity = id(target)
+    seen = set() if _seen is None else _seen
+    if identity in seen:
+        return False
+    seen.add(identity)
+    named = getattr(target, "named_predictors", None)
+    if not callable(named):
+        return False
+    try:
+        predictors = named()
+    except Exception:
+        return False
+    return any(_module_uses_jev(pred, seen) for _name, pred in predictors)
 
 
 def _is_unconfigured_dspy(exc: BaseException) -> bool:

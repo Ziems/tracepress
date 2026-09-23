@@ -115,8 +115,14 @@ class RunningServe:
         self.result: RunResult | None = None
 
     def close(self) -> None:
-        if self._loop is not None and self._stop is not None:
-            self._loop.call_soon_threadsafe(self._stop.set)
+        loop = self._loop
+        stop = self._stop
+        if loop is not None and stop is not None:
+            try:
+                if loop.is_running():
+                    loop.call_soon_threadsafe(stop.set)
+            except RuntimeError:
+                pass
         if self._thread is not None:
             self._thread.join(timeout=10)
         if self._thread is not None and self._thread.is_alive():

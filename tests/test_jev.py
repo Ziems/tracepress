@@ -12,6 +12,9 @@ from trace_miner.config import load_config
 from trace_miner.errors import ConfigError, PipelineExecutionError
 from trace_miner.jev import (
     DEFAULT_JEV_MODEL,
+    DEFAULT_JEV_RETRIES,
+    DEFAULT_JEV_RETRY_BUDGET,
+    DEFAULT_JEV_TIMEOUT,
     JEV_INPUT_USD_PER_MILLION,
     OPENROUTER_JEV_BASE_URL,
     JevPredict,
@@ -156,9 +159,12 @@ def test_jev_client_uses_openrouter(monkeypatch: pytest.MonkeyPatch) -> None:
     assert RecordingClient.kwargs["api_key"] == "test-key"
     assert RecordingClient.kwargs["base_url"] == OPENROUTER_JEV_BASE_URL
     assert RecordingClient.kwargs["model"] == DEFAULT_JEV_MODEL
-    assert RecordingClient.kwargs["timeout"] == 60.0
-    assert RecordingClient.kwargs["retry"].max_retries == 0
+    assert RecordingClient.kwargs["timeout"] == DEFAULT_JEV_TIMEOUT
+    assert RecordingClient.kwargs["retry"].max_retries == DEFAULT_JEV_RETRIES
+    assert RecordingClient.kwargs["retry"].timeout == DEFAULT_JEV_RETRY_BUDGET
     assert DEFAULT_JEV_MODEL == "jev-1.13"
+    assert DEFAULT_JEV_TIMEOUT == 60.0
+    assert DEFAULT_JEV_RETRIES == 1
 
 
 def test_jev_response_keeps_openrouter_cost() -> None:
@@ -359,6 +365,53 @@ pipelines:
         [{"text": "note"}],
     )
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    with pytest.raises(PipelineExecutionError, match="OPENROUTER_API_KEY is required for Jev stages"):
+        run_config(config)
+    assert not (tmp_path / "output.jsonl").exists()
+
+
+def test_nested_jev_module_requires_openrouter_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+from trace_miner.jev import JevPredict
+
+
+class Gate(dspy.Signature):
+    text: str = dspy.InputField()
+    failed: bool = dspy.OutputField()
+
+
+class Wrapped(dspy.Module):
+    signature = Gate
+
+    def __init__(self):
+        super().__init__()
+        self._flag = JevPredict(Gate)
+
+    def forward(self, text):
+        return self._flag(text=text)
+
+
+gate = Wrapped()
+""",
+        """
+from: ./stages
+lm:
+  default: openai/gpt-5.6-luna
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: gate
+""",
+        [{"text": "note"}],
+    )
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     with pytest.raises(PipelineExecutionError, match="OPENROUTER_API_KEY is required for Jev stages"):
         run_config(config)

@@ -155,6 +155,44 @@ def test_unknown_output_name_is_rejected(tmp_path: Path) -> None:
         server.close()
 
 
+def test_close_after_serve_stops_does_not_raise(tmp_path: Path) -> None:
+    config = write_project(tmp_path, STAGES, CONFIG, {"input.jsonl": []})
+    server = start_serve(config, port=0, poll_interval=30, progress=False)
+    assert server._loop is not None and server._stop is not None
+    server._loop.call_soon_threadsafe(server._stop.set)
+    assert server._finished.wait(timeout=5)
+    server.close()
+    server.close()
+
+
+def test_serve_keeps_listening_after_a_stage_error(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def doom_loop(record):
+    if record.get("boom"):
+        raise RuntimeError("boom")
+    if not record.get("flag"):
+        return None
+    return record.get("reason") or None
+""",
+        CONFIG,
+        {"input.jsonl": []},
+    )
+    server = start_serve(config, port=0, poll_interval=30, progress=False)
+    try:
+        client = Client(server.url)
+        with client.watch("alerts", rollout_id="r1") as alerts:
+            client.post_step({"rollout_id": "r1", "boom": True})
+            assert wait_until(lambda: server._thread is not None and server._thread.is_alive())
+            client.post_step({"rollout_id": "r1", "flag": True, "reason": "still here"})
+            assert wait_until(lambda: alerts.latest is not None)
+            assert alerts.latest is not None
+            assert alerts.latest.reason == "still here"
+    finally:
+        server.close()
+
+
 def test_hello_client_demo_stops_on_the_planted_ssn(tmp_path: Path) -> None:
     dest = tmp_path / "demo"
     init_project(dest)

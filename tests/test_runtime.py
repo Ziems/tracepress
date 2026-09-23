@@ -568,6 +568,36 @@ pipelines:
     assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "value": 4}]
 
 
+def test_stream_skips_a_failed_record_and_keeps_going(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+def double(record):
+    if record.get("id") == "bad":
+        raise RuntimeError("boom")
+    return {**record, "value": record["value"] * 2}
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: double
+""",
+        [{"id": "a", "value": 2}, {"id": "bad", "value": 1}, {"id": "b", "value": 3}],
+    )
+
+    result = run_stream(config, max_records=3, poll_interval=0.01, progress=False)
+
+    assert read_jsonl(tmp_path / "output.jsonl") == [
+        {"id": "a", "value": 4},
+        {"id": "b", "value": 6},
+    ]
+    assert result.stats.failed == 1
+    assert result.stats.records_read == 3
+
+
 def test_stream_routes_records_through_pipeline_dag(tmp_path: Path) -> None:
     config = write_project(
         tmp_path,

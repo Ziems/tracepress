@@ -16,6 +16,8 @@ from trace_miner.model import LmUsage
 OPENROUTER_JEV_BASE_URL = "https://openrouter.ai/api"
 DEFAULT_JEV_MODEL = "jev-1.13"
 DEFAULT_JEV_TIMEOUT = 60.0
+DEFAULT_JEV_RETRIES = 1
+DEFAULT_JEV_RETRY_BUDGET = 130.0
 JEV_INPUT_USD_PER_MILLION = 0.042
 NOUL_TRUE_THRESHOLD = 0.5
 _MIN_CHOICES = 2
@@ -108,7 +110,7 @@ def _openrouter_client(model: str) -> TypeSafeClient:
         base_url=OPENROUTER_JEV_BASE_URL,
         model=model,
         timeout=DEFAULT_JEV_TIMEOUT,
-        retry=RetryPolicy(max_retries=0),
+        retry=RetryPolicy(max_retries=DEFAULT_JEV_RETRIES, timeout=DEFAULT_JEV_RETRY_BUDGET),
     )
 
 
