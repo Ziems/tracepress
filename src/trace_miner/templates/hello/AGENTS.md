@@ -86,7 +86,7 @@ reduce and the two alerts are new:
 ```
 
 ```python
-class DetectDoomLoop(dspy.Signature):
+class DetectDoomLoopFlag(dspy.Signature):
     """Decide whether these steps show the agent stuck in a genuine doom loop.
 
     A doom loop is the agent repeating the same or near-identical action three
@@ -103,12 +103,37 @@ class DetectDoomLoop(dspy.Signature):
     doom_loop: bool = dspy.OutputField(
         desc="True only for a clear, sustained doom loop with no progress."
     )
-    pattern: str = dspy.OutputField(
-        desc="The exact repeated action and result, or an empty string if none."
-    )
 
 
-detect_doom_loop = dspy.Predict(DetectDoomLoop)
+detect_doom_loop_flag = JevPredict(DetectDoomLoopFlag)
+
+
+class ExplainDoomLoop(dspy.Signature):
+    """A doom loop was already confirmed. Name the exact repeated action and result."""
+
+    step_summary: list[str] = dspy.InputField()
+
+    pattern: str = dspy.OutputField(desc="The exact repeated action and result.")
+
+
+explain_doom_loop = dspy.Predict(ExplainDoomLoop)
+_EXPLAIN_LM = dspy.LM("openrouter/openai/gpt-5.6-luna", api_key=os.environ.get("OPENROUTER_API_KEY"), cache=True, timeout=120)
+_EXPLAIN_SLOTS = asyncio.Semaphore(8)
+
+
+def _explain_doom_loop_sync(step_summary):
+    with dspy.context(lm=_EXPLAIN_LM):
+        return explain_doom_loop(step_summary=step_summary).pattern
+
+
+async def detect_doom_loop(steps, ctx):
+    step_summary = [step.get("step_summary", "") for step in steps]
+    flag = await asyncio.to_thread(detect_doom_loop_flag, step_summary=step_summary)
+    if not flag.doom_loop:
+        return {**ctx.parent, "doom_loop": False, "pattern": ""}
+    async with _EXPLAIN_SLOTS:
+        pattern = await asyncio.to_thread(_explain_doom_loop_sync, step_summary)
+    return {**ctx.parent, "doom_loop": True, "pattern": pattern}
 
 
 def flag_doom_loop(record):
@@ -124,15 +149,30 @@ def flag_rollout_complete(record):
     return f"rollout complete ({verdict})"
 ```
 
-This prompt was tightened after a real false-positive hunt: an earlier looser
-version ("stuck doing the same thing over and over") flagged 23 of 157 real
-failed trajectories, and manually reading the raw steps showed almost all of
-those were varied, productive work (different files grepped, different bugs
-fixed, tests re-run after real changes) that only *looked* repetitive from a
-one-line-per-step summary. The tightened version above cut that to 1 flag out
-of the same 157. Do not loosen this signature's language back to "repeats
-itself" without re-running that kind of check — the LM will happily pattern-
-match on "same tool called several times" unless told exactly what to exclude.
+`detect_doom_loop` is a **Python reduce**, not a DSPy module — that's why it has
+to build `{**ctx.parent, ...}` itself. An LM-kind reduce gets that merge for
+free from the runtime; a Python one does not. It exists to make the common
+case (no loop) cheap: `detect_doom_loop_flag` is Jev, which answers the bool
+in one fast System One call and is dispatched normally (bounded by
+`lm.max_concurrent` like any other declared stage), but Jev cannot produce a
+freeform `pattern` string. Only a confirmed hit pays for the second,
+generative call — bounded by its own small `_EXPLAIN_SLOTS` semaphore, since
+a hand-called `dspy.Predict` outside the runtime's own dispatch isn't covered
+by `lm.max_concurrent` and won't show up in `trace-miner stats` either. Keep
+that semaphore if you copy this pattern — an earlier version without it hit
+OpenRouter's per-account in-flight spend cap once several expensive calls
+landed at once.
+
+The bool signature's prompt was tightened after a real false-positive hunt:
+an earlier looser version ("stuck doing the same thing over and over") flagged
+23 of 157 real failed trajectories, and manually reading the raw steps showed
+almost all of those were varied, productive work (different files grepped,
+different bugs fixed, tests re-run after real changes) that only *looked*
+repetitive from a one-line-per-step summary. The tightened version above cut
+that to 1 flag out of the same 157. Do not loosen this signature's language
+back to "repeats itself" without re-running that kind of check — the LM will
+happily pattern-match on "same tool called several times" unless told exactly
+what to exclude.
 
 The runtime has no memory of a group across separate `POST /v1/records` calls —
 each post opens and closes its own `expand`→`reduce` group. So a reduce that

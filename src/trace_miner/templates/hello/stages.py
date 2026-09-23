@@ -1,3 +1,5 @@
+import asyncio
+import os
 import re
 from typing import Literal
 
@@ -265,7 +267,7 @@ class CategorizeTrajectory(dspy.Signature):
 categorize_trajectory = JevPredict(CategorizeTrajectory)
 
 
-class DetectDoomLoop(dspy.Signature):
+class DetectDoomLoopFlag(dspy.Signature):
     """Decide whether these steps show the agent stuck in a genuine doom loop.
 
     A doom loop is the agent repeating the same or near-identical action three
@@ -293,12 +295,51 @@ class DetectDoomLoop(dspy.Signature):
     doom_loop: bool = dspy.OutputField(
         desc="True only for a clear, sustained doom loop with no progress."
     )
-    pattern: str = dspy.OutputField(
-        desc="The exact repeated action and result, or an empty string if none."
-    )
 
 
-detect_doom_loop = dspy.Predict(DetectDoomLoop)
+# Jev answers a bool in one System One call and is cheaper and faster than a
+# generative call, so every posted step pays this cost, not just the rare
+# true positive. It cannot produce the freeform `pattern` text though (Jev
+# rejects freeform str/list outputs) — only a real hit pays for that second,
+# slower call below.
+detect_doom_loop_flag = JevPredict(DetectDoomLoopFlag)
+
+
+class ExplainDoomLoop(dspy.Signature):
+    """A doom loop was already confirmed. Name the exact repeated action and result."""
+
+    step_summary: list[str] = dspy.InputField()
+
+    pattern: str = dspy.OutputField(desc="The exact repeated action and result.")
+
+
+explain_doom_loop = dspy.Predict(ExplainDoomLoop)
+
+_EXPLAIN_LM = dspy.LM(
+    "openrouter/openai/gpt-5.6-luna",
+    api_key=os.environ.get("OPENROUTER_API_KEY"),
+    cache=True,
+    timeout=120,
+)
+# Explain calls are rare (only on a real hit) but still bounded, independent
+# of `lm.max_concurrent`, since this bypasses the runtime's own dispatch.
+_EXPLAIN_SLOTS = asyncio.Semaphore(8)
+
+
+def _explain_doom_loop_sync(step_summary: list[str]) -> str:
+    with dspy.context(lm=_EXPLAIN_LM):
+        return explain_doom_loop(step_summary=step_summary).pattern
+
+
+async def detect_doom_loop(steps, ctx):
+    """Reduce: Jev judges every window; only a real hit pays for an explanation call."""
+    step_summary = [step.get("step_summary", "") for step in steps]
+    flag = await asyncio.to_thread(detect_doom_loop_flag, step_summary=step_summary)
+    if not flag.doom_loop:
+        return {**ctx.parent, "doom_loop": False, "pattern": ""}
+    async with _EXPLAIN_SLOTS:
+        pattern = await asyncio.to_thread(_explain_doom_loop_sync, step_summary)
+    return {**ctx.parent, "doom_loop": True, "pattern": pattern}
 
 
 def flag_doom_loop(record):
