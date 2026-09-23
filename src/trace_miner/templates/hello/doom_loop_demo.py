@@ -15,15 +15,28 @@ from pathlib import Path
 from trace_miner.client import Client
 
 WINDOW_SIZE = 8
-LOOP_TASK = "terminal-bench/vf2-speedup-networkx"
+LOOP_TASK = "terminal-bench/coq-block-bound"
 
-# A real terminal-bench trajectory (same Harbor job as the other bundled traces)
-# where the agent backgrounds a slow test, then checks on it with `sleep N; cat
-# task.output` three times in a row and gets nothing back each time before it
-# finally thinks to check whether the process is even still running. Kept in its
-# own file rather than trajectories.jsonl, which the other pipelines share and
-# check exact task sets for.
-_LOOP_TRACE_FILE = "doom_loop_example.jsonl"
+# terminal-bench/coq-block-bound really is a doom loop: the agent edits Main.v,
+# runs coqc, gets an error, edits again — 40+ compile attempts from step 10 to
+# step 217 of a 218-step trace, never once succeeding. The other two are traces
+# that only *look* repetitive on the surface but are not:
+#   - cargo-flight-dispatch: reruns the same dispatch/test commands, but each
+#     run follows a real code change and confirms progress (bug found, fixed,
+#     independently verified). Ends in a clean summary of what was fixed.
+#   - takens-embedding-lean: greps and rebuilds repeatedly, but each search
+#     targets a different Mathlib lemma. Ends with an honest "I could not prove
+#     this" rather than a fabricated success.
+# All three came from screening a larger real trace corpus with this same
+# pipeline, then reading the raw steps by hand — the LM's own "doom_loop"
+# verdict was not trusted without that. Kept in their own file rather than
+# trajectories.jsonl, which the other pipelines share and check exact task
+# sets for.
+_EXAMPLES_FILE = "doom_loop_examples.jsonl"
+FALSE_POSITIVE_TASKS = {
+    "terminal-bench/cargo-flight-dispatch",
+    "terminal-bench/takens-embedding-lean",
+}
 
 
 def main() -> None:
@@ -32,7 +45,7 @@ def main() -> None:
     here = Path(__file__).resolve().parent
     traces = [
         *_load_traces(here / "input" / "trajectories.jsonl"),
-        *_load_traces(here / "input" / _LOOP_TRACE_FILE),
+        *_load_traces(here / "input" / _EXAMPLES_FILE),
     ]
     outcomes = []
     for trace in traces:
@@ -43,10 +56,18 @@ def main() -> None:
     clean = [task for task, outcome in outcomes if outcome != "doom_loop"]
     loops = [task for task, outcome in outcomes if outcome == "doom_loop"]
     print(f"{len(clean)} clean, {len(loops)} doom loop", flush=True)
-    # The LM judge is only guaranteed to catch the planted example; a marginal
-    # real trace (e.g. one with a run of no-op steps) may fairly go either way.
+    # The LM judge is only guaranteed to get two things right: catching the
+    # confirmed real loop, and not crying wolf on the two confirmed look-alikes.
+    # A marginal trace among the rest (e.g. one with a run of no-op steps) may
+    # fairly go either way.
+    problems = []
     if LOOP_TASK not in loops:
-        raise SystemExit(f"the real doom-loop trace was never flagged: clean={clean} loops={loops}")
+        problems.append(f"the real doom-loop trace was never flagged (loops={loops})")
+    false_alarms = FALSE_POSITIVE_TASKS & set(loops)
+    if false_alarms:
+        problems.append(f"look-alike traces were wrongly flagged: {sorted(false_alarms)}")
+    if problems:
+        raise SystemExit("; ".join(problems))
 
 
 def _run_trace(client: Client, session_id: str, task: str, steps: list[dict]) -> str:

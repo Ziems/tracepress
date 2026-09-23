@@ -87,14 +87,25 @@ reduce and the two alerts are new:
 
 ```python
 class DetectDoomLoop(dspy.Signature):
-    """Decide if these recent steps show an agent stuck repeating itself."""
+    """Decide whether these steps show the agent stuck in a genuine doom loop.
+
+    A doom loop is the agent repeating the same or near-identical action three
+    or more times and getting the same unproductive result each time, with no
+    new information gained and no change in approach.
+
+    Judge the ACTION-RESULT PAIR, not the surface activity type. Do NOT flag
+    varied exploration, verification after a real change, polling on a job
+    whose state visibly changes, or a single transient error.
+    """
 
     step_summary: list[str] = dspy.InputField()
 
     doom_loop: bool = dspy.OutputField(
-        desc="True when the agent is stuck doing the same thing over and over."
+        desc="True only for a clear, sustained doom loop with no progress."
     )
-    pattern: str = dspy.OutputField(desc="What it keeps repeating, or an empty string.")
+    pattern: str = dspy.OutputField(
+        desc="The exact repeated action and result, or an empty string if none."
+    )
 
 
 detect_doom_loop = dspy.Predict(DetectDoomLoop)
@@ -112,6 +123,16 @@ def flag_rollout_complete(record):
     verdict = "doom loop" if record.get("doom_loop") else "clean"
     return f"rollout complete ({verdict})"
 ```
+
+This prompt was tightened after a real false-positive hunt: an earlier looser
+version ("stuck doing the same thing over and over") flagged 23 of 157 real
+failed trajectories, and manually reading the raw steps showed almost all of
+those were varied, productive work (different files grepped, different bugs
+fixed, tests re-run after real changes) that only *looked* repetitive from a
+one-line-per-step summary. The tightened version above cut that to 1 flag out
+of the same 157. Do not loosen this signature's language back to "repeats
+itself" without re-running that kind of check — the LM will happily pattern-
+match on "same tool called several times" unless told exactly what to exclude.
 
 The runtime has no memory of a group across separate `POST /v1/records` calls —
 each post opens and closes its own `expand`→`reduce` group. So a reduce that
@@ -144,7 +165,7 @@ module's other outputs on `alerts.latest.record`.
 | `classify.yaml` | One Jev map over a prepared trajectory; no per-step summarize |
 | `stages.py` | Shared Python functions and DSPy signatures |
 | `input/trajectories.jsonl` | Three slim harbor traces |
-| `input/doom_loop_example.jsonl` | One real harbor trace with a genuine doom loop |
+| `input/doom_loop_examples.jsonl` | Three real harbor traces: one confirmed doom loop, two confirmed look-alikes |
 | `input/alerts.jsonl` | Serve target for `alerts.yaml`. Starts empty. Gitignored. |
 | `input/doom_loop.jsonl` | Serve target for `doom_loop.yaml`. Starts empty. Gitignored. |
 | `output/` | Generated JSONL. Gitignored. Safe to overwrite |

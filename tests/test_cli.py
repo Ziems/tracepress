@@ -112,7 +112,7 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert (dest / "stages.py").is_file()
     assert (dest / "AGENTS.md").is_file()
     assert (dest / "input" / "trajectories.jsonl").is_file()
-    assert (dest / "input" / "doom_loop_example.jsonl").is_file()
+    assert (dest / "input" / "doom_loop_examples.jsonl").is_file()
     assert not (dest / "input" / "live.jsonl").exists()
     assert (dest / "input" / "alerts.jsonl").read_text(encoding="utf-8") == ""
     assert (dest / "input" / "doom_loop.jsonl").read_text(encoding="utf-8") == ""
@@ -134,8 +134,12 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
         "terminal-bench/photonic-waveguide-routing",
         "terminal-bench/freecad-spring-clip",
     ]
-    loop_records = read_jsonl(dest / "input" / "doom_loop_example.jsonl")
-    assert [row["eval"]["task_name"] for row in loop_records] == ["terminal-bench/vf2-speedup-networkx"]
+    loop_records = read_jsonl(dest / "input" / "doom_loop_examples.jsonl")
+    assert [row["eval"]["task_name"] for row in loop_records] == [
+        "terminal-bench/coq-block-bound",
+        "terminal-bench/cargo-flight-dispatch",
+        "terminal-bench/takens-embedding-lean",
+    ]
 
     for name in (
         "summarize.yaml",

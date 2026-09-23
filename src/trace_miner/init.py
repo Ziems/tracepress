@@ -19,7 +19,7 @@ TEMPLATE_FILES = (
     "doom_loop_demo.py",
     "stages.py",
     "input/trajectories.jsonl",
-    "input/doom_loop_example.jsonl",
+    "input/doom_loop_examples.jsonl",
     ".gitignore",
 )
 

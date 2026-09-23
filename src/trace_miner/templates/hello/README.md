@@ -6,8 +6,8 @@ slim harbor traces, and seven pipelines that reuse those stages.
 The traces are real harbor runs (failed ATRX/VEP CRISPR, failed photonic
 routing, passed FreeCAD spring clip) with planted signals so each pipeline has
 something to find: a fake SSN, a fake phone number, and a frustrated user turn.
-The doom-loop demo uses a fourth real trace with no planted signal — the loop
-in it really happened.
+The doom-loop demo adds three more real traces with no planted signal: one
+genuine doom loop and two that only look like one.
 
 Language-model stages need OpenRouter:
 
@@ -94,26 +94,40 @@ In another, from this directory:
 python doom_loop_demo.py
 ```
 
-`doom_loop_demo.py` posts all three bundled traces plus a fourth real trace
-from `input/doom_loop_example.jsonl`: a terminal-bench run (same Harbor job as
-the other three) where the agent backgrounds a slow test, then checks on it
-with `sleep N; cat task.output` three times running and gets nothing back
-each time before it thinks to check whether the process is even still alive.
-No planted or fabricated signal — it's an unedited real doom loop, just with
-its largest fields clipped for size. It reliably aborts mid-stream:
+`doom_loop_demo.py` posts the three bundled traces plus three more from
+`input/doom_loop_examples.jsonl`, none of them planted or fabricated:
 
-```text
-doom loop in terminal-bench/vf2-speedup-networkx step 45: Running Bash commands that time out or produce no output, often moving to background.
-```
+- `coq-block-bound` really is a doom loop. The agent edits a Coq proof file,
+  compiles, gets an error, edits again — 40+ compile attempts from step 10 to
+  step 217 of a 218-step trace, never once succeeding. It reliably aborts
+  mid-stream:
 
-The other three usually finish with `rollout complete (clean)`, but they're
-real traces too, not planted — a live run has also caught genuine stalls in
-`photonic-waveguide-routing` (a run of empty agent turns) and
-`freecad-spring-clip` (a run of Bash commands that just print `ok`). Either
-verdict is the reduce doing its job; only silence would mean something's
-wrong.
+  ```text
+  doom loop in terminal-bench/coq-block-bound step 18: Repeatedly edited Main.v with search_replace, then recompiled it; Coq continued to fail with proof/tactic/unification errors, without achieving a successful proof or changing approach.
+  ```
 
-(the exact wording is the LM's, so it varies run to run).
+  (the exact wording and step are the LM's, so both vary run to run — the
+  pattern starts around step 10 and never lets up, so it should catch on
+  early)
+
+- `cargo-flight-dispatch` and `takens-embedding-lean` only *look* like doom
+  loops from a one-line-per-step summary — the same commands recur, but each
+  run follows a real change or targets a different hypothesis, and both end
+  with the agent reporting an honest outcome (a fix it verified, or a proof it
+  couldn't find) rather than repeating itself. Both should finish with
+  `rollout complete (clean)`.
+
+All three came from screening 157 real failed trajectories with this same
+pipeline, then reading the raw steps by hand before trusting any verdict — the
+LM's own "doom_loop: true" is not proof by itself. An earlier, looser version
+of `detect_doom_loop`'s prompt flagged 23 of those 157 traces; most turned out
+to be traces like the two look-alikes here. Tightening the signature's
+criteria (see `AGENTS.md`) cut that to 1 false alarm out of 157.
+
+The three original bundled traces usually finish with `rollout complete
+(clean)` too, but they're real traces, not planted — an occasional flag on one
+of them (they carry genuinely repetitive stretches, like a run of empty agent
+turns) is the reduce doing its job, not a bug.
 
 ## What each file is
 
@@ -122,8 +136,9 @@ wrong.
   changes every pipeline that names it. `detect_pii_in_step` uses a Pydantic
   output type (`list[PiiFinding]`) so the model returns structured spans.
 - `input/trajectories.jsonl` is three slim harbor records.
-- `input/doom_loop_example.jsonl` is one real harbor record with a genuine doom
-  loop, its largest fields clipped for size. `doom_loop_demo.py` reads it.
+- `input/doom_loop_examples.jsonl` is three real harbor records — one genuine
+  doom loop, two confirmed look-alikes — their largest fields clipped for
+  size. `doom_loop_demo.py` reads it.
 - `input/alerts.jsonl` starts empty so `alerts.yaml` can be served before any
   steps are posted. Gitignored. Recreated empty by `init --force`.
 - `alerts.yaml` watches `input/alerts.jsonl`. `client_demo.py` posts steps into it.
