@@ -14,7 +14,7 @@ The install id is a random UUID stored at `~/.trace-miner/telemetry_id`. It is t
 
 After a pipeline command finishes, each event is posted by its own detached helper process. The timeout is 10 seconds. There is no retry. If the machine is offline, the event is dropped. A network failure does not change the command's result.
 
-A batch run posts one `pipeline_stage` event per configured stage, then `pipeline_run`. `serve` posts `pipeline_serve_start` when the process is ready, then a cumulative `pipeline_serving` snapshot every 5 minutes, because the process may never exit. Each of those includes the stage events for that moment. `pipeline_served` is sent only when the process actually stops. `init` posts `pipeline_init`. `stats`, help, and unknown commands do not send an event.
+A batch run posts `pipeline_run` when it finishes. `serve` posts `pipeline_serve_start` when the process is ready, then a cumulative `pipeline_serving` snapshot every 5 minutes, because the process may never exit. `pipeline_served` is sent only when the process actually stops. `init` posts `pipeline_init`. `stats`, help, and unknown commands do not send an event.
 
 Serve snapshots are cumulative. Keep the latest `snapshot` for a `run_id`, or use `pipeline_served` when the process has exited. Do not add the snapshots together.
 
@@ -52,7 +52,7 @@ Sent when a batch run or a serve process finishes, including handled errors and 
 - `exception_type`
 - `pipeline_count`
 - `stage_count`: every stage, of any kind
-- `maps`, `filters`, `stages`, `alerts`, `expands`, `reduces`: how many stages of that kind the pipeline contains. `stages` counts steps whose kind is `stage`
+- `maps`, `filters`, `stages`, `alerts`, `expands`, `reduces`: how many stages of that kind the pipeline contains. `stages` counts steps whose kind is `stage`. A `tee` step is a file write and is not counted
 - `depth`: deepest group nesting. `0` when the pipeline has no group
 - `width`: most steps in any one step list, including nested groups. `tee` and `group` count as steps
 - `lm_provider` and `lm_model`, when a runtime started
@@ -74,30 +74,6 @@ The fields match `pipeline_served`, with these differences:
 - `exit_code` and `exception_type` are omitted
 
 Counts on `pipeline_serving` are totals since the process started, not the change since the previous snapshot.
-
-### `pipeline_stage`
-
-Sent once per configured stage when a batch run finishes, and again with each serve snapshot and when serve stops. Totals cover every record that stage has handled so far. A stage that never ran, because an earlier stage failed or no records reached it, is still sent with `calls: 0`.
-
-Serve stage events include `snapshot`, matching the `pipeline_serve_start` or `pipeline_serving` event they belong to. The closing `pipeline_served` stage events omit `snapshot`.
-
-`tee` steps are file writes and do not produce a stage event.
-
-- `schema`: `pipeline_stage.v1`
-- `run_id`
-- `index`: position in config order, starting at 0
-- `kind`: `map`, `filter`, `stage`, `alert`, `expand`, or `reduce`
-- `implementation`: `python` or `lm`
-- `async`: true when a Python stage is a coroutine
-- `duration_seconds`: wall time spent in that stage
-- `calls`: times the stage function ran
-- `records_in`: records passed in. For `reduce`, this is the number of children
-- `records_out`: records the stage produced. For `alert`, this is the number of alerts fired
-- `failed`
-- `status`: `completed`, `errored`, or `interrupted`
-- `lm_calls`, `lm_prompt_tokens`, `lm_completion_tokens`, `lm_cost_usd`
-- `lm_provider` and `lm_model`, for LM stages
-- `snapshot`: present on serve snapshots, omitted when a batch run or a serve process finishes
 
 ## Not collected
 

@@ -1892,7 +1892,7 @@ pipelines:
     assert read_jsonl(tmp_path / "output.jsonl") == [{"failures": 1, "labels": ["good"]}]
 
 
-def test_pipeline_telemetry_reports_stage_kind_duration_and_lm_usage(
+def test_pipeline_telemetry_reports_kind_counts_and_lm_usage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TRACE_MINER_TELEMETRY", "1")
@@ -1964,54 +1964,9 @@ pipelines:
     run_config(config)
 
     bodies = [payload["body"] for payload in sent]
-    assert [body["event"] for body in bodies] == [  # type: ignore[index]
-        "pipeline_stage",
-        "pipeline_stage",
-        "pipeline_stage",
-        "pipeline_stage",
-        "pipeline_stage",
-        "pipeline_run",
-    ]
-    stages = [body["properties"] for body in bodies[:-1]]  # type: ignore[index]
-    run = bodies[-1]["properties"]  # type: ignore[index]
+    assert [body["event"] for body in bodies] == ["pipeline_run"]  # type: ignore[index]
+    run = bodies[0]["properties"]  # type: ignore[index]
     assert isinstance(run, dict)
-    expected = [
-        ("filter", "python", 2, 1, 0),
-        ("map", "lm", 1, 1, 1),
-        ("expand", "python", 1, 2, 0),
-        ("map", "python", 2, 2, 0),
-        ("reduce", "python", 2, 1, 0),
-    ]
-    assert len(stages) == len(expected)
-    run_id = run["run_id"]
-    for index, (stage, (kind, implementation, records_in, records_out, lm_calls)) in enumerate(zip(stages, expected, strict=True)):
-        assert isinstance(stage, dict)
-        assert stage["run_id"] == run_id
-        assert stage["index"] == index
-        assert stage["kind"] == kind
-        assert stage["implementation"] == implementation
-        assert stage["async"] is False
-        assert stage["records_in"] == records_in
-        assert stage["records_out"] == records_out
-        assert stage["lm_calls"] == lm_calls
-        assert stage["status"] == "completed"
-        assert float(stage["duration_seconds"]) >= 0
-        assert "name" not in stage
-        if implementation == "python":
-            assert "lm_model" not in stage
-            assert "lm_provider" not in stage
-    lm_stage = stages[1]
-    assert isinstance(lm_stage, dict)
-    assert lm_stage["calls"] == 1
-    assert lm_stage["lm_prompt_tokens"] == 10
-    assert lm_stage["lm_completion_tokens"] == 4
-    assert lm_stage["lm_cost_usd"] == 1.25
-    assert lm_stage["lm_provider"] == "openrouter"
-    assert lm_stage["lm_model"] == "demo-model"
-    assert float(lm_stage["duration_seconds"]) > 0
-    reduce_stage = stages[4]
-    assert isinstance(reduce_stage, dict)
-    assert reduce_stage["calls"] == 1
     assert run["status"] == "completed"
     assert run["command_flags"] == ["--progress"]
     assert run["pipeline_count"] == 1
@@ -2045,7 +2000,7 @@ pipelines:
     assert len(sent) == before
 
 
-def test_failed_stage_telemetry_marks_that_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_run_telemetry_reports_the_exception(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRACE_MINER_TELEMETRY", "1")
     monkeypatch.setattr(telemetry_module, "POSTHOG_PROJECT_API_KEY", "phc_test")
     sent: list[dict[str, object]] = []
@@ -2075,21 +2030,11 @@ pipelines:
         run_config(config)
 
     bodies = [payload["body"] for payload in sent]
-    assert [body["event"] for body in bodies] == ["pipeline_stage", "pipeline_stage", "pipeline_run"]  # type: ignore[index]
-    failed_stage = bodies[0]["properties"]  # type: ignore[index]
-    skipped_stage = bodies[1]["properties"]  # type: ignore[index]
-    run = bodies[2]["properties"]  # type: ignore[index]
-    assert isinstance(failed_stage, dict)
-    assert isinstance(skipped_stage, dict)
+    assert [body["event"] for body in bodies] == ["pipeline_run"]  # type: ignore[index]
+    run = bodies[0]["properties"]  # type: ignore[index]
     assert isinstance(run, dict)
-    assert failed_stage["kind"] == "map"
-    assert failed_stage["implementation"] == "python"
-    assert failed_stage["status"] == "errored"
-    assert failed_stage["failed"] == 1
-    assert failed_stage["calls"] == 1
-    assert skipped_stage["calls"] == 0
-    assert skipped_stage["status"] == "completed"
     assert run["status"] == "errored"
+    assert run["stage_count"] == 2
     assert run["exception_type"] == "RuntimeError"
     assert run["maps"] == 2
     assert run["depth"] == 0

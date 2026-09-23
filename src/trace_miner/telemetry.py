@@ -9,7 +9,6 @@ import platform
 import subprocess
 import sys
 from contextvars import ContextVar
-from dataclasses import dataclass
 from pathlib import Path
 from importlib.metadata import PackageNotFoundError, distribution, version
 from typing import Any, Callable
@@ -32,7 +31,6 @@ PIPELINE_RUN = "pipeline_run"
 PIPELINE_SERVED = "pipeline_served"
 PIPELINE_SERVE_START = "pipeline_serve_start"
 PIPELINE_SERVING = "pipeline_serving"
-PIPELINE_STAGE = "pipeline_stage"
 
 # Cumulative serve snapshots. The process may never exit, so these are sent while it runs.
 SERVE_SNAPSHOT_SECONDS = 300
@@ -115,47 +113,6 @@ class PipelineExecutionV1(TelemetryEvent):
     snapshot: int | None = None
 
 
-class PipelineStageV1(TelemetryEvent):
-    run_id: str
-    index: int
-    kind: str
-    implementation: str
-    is_async: bool = Field(alias="async")
-    duration_seconds: float
-    calls: int
-    records_in: int
-    records_out: int
-    failed: int
-    status: str
-    lm_calls: int
-    lm_prompt_tokens: int
-    lm_completion_tokens: int
-    lm_cost_usd: float
-    lm_provider: str | None = None
-    lm_model: str | None = None
-    snapshot: int | None = None
-
-
-@dataclass
-class StageTelemetry:
-    index: int
-    kind: str
-    implementation: str
-    is_async: bool
-    duration_seconds: float
-    calls: int
-    records_in: int
-    records_out: int
-    failed: int
-    status: str
-    lm_calls: int = 0
-    lm_prompt_tokens: int = 0
-    lm_completion_tokens: int = 0
-    lm_cost_usd: float = 0.0
-    lm_provider: str | None = None
-    lm_model: str | None = None
-
-
 def _property_keys(model: type[TelemetryEvent]) -> set[str]:
     keys = {field.alias or name for name, field in model.model_fields.items()}
     return keys | _POSTHOG_CONTROL_KEYS
@@ -167,7 +124,6 @@ _EVENT_PROPERTY_KEYS = {
     PIPELINE_SERVED: _property_keys(PipelineExecutionV1),
     PIPELINE_SERVE_START: _property_keys(PipelineExecutionV1),
     PIPELINE_SERVING: _property_keys(PipelineExecutionV1),
-    PIPELINE_STAGE: _property_keys(PipelineStageV1),
 }
 
 _SENDER_SOURCE = """\
@@ -281,7 +237,7 @@ def capture_cli_finished(
                 duration_seconds=duration_seconds,
                 exit_code=exit_code,
                 exception=exception,
-                stages=[],
+                kinds=[],
             )
     except Exception:
         logger.debug("Unable to capture command telemetry", exc_info=True)
@@ -303,7 +259,7 @@ def capture_pipeline_finished(
     lm_cost_usd: float,
     duration_seconds: float,
     exception: BaseException | None,
-    stages: list[StageTelemetry],
+    kinds: list[str],
     depth: int,
     width: int,
 ) -> None:
@@ -328,7 +284,7 @@ def capture_pipeline_finished(
             duration_seconds=duration_seconds,
             exit_code=_exit_code_for_status(status),
             exception=exception,
-            stages=stages,
+            kinds=kinds,
             depth=depth,
             width=width,
         )
@@ -345,7 +301,7 @@ def capture_pipeline_finished_async(
     lm_model: str,
     stats: RunStats,
     exception: BaseException | None,
-    stages: list[StageTelemetry],
+    kinds: list[str],
     depth: int,
     width: int,
 ) -> None:
@@ -371,7 +327,7 @@ def capture_pipeline_finished_async(
                 lm_cost_usd=stats.lm_cost_usd,
                 duration_seconds=stats.elapsed_s,
                 exception=exception,
-                stages=list(stages),
+                kinds=list(kinds),
                 depth=depth,
                 width=width,
             ),
@@ -394,7 +350,7 @@ def capture_pipeline_serving(
     lm_completion_tokens: int,
     lm_cost_usd: float,
     duration_seconds: float,
-    stages: list[StageTelemetry],
+    kinds: list[str],
     depth: int,
     width: int,
     snapshot: int,
@@ -421,7 +377,7 @@ def capture_pipeline_serving(
             duration_seconds=duration_seconds,
             exit_code=None,
             exception=None,
-            stages=stages,
+            kinds=kinds,
             depth=depth,
             width=width,
             snapshot=snapshot,
@@ -437,7 +393,7 @@ def capture_pipeline_serving_async(
     lm_provider: str,
     lm_model: str,
     stats: RunStats,
-    stages: list[StageTelemetry],
+    kinds: list[str],
     depth: int,
     width: int,
     snapshot: int,
@@ -462,7 +418,7 @@ def capture_pipeline_serving_async(
                 lm_completion_tokens=stats.lm_completion_tokens,
                 lm_cost_usd=stats.lm_cost_usd,
                 duration_seconds=stats.elapsed_s,
-                stages=list(stages),
+                kinds=list(kinds),
                 depth=depth,
                 width=width,
                 snapshot=snapshot,
@@ -490,7 +446,7 @@ def _capture_execution(
     duration_seconds: float,
     exit_code: int | None,
     exception: BaseException | None,
-    stages: list[StageTelemetry],
+    kinds: list[str],
     depth: int = 0,
     width: int = 0,
     event_name: str | None = None,
@@ -500,9 +456,6 @@ def _capture_execution(
     resolved_event = event_name or _EXECUTION_EVENTS.get(command)
     if resolved_event is None:
         return
-    if run_id is not None:
-        for stage in stages:
-            _capture_stage(run_id, stage, snapshot=snapshot)
     if status is None:
         status = _run_status(exception) if run_id is not None else _command_status(exit_code or 1, exception)
     event = PipelineExecutionV1(
@@ -520,14 +473,14 @@ def _capture_execution(
         records_read=records_read,
         emitted=emitted,
         failed=failed,
-        stage_count=len(stages),
+        stage_count=len(kinds),
         depth=depth,
         width=width,
         lm_calls=lm_calls,
         lm_prompt_tokens=lm_prompt_tokens,
         lm_completion_tokens=lm_completion_tokens,
         lm_cost_usd=lm_cost_usd,
-        **_kind_counts(stages),
+        **_kind_counts(kinds),
         **_shared_context(),
     )
     _capture(resolved_event, event.properties())
@@ -543,39 +496,13 @@ _KIND_FIELDS = {
 }
 
 
-def _kind_counts(stages: list[StageTelemetry]) -> dict[str, int]:
+def _kind_counts(kinds: list[str]) -> dict[str, int]:
     counts = {name: 0 for name in _KIND_FIELDS.values()}
-    for stage in stages:
-        field = _KIND_FIELDS.get(stage.kind)
+    for kind in kinds:
+        field = _KIND_FIELDS.get(kind)
         if field is not None:
             counts[field] += 1
     return counts
-
-
-def _capture_stage(run_id: str, stage: StageTelemetry, *, snapshot: int | None = None) -> None:
-    event = PipelineStageV1(
-        schema_="pipeline_stage.v1",
-        run_id=run_id,
-        index=stage.index,
-        kind=stage.kind,
-        implementation=stage.implementation,
-        is_async=stage.is_async,
-        duration_seconds=stage.duration_seconds,
-        calls=stage.calls,
-        records_in=stage.records_in,
-        records_out=stage.records_out,
-        failed=stage.failed,
-        status=stage.status,
-        lm_calls=stage.lm_calls,
-        lm_prompt_tokens=stage.lm_prompt_tokens,
-        lm_completion_tokens=stage.lm_completion_tokens,
-        lm_cost_usd=stage.lm_cost_usd,
-        lm_provider=stage.lm_provider if stage.implementation == "lm" else None,
-        lm_model=stage.lm_model if stage.implementation == "lm" else None,
-        snapshot=snapshot,
-        **_shared_context(),
-    )
-    _capture(PIPELINE_STAGE, event.properties())
 
 
 def _exit_code_for_status(status: str) -> int:
