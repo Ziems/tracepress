@@ -86,7 +86,7 @@ reduce and the two alerts are new:
 ```
 
 ```python
-class DetectDoomLoopFlag(dspy.Signature):
+class DetectDoomLoop(dspy.Signature):
     """Decide whether these steps show the agent stuck in a genuine doom loop.
 
     A doom loop is the agent repeating the same or near-identical action three
@@ -103,12 +103,22 @@ class DetectDoomLoopFlag(dspy.Signature):
     doom_loop: bool = dspy.OutputField(
         desc="True only for a clear, sustained doom loop with no progress."
     )
+    pattern: str = dspy.OutputField(
+        desc="The exact repeated action and result, or an empty string if none."
+    )
 
 
-detect_doom_loop_flag = JevPredict(DetectDoomLoopFlag)
+class _DetectDoomLoopFlag(dspy.Signature):
+    __doc__ = DetectDoomLoop.__doc__
+
+    step_summary: list[str] = dspy.InputField()
+
+    doom_loop: bool = dspy.OutputField(
+        desc="True only for a clear, sustained doom loop with no progress."
+    )
 
 
-class ExplainDoomLoop(dspy.Signature):
+class _ExplainDoomLoop(dspy.Signature):
     """A doom loop was already confirmed. Name the exact repeated action and result."""
 
     step_summary: list[str] = dspy.InputField()
@@ -116,24 +126,25 @@ class ExplainDoomLoop(dspy.Signature):
     pattern: str = dspy.OutputField(desc="The exact repeated action and result.")
 
 
-explain_doom_loop = dspy.Predict(ExplainDoomLoop)
-_EXPLAIN_LM = dspy.LM("openrouter/openai/gpt-5.6-luna", api_key=os.environ.get("OPENROUTER_API_KEY"), cache=True, timeout=120)
-_EXPLAIN_SLOTS = asyncio.Semaphore(8)
+class _DetectDoomLoop(dspy.Module):
+    """Jev answers the bool on every call; only a real hit pays for the explain call."""
+
+    signature = DetectDoomLoop
+
+    def __init__(self):
+        super().__init__()
+        self._flag = JevPredict(_DetectDoomLoopFlag)
+        self._explain = dspy.Predict(_ExplainDoomLoop)
+
+    def forward(self, step_summary):
+        flag = self._flag(step_summary=step_summary)
+        if not flag.doom_loop:
+            return dspy.Prediction(doom_loop=False, pattern="")
+        explained = self._explain(step_summary=step_summary)
+        return dspy.Prediction(doom_loop=True, pattern=explained.pattern)
 
 
-def _explain_doom_loop_sync(step_summary):
-    with dspy.context(lm=_EXPLAIN_LM):
-        return explain_doom_loop(step_summary=step_summary).pattern
-
-
-async def detect_doom_loop(steps, ctx):
-    step_summary = [step.get("step_summary", "") for step in steps]
-    flag = await asyncio.to_thread(detect_doom_loop_flag, step_summary=step_summary)
-    if not flag.doom_loop:
-        return {**ctx.parent, "doom_loop": False, "pattern": ""}
-    async with _EXPLAIN_SLOTS:
-        pattern = await asyncio.to_thread(_explain_doom_loop_sync, step_summary)
-    return {**ctx.parent, "doom_loop": True, "pattern": pattern}
+detect_doom_loop = _DetectDoomLoop()
 
 
 def flag_doom_loop(record):
@@ -149,19 +160,27 @@ def flag_rollout_complete(record):
     return f"rollout complete ({verdict})"
 ```
 
-`detect_doom_loop` is a **Python reduce**, not a DSPy module — that's why it has
-to build `{**ctx.parent, ...}` itself. An LM-kind reduce gets that merge for
-free from the runtime; a Python one does not. It exists to make the common
-case (no loop) cheap: `detect_doom_loop_flag` is Jev, which answers the bool
-in one fast System One call and is dispatched normally (bounded by
-`lm.max_concurrent` like any other declared stage), but Jev cannot produce a
-freeform `pattern` string. Only a confirmed hit pays for the second,
-generative call — bounded by its own small `_EXPLAIN_SLOTS` semaphore, since
-a hand-called `dspy.Predict` outside the runtime's own dispatch isn't covered
-by `lm.max_concurrent` and won't show up in `trace-miner stats` either. Keep
-that semaphore if you copy this pattern — an earlier version without it hit
-OpenRouter's per-account in-flight spend cap once several expensive calls
-landed at once.
+`detect_doom_loop` is a **custom `dspy.Module`**, not a plain function — that
+matters. The runtime recognizes any `dspy.Module` (`_is_dspy_module` is just
+`isinstance(fn, dspy.Module)`) and dispatches it exactly like `dspy.Predict`:
+bounded by `lm.max_concurrent`, run under `dspy.context(lm=...)` for whatever
+model this stage's role resolves to (set `lm.reduce: openai/gpt-5.6-luna` in
+the pipeline, or per-step `lm: {model: ...}`), and counted by
+`dspy.track_usage()` — which captures both `self._flag` and `self._explain`
+since they're called from inside the same `forward()`. A first version called
+`detect_doom_loop_flag`/`explain_doom_loop` by hand from a plain async Python
+function instead; that bypassed all three (no semaphore, no resolved model —
+had to hardcode one with `os.environ.get("OPENROUTER_API_KEY")` — and no
+stats), which is strictly worse for no benefit. The `signature` class
+attribute exists only so the runtime can validate and route this stage at
+config-load time (matching `doom_loop`/`pattern` against the reduce role's
+"exactly one list input" rule); `forward()` never reads it.
+
+The bool-only sub-signature exists because Jev cannot produce a freeform
+`pattern` string (it rejects freeform str/list outputs), so the module keeps
+that check on `dspy.Predict` and only makes that second, slower generative
+call when `self._flag` already said yes — the common case (no loop) never
+pays for it.
 
 The bool signature's prompt was tightened after a real false-positive hunt:
 an earlier looser version ("stuck doing the same thing over and over") flagged

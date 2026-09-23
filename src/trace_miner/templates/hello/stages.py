@@ -1,5 +1,3 @@
-import asyncio
-import os
 import re
 from typing import Literal
 
@@ -267,7 +265,7 @@ class CategorizeTrajectory(dspy.Signature):
 categorize_trajectory = JevPredict(CategorizeTrajectory)
 
 
-class DetectDoomLoopFlag(dspy.Signature):
+class DetectDoomLoop(dspy.Signature):
     """Decide whether these steps show the agent stuck in a genuine doom loop.
 
     A doom loop is the agent repeating the same or near-identical action three
@@ -295,17 +293,22 @@ class DetectDoomLoopFlag(dspy.Signature):
     doom_loop: bool = dspy.OutputField(
         desc="True only for a clear, sustained doom loop with no progress."
     )
+    pattern: str = dspy.OutputField(
+        desc="The exact repeated action and result, or an empty string if none."
+    )
 
 
-# Jev answers a bool in one System One call and is cheaper and faster than a
-# generative call, so every posted step pays this cost, not just the rare
-# true positive. It cannot produce the freeform `pattern` text though (Jev
-# rejects freeform str/list outputs) — only a real hit pays for that second,
-# slower call below.
-detect_doom_loop_flag = JevPredict(DetectDoomLoopFlag)
+class _DetectDoomLoopFlag(dspy.Signature):
+    __doc__ = DetectDoomLoop.__doc__
+
+    step_summary: list[str] = dspy.InputField()
+
+    doom_loop: bool = dspy.OutputField(
+        desc="True only for a clear, sustained doom loop with no progress."
+    )
 
 
-class ExplainDoomLoop(dspy.Signature):
+class _ExplainDoomLoop(dspy.Signature):
     """A doom loop was already confirmed. Name the exact repeated action and result."""
 
     step_summary: list[str] = dspy.InputField()
@@ -313,33 +316,35 @@ class ExplainDoomLoop(dspy.Signature):
     pattern: str = dspy.OutputField(desc="The exact repeated action and result.")
 
 
-explain_doom_loop = dspy.Predict(ExplainDoomLoop)
+class _DetectDoomLoop(dspy.Module):
+    """Jev answers the bool on every call; only a real hit pays for the explain call.
 
-_EXPLAIN_LM = dspy.LM(
-    "openrouter/openai/gpt-5.6-luna",
-    api_key=os.environ.get("OPENROUTER_API_KEY"),
-    cache=True,
-    timeout=120,
-)
-# Explain calls are rare (only on a real hit) but still bounded, independent
-# of `lm.max_concurrent`, since this bypasses the runtime's own dispatch.
-_EXPLAIN_SLOTS = asyncio.Semaphore(8)
+    A plain function can't be declared as an LM stage, so this is a custom
+    `dspy.Module` instead — the runtime recognizes any `dspy.Module` and
+    dispatches it exactly like `dspy.Predict`: bounded by `lm.max_concurrent`,
+    run under `dspy.context(lm=...)` for whatever model this stage's role
+    resolves to, and counted by `dspy.track_usage()`, which captures both
+    sub-calls below since they happen inside that same `forward()`. `signature`
+    exists only so the runtime can validate and route this stage; it is never
+    called directly.
+    """
+
+    signature = DetectDoomLoop
+
+    def __init__(self):
+        super().__init__()
+        self._flag = JevPredict(_DetectDoomLoopFlag)
+        self._explain = dspy.Predict(_ExplainDoomLoop)
+
+    def forward(self, step_summary):
+        flag = self._flag(step_summary=step_summary)
+        if not flag.doom_loop:
+            return dspy.Prediction(doom_loop=False, pattern="")
+        explained = self._explain(step_summary=step_summary)
+        return dspy.Prediction(doom_loop=True, pattern=explained.pattern)
 
 
-def _explain_doom_loop_sync(step_summary: list[str]) -> str:
-    with dspy.context(lm=_EXPLAIN_LM):
-        return explain_doom_loop(step_summary=step_summary).pattern
-
-
-async def detect_doom_loop(steps, ctx):
-    """Reduce: Jev judges every window; only a real hit pays for an explanation call."""
-    step_summary = [step.get("step_summary", "") for step in steps]
-    flag = await asyncio.to_thread(detect_doom_loop_flag, step_summary=step_summary)
-    if not flag.doom_loop:
-        return {**ctx.parent, "doom_loop": False, "pattern": ""}
-    async with _EXPLAIN_SLOTS:
-        pattern = await asyncio.to_thread(_explain_doom_loop_sync, step_summary)
-    return {**ctx.parent, "doom_loop": True, "pattern": pattern}
+detect_doom_loop = _DetectDoomLoop()
 
 
 def flag_doom_loop(record):

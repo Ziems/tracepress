@@ -1,6 +1,9 @@
 from: ./stages
 id_field: session_id
 
+lm:
+  reduce: openai/gpt-5.6-luna
+
 pipelines:
   - name: doom_loop
     in: input/doom_loop.jsonl
