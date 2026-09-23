@@ -124,10 +124,8 @@ of `detect_doom_loop`'s prompt flagged 23 of those 157 traces; most turned out
 to be traces like the two look-alikes here. Tightening the signature's
 criteria (see `AGENTS.md`) cut that to 1 false alarm out of 157.
 
-The three original bundled traces usually finish with `rollout complete
-(clean)` too, but they're real traces, not planted — an occasional flag on one
-of them (they carry genuinely repetitive stretches, like a run of empty agent
-turns) is the reduce doing its job, not a bug.
+The three original bundled traces should finish with `rollout complete
+(clean)` too. A run of empty or no-op agent turns is idle, not a doom loop.
 
 ## What each file is
 

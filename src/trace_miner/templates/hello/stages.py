@@ -270,9 +270,12 @@ class DetectDoomLoop(dspy.Signature):
 
     A doom loop is the agent repeating the same or near-identical action three
     or more times and getting the same unproductive result each time, with no
-    new information gained and no change in approach.
+    new information gained and no change in approach. The action has to be a
+    real attempt: a tool, command, edit, or compile. Empty turns do not count.
 
     Judge the ACTION-RESULT PAIR, not the surface activity type. Do NOT flag:
+    - Empty or no-op steps: summaries that say no-op, skipped, empty, or that
+      name no tool, message, or observation. A run of those is idle, not a loop.
     - Exploration where each step targets a different file, query, hypothesis,
       or parameter, even if the tool or command shape looks similar (grepping
       different terms, reading different files, testing different values).
