@@ -39,6 +39,7 @@ The other bundled pipelines reuse the same traces and `stages.py`:
 trace-miner run pii.yaml
 trace-miner run frustration.yaml
 trace-miner run category.yaml
+trace-miner run classify.yaml
 ```
 
 `alerts.yaml` serves alerts. In one terminal:
@@ -140,6 +141,7 @@ module's other outputs on `alerts.latest.record`.
 | `client_demo.py` | Posts trajectory steps to a running `serve` and stops on an abort |
 | `doom_loop.yaml` | Named `doom_loop` pipeline; `in: input/doom_loop.jsonl` |
 | `doom_loop_demo.py` | Posts a sliding window of recent steps per trace; watches for a doom loop or `final` |
+| `classify.yaml` | One Jev map over a prepared trajectory; no per-step summarize |
 | `stages.py` | Shared Python functions and DSPy signatures |
 | `input/trajectories.jsonl` | Three slim harbor traces |
 | `input/doom_loop_example.jsonl` | One real harbor trace with a genuine doom loop |
@@ -165,6 +167,7 @@ Three harbor traces with planted signals:
 | `pii.yaml` | expand steps → LM detect → Python reduce | `output/pii.jsonl` |
 | `frustration.yaml` | expand steps → LM detect → Python reduce | `output/frustration.jsonl` |
 | `category.yaml` | prepare → expand steps → LM summarize → LM categorize → compact | `output/categories.jsonl` |
+| `classify.yaml` | prepare → Jev categorize → compact | `output/classifications.jsonl` |
 | `alerts.yaml` | `alert: flag_sensitive_step` on posted steps | `output/alerts.jsonl` |
 | `doom_loop.yaml` | expand+LM summarize+LM reduce over a posted step window, on every post | `output/doom_loop.jsonl` |
 
@@ -214,7 +217,7 @@ Rules:
   unless the user asks otherwise.
 - `lm.cache` defaults to true and uses DSPy's request cache in
   `~/.trace-miner/cache`. Set `cache: false` to force a fresh call every time.
-- Override one step with `lm: {provider: ..., model: ...}` only on LM stages. That wins over the role.
+- Override one step with `lm: {provider: ..., model: ...}` only on generative LM stages. That wins over the role. A Jev stage cannot take `lm:` options.
 
 ### Step forms
 
@@ -330,10 +333,44 @@ detect_pii_in_step = dspy.Predict(DetectPiiInStep)
 If a Python function needs `ctx` and an LM, wrap the Predict module. Do not
 give the signature `ctx`.
 
+### Jev stages
+
+A `JevPredict` module is still named from YAML (`- map: categorize_trajectory`).
+It answers `bool`, `Literal`, and score fields in one OpenRouter Jev call and
+does not use `dspy.LM`. Freeform strings stay on `dspy.Predict`. `classify.yaml`
+is the bundled example: prepare the trajectory, classify it, compact. No expand.
+
+```python
+from typing import Literal
+
+import dspy
+
+from trace_miner.jev import JevPredict
+
+
+class CategorizeTrajectory(dspy.Signature):
+    """Categorize one trajectory."""
+
+    task: str = dspy.InputField()
+    reported_passed: bool = dspy.InputField()
+    domain: Literal["bioinformatics", "systems", "other"] = dspy.OutputField(desc="Task domain.")
+    failed: bool = dspy.OutputField()
+
+
+categorize_trajectory = JevPredict(CategorizeTrajectory)
+```
+
+- Same `OPENROUTER_API_KEY` as other LM stages. No separate Jev key.
+- Default model is `jev-1.13`. Pass `model=` to pin another release.
+- A score field is an int or float plus `score_fields={"name": ["low", "high"]}`.
+- Do not put `lm:` on a Jev stage.
+- `filter` and `alert` still need exactly one bool output. `expand` is invalid.
+
 ## Adding a pipeline
 
 1. Copy the closest YAML (`pii.yaml` for per-step detection, `summarize.yaml`
-   for trajectory diagnosis, `alerts.yaml` for a served alert pipeline,
+   for trajectory diagnosis, `classify.yaml` for a Jev classification,
+   `alerts.yaml` for a served alert pipeline,
    `doom_loop.yaml` for a served pipeline that reduces over a step window).
 2. Add or reuse stages in `stages.py`. Name the YAML keys exactly after those
    attributes.
@@ -355,7 +392,7 @@ shape is different. Clip long strings before they reach an LM.
 - Do not put prompt text, few-shot examples, or model-chosen routing in YAML.
 - Do not create a new `stages_*.py` for each pipeline.
 - Do not treat a returned list as fan-out.
-- Do not add `lm:` options to a Python stage.
+- Do not add `lm:` options to a Python stage or a Jev stage.
 - Do not change `from:` unless the user wants a different module.
 - Do not edit files under `output/` as source. They are run products.
 - Do not invent a file-tail helper. Use `trace-miner serve` and `client_demo.py`.

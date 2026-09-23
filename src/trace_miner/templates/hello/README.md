@@ -1,7 +1,7 @@
 # Hello Trace Miner
 
 This project is a small harbor-style workspace. One `stages.py` module, three
-slim harbor traces, and six pipelines that reuse those stages.
+slim harbor traces, and seven pipelines that reuse those stages.
 
 The traces are real harbor runs (failed ATRX/VEP CRISPR, failed photonic
 routing, passed FreeCAD spring clip) with planted signals so each pipeline has
@@ -23,6 +23,7 @@ export OPENROUTER_API_KEY=...
 | `pii.yaml` | Detect SSN / phone / email in each step | `output/pii.jsonl` |
 | `frustration.yaml` | Detect user frustration or impatience | `output/frustration.jsonl` |
 | `category.yaml` | Label domain and outcome | `output/categories.jsonl` |
+| `classify.yaml` | Classify a trajectory with Jev, without summarizing each step | `output/classifications.jsonl` |
 | `alerts.yaml` | Alert when a step contains an SSN, a phone number, or a frustrated user turn | `output/alerts.jsonl` |
 | `doom_loop.yaml` | Reduce over the last few steps at every posted step; alert if the agent is stuck repeating itself | `output/doom_loop.jsonl` |
 
@@ -38,6 +39,7 @@ Then try the others on the same traces:
 trace-miner run pii.yaml
 trace-miner run frustration.yaml
 trace-miner run category.yaml
+trace-miner run classify.yaml
 ```
 
 ## Alerts

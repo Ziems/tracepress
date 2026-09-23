@@ -1,0 +1,10 @@
+from: ./stages
+id_field: session_id
+
+pipelines:
+  - in: input/trajectories.jsonl
+    out: output/classifications.jsonl
+    pipeline:
+      - map: prepare_harbor_trajectory
+      - map: categorize_trajectory
+      - map: compact_harbor_classification

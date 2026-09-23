@@ -317,6 +317,13 @@ def _resolve_stage(
             raise ConfigError(
                 f"DSPy stage `{name}` must expose a signature with `input_fields` and `output_fields`."
             )
+        if getattr(fn, "uses_jev", False):
+            if step_model is not None or step_provider is not None:
+                raise ConfigError(f"Jev stage `{name}` cannot declare `lm` options.")
+            if role == "expand":
+                raise ConfigError(f"Jev stage `{name}` cannot be used as `expand`.")
+            _validate_lm_stage(name, role, lm_signature)
+            return StageRef(name, fn, kind="lm", role=role, lm_signature=lm_signature, uses_jev=True)
         choice = lm_models.for_role(role)
         model = step_model or choice.model
         provider = step_provider or choice.provider

@@ -11,6 +11,7 @@ dependencies = [
     "PyYAML>=6.0.2",
     "rich>=14.0.0",
     "starlette>=0.41.0",
+    "typesafe-sdk>=0.7.1",
     "uvicorn>=0.32.0",
 ]
 

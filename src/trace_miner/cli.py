@@ -159,6 +159,7 @@ def _init(argv: list[str]) -> int:
     print("  pii.yaml                  PII detection")
     print("  frustration.yaml          user frustration")
     print("  category.yaml             domain and outcome")
+    print("  classify.yaml             Jev classification, one map")
     print("  alerts.yaml               alert on a planted signal")
     print("  client_demo.py            post traces and stop on an abort")
     print("  doom_loop.yaml            alert on a repeated-action doom loop")

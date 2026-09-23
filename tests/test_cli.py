@@ -94,6 +94,7 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert "trace-miner serve alerts.yaml" in out
     assert "python client_demo.py" in out
     assert "doom_loop.yaml" in out
+    assert "classify.yaml" in out
     assert "python doom_loop_demo.py" in out
     assert "AGENTS.md" in out
     assert "stream.yaml" not in out
@@ -102,6 +103,7 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert (dest / "pii.yaml").is_file()
     assert (dest / "frustration.yaml").is_file()
     assert (dest / "category.yaml").is_file()
+    assert (dest / "classify.yaml").is_file()
     assert (dest / "alerts.yaml").is_file()
     assert (dest / "doom_loop.yaml").is_file()
     assert not (dest / "stream.yaml").exists()
@@ -140,6 +142,7 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
         "pii.yaml",
         "frustration.yaml",
         "category.yaml",
+        "classify.yaml",
         "alerts.yaml",
         "doom_loop.yaml",
     ):

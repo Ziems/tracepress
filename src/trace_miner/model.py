@@ -71,6 +71,7 @@ class StageRef:
     lm_signature: LmSignature | None = None
     lm_model: str | None = None
     lm_provider: str | None = None
+    uses_jev: bool = False
 
 
 @dataclass(frozen=True)

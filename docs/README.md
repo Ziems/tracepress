@@ -6,6 +6,7 @@ Read [`pipeline-spec.md`](pipeline-spec.md) first. The others are amendments.
 | --- | --- |
 | [pipeline-spec.md](pipeline-spec.md) | Core runtime model: config topology, stages, groups, barriers |
 | [lm-pipeline.md](lm-pipeline.md) | DSPy language-model stages |
+| [jev.md](jev.md) | Jev modules for typed classification |
 | [streaming-amendment.md](streaming-amendment.md) | Follow runtime `serve` uses: append-only JSONL and checkpoints |
 | [serve-amendment.md](serve-amendment.md) | HTTP ingest and alert subscription across machines |
 | [usage-stats.md](usage-stats.md) | Anonymous opt-out usage stats |

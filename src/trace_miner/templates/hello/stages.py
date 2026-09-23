@@ -4,6 +4,8 @@ from typing import Literal
 import dspy
 from pydantic import BaseModel, Field
 
+from trace_miner.jev import JevPredict
+
 
 def prepare_harbor_trajectory(record):
     steps = record.get("steps", [])
@@ -244,15 +246,56 @@ class CategorizeHarborTrajectory(dspy.Signature):
 categorize_harbor_trajectory = dspy.Predict(CategorizeHarborTrajectory)
 
 
+class CategorizeTrajectory(dspy.Signature):
+    """Categorize one terminal-bench trajectory from its task and verifier outcome."""
+
+    task: str = dspy.InputField()
+    reported_passed: bool = dspy.InputField()
+    verifier_summary: str = dspy.InputField()
+
+    domain: Literal["bioinformatics", "systems", "data_processing", "other"] = dspy.OutputField(
+        desc="Task domain."
+    )
+    outcome: Literal["passed", "wrong_output", "env_setup", "incomplete", "other"] = dspy.OutputField(
+        desc="How the trajectory ended."
+    )
+    failed: bool = dspy.OutputField(desc="Whether the trajectory failed.")
+
+
+categorize_trajectory = JevPredict(CategorizeTrajectory)
+
+
 class DetectDoomLoop(dspy.Signature):
-    """Decide if these recent steps show an agent stuck repeating itself."""
+    """Decide whether these steps show the agent stuck in a genuine doom loop.
+
+    A doom loop is the agent repeating the same or near-identical action three
+    or more times and getting the same unproductive result each time, with no
+    new information gained and no change in approach.
+
+    Judge the ACTION-RESULT PAIR, not the surface activity type. Do NOT flag:
+    - Exploration where each step targets a different file, query, hypothesis,
+      or parameter, even if the tool or command shape looks similar (grepping
+      different terms, reading different files, testing different values).
+    - Verification or regression checks that confirm success or stability
+      after a real change, even if the exact same command is rerun.
+    - Polling or waiting on a long-running job where the checked state
+      visibly changes between checks (progress counters, timestamps, partial
+      output, growing byte counts).
+    - A single transient error, or one flat step inside an otherwise
+      progressing sequence.
+
+    Only flag when the SAME specific action keeps producing the SAME specific
+    unproductive result, and the agent does not adapt its approach.
+    """
 
     step_summary: list[str] = dspy.InputField()
 
     doom_loop: bool = dspy.OutputField(
-        desc="True when the agent is stuck doing the same thing over and over."
+        desc="True only for a clear, sustained doom loop with no progress."
     )
-    pattern: str = dspy.OutputField(desc="What it keeps repeating, or an empty string.")
+    pattern: str = dspy.OutputField(
+        desc="The exact repeated action and result, or an empty string if none."
+    )
 
 
 detect_doom_loop = dspy.Predict(DetectDoomLoop)
@@ -271,6 +314,17 @@ def flag_rollout_complete(record):
         return None
     verdict = "doom loop" if record.get("doom_loop") else "clean"
     return f"rollout complete ({verdict})"
+
+
+def compact_harbor_classification(record):
+    return {
+        "session_id": record.get("session_id"),
+        "trajectory_path": record["trajectory_path"],
+        "task_name": record["task_name"],
+        "domain": record["domain"],
+        "outcome": record["outcome"],
+        "failed": record["failed"],
+    }
 
 
 def compact_harbor_category(record):

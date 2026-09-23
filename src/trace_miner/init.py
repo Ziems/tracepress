@@ -12,6 +12,7 @@ TEMPLATE_FILES = (
     "pii.yaml",
     "frustration.yaml",
     "category.yaml",
+    "classify.yaml",
     "alerts.yaml",
     "client_demo.py",
     "doom_loop.yaml",

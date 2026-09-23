@@ -652,9 +652,12 @@ class _Runtime:
         self._stage_kinds.append(stage.role)
 
     def _prepare_dspy_lms(self) -> None:
+        stages = tuple(_iter_stages(self.config))
+        if any(stage.uses_jev for stage in stages) and not os.environ.get("OPENROUTER_API_KEY"):
+            raise PipelineExecutionError("OPENROUTER_API_KEY is required for Jev stages.")
         choices = {
             (stage.lm_provider, stage.lm_model)
-            for stage in _iter_stages(self.config)
+            for stage in stages
             if stage.kind == "lm" and stage.lm_provider and stage.lm_model
         }
         if not choices:
@@ -683,7 +686,15 @@ class _Runtime:
         return self._lm_semaphore
 
     async def _invoke_lm(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
+        if stage.uses_jev:
+            return await self._invoke_jev(stage, kwargs)
         return await self._invoke_dspy(stage, kwargs)
+
+    async def _invoke_jev(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
+        async with self._lm_slot():
+            prediction = await asyncio.to_thread(stage.target, **kwargs)
+        self.stats.record_lm(getattr(prediction, "_jev_usage", None))
+        return prediction
 
     async def _invoke_dspy(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
         assert stage.lm_provider is not None and stage.lm_model is not None
@@ -1432,7 +1443,7 @@ def _make_lm(
 ) -> Any:
     import dspy
 
-    kwargs: dict[str, Any] = {"api_key": api_key, "cache": cache}
+    kwargs: dict[str, Any] = {"api_key": api_key, "cache": cache, "timeout": 120}
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
     return dspy.LM(f"{provider}/{model}", **kwargs)
