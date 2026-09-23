@@ -16,7 +16,7 @@ declared pipelines moving.
 Batch mode stays the default:
 
 ```bash
-uv run trace-miner pipeline.yaml
+uv run trace-miner run pipeline.yaml
 ```
 
 Live mode is `serve`:

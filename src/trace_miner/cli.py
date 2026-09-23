@@ -27,7 +27,7 @@ commands:
   stats     Show local usage totals
 
 Run a batch pipeline:
-  trace-miner pipeline.yaml
+  trace-miner run pipeline.yaml
 
 `trace-miner <command> --help` documents each command.
 """
@@ -78,14 +78,16 @@ def _dispatch(argv: list[str]) -> int:
         return 0
     if command == "stats":
         return _stats(rest)
+    if command not in {"init", "run", "serve"}:
+        print(f"trace-miner: unknown command `{command}`", file=sys.stderr)
+        print("Run a pipeline with `trace-miner run <config.yaml>`.", file=sys.stderr)
+        return 2
     ensure_home()
     if command == "init":
         return _init(rest)
     if command == "serve":
         return _serve(rest)
-    if command == "run":
-        return _batch(rest, prog="trace-miner run")
-    return _batch(argv)
+    return _batch(rest, prog="trace-miner run")
 
 
 def _exit_code(exc: SystemExit) -> int:
@@ -169,7 +171,7 @@ def _init(argv: list[str]) -> int:
     print("  export OPENROUTER_API_KEY=...")
     if dest != Path.cwd().resolve():
         print(f"  cd {rel}")
-    print("  trace-miner summarize.yaml")
+    print("  trace-miner run summarize.yaml")
     print()
     print("Then try pii.yaml, frustration.yaml, or category.yaml")
     print("To serve:  trace-miner serve alerts.yaml")
@@ -199,7 +201,7 @@ def _prompt_project_name() -> Path:
 def _batch_parser(prog: str = "trace-miner") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="Run a batch pipeline from a YAML config. Same as `trace-miner pipeline.yaml`.",
+        description="Run a batch pipeline from a YAML config.",
     )
     parser.add_argument("config", type=Path, help="Pipeline YAML path.")
     progress = parser.add_mutually_exclusive_group()

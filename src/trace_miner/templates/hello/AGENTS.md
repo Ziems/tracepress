@@ -9,14 +9,12 @@ bodies in YAML. Do not invent a second stage module unless the user asks.
 ## Commands
 
 ```bash
-trace-miner <config.yaml> [--progress]
 trace-miner run <config.yaml> [--progress]
 trace-miner serve <config.yaml> [--host 127.0.0.1] [--port 8765]
 trace-miner stats
 ```
 
-`run` and a bare config path are the same batch command. `--progress` always
-shows stage bars.
+`run` executes a batch pipeline. `--progress` always shows stage bars.
 
 `serve` accepts steps over HTTP and pushes alerts. `alerts.yaml` is the
 bundled example. Bind beyond localhost with `--host`.
@@ -29,7 +27,7 @@ LM stages need OpenRouter:
 
 ```bash
 export OPENROUTER_API_KEY=...
-trace-miner summarize.yaml
+trace-miner run summarize.yaml
 ```
 
 Then inspect `output/summaries.jsonl`. A successful run prints each output path
@@ -38,9 +36,9 @@ and a one-line profile (wall time, plus LM calls / tokens / cost).
 The other bundled pipelines reuse the same traces and `stages.py`:
 
 ```bash
-trace-miner pii.yaml
-trace-miner frustration.yaml
-trace-miner category.yaml
+trace-miner run pii.yaml
+trace-miner run frustration.yaml
+trace-miner run category.yaml
 ```
 
 `alerts.yaml` serves alerts. In one terminal:
@@ -293,7 +291,7 @@ give the signature `ctx`.
 2. Add or reuse stages in `stages.py`. Name the YAML keys exactly after those
    attributes.
 3. Point `out:` at a new file under `output/`.
-4. Run `trace-miner new-pipeline.yaml`.
+4. Run `trace-miner run new-pipeline.yaml`.
 5. Read the output JSONL and the profile line. If cost or time looks wrong,
    change the signature or the expand, not the runtime.
 

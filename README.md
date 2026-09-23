@@ -18,7 +18,7 @@ The GitHub repo is private, so that command needs credentials that can clone it.
 export OPENROUTER_API_KEY=...
 trace-miner init my-trace-pipelines
 cd my-trace-pipelines
-trace-miner summarize.yaml
+trace-miner run summarize.yaml
 ```
 
 That writes `stages.py`, three example traces, and five demo pipelines: `summarize.yaml`, `pii.yaml`, `frustration.yaml`, `category.yaml`, and `alerts.yaml`. Open `output/summaries.jsonl` when it finishes.
@@ -27,7 +27,6 @@ That writes `stages.py`, three example traces, and five demo pipelines: `summari
 
 ```bash
 trace-miner init [directory] [--force]
-trace-miner <config.yaml> [--progress]
 trace-miner run <config.yaml> [--progress]
 trace-miner serve <config.yaml> [--host 127.0.0.1] [--port 8765]
 trace-miner stats
@@ -35,7 +34,7 @@ trace-miner stats
 
 `init` writes a hello-world project. Omit the directory to be prompted; the default is `hello-world`. `--force` overwrites.
 
-`run` and a bare config path are the same batch command. `--progress` always shows stage bars.
+`run` executes a batch pipeline. `--progress` always shows stage bars.
 
 `serve` accepts steps over HTTP and pushes alerts. A client watches a named pipeline. Bind beyond localhost with `--host`.
 

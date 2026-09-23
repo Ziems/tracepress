@@ -38,7 +38,7 @@ def test_root_help_lists_commands(capsys: pytest.CaptureFixture[str]) -> None:
     assert "stats" in out
     assert "stream" not in out
     assert "replay" not in out
-    assert "trace-miner pipeline.yaml" in out
+    assert "trace-miner run pipeline.yaml" in out
 
 
 def test_command_help_documents_usage(capsys: pytest.CaptureFixture[str]) -> None:
@@ -88,7 +88,7 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert main(["init", str(dest)]) == 0
     out = capsys.readouterr().out
     assert "Created a hello-world project" in out
-    assert "trace-miner summarize.yaml" in out
+    assert "trace-miner run summarize.yaml" in out
     assert "pii.yaml" in out
     assert "alerts.yaml" in out
     assert "trace-miner serve alerts.yaml" in out
@@ -110,7 +110,7 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert (dest / "input" / "alerts.jsonl").read_text(encoding="utf-8") == ""
     assert not (dest / "simulate_stream.py").exists()
     agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
-    assert "trace-miner summarize.yaml" in agents
+    assert "trace-miner run summarize.yaml" in agents
     assert "trace-miner serve alerts.yaml" in agents
     assert "trace-miner replay" not in agents
     assert "stages.py" in agents
@@ -206,6 +206,22 @@ def test_init_uses_hello_world_when_stdin_is_not_a_tty(
     assert (tmp_path / "hello-world" / "summarize.yaml").is_file()
 
 
+def test_bare_config_is_rejected(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    isolate_trace_miner_home: Path,
+) -> None:
+    config = tmp_path / "summarize.yaml"
+    config.write_text("pipelines: []\n", encoding="utf-8")
+
+    assert main([str(config)]) == 2
+    captured = capsys.readouterr()
+    assert "unknown command" in captured.err
+    assert "trace-miner run" in captured.err
+    assert not isolate_trace_miner_home.exists()
+    assert not (tmp_path / "output").exists()
+
+
 def test_batch_prints_output_path(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "stages.py").write_text("def keep(record):\n    return record\n", encoding="utf-8")
@@ -222,7 +238,7 @@ pipelines:
         encoding="utf-8",
     )
 
-    assert main(["pipeline.yaml"]) == 0
+    assert main(["run", "pipeline.yaml"]) == 0
     out = capsys.readouterr().out
     assert "Wrote output/findings.jsonl" in out
     assert "LM calls" not in out
@@ -232,7 +248,7 @@ pipelines:
 def test_batch_does_not_print_output_on_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     config = tmp_path / "pipeline.yaml"
     config.write_text("pipelines: []\n", encoding="utf-8")
-    assert main([str(config)]) == 1
+    assert main(["run", str(config)]) == 1
     captured = capsys.readouterr()
     assert "Wrote " not in captured.out
     assert "trace-miner:" in captured.err

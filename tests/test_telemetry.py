@@ -93,11 +93,18 @@ def test_flag_parser_keeps_registered_names() -> None:
     assert flags == ["--poll-interval", "--from-end"]
 
     command, path, flags, bare = command_telemetry_from_argv(
-        ["pipeline.yaml", "--progress", "--bogus", "--", "--no-progress"],
+        ["run", "pipeline.yaml", "--progress", "--bogus", "--", "--no-progress"],
         lambda name: options[name],
     )
-    assert (command, path, bare) == ("run", "run", True)
+    assert (command, path, bare) == ("run", "run", False)
     assert flags == ["--progress"]
+
+    command, path, flags, bare = command_telemetry_from_argv(
+        ["pipeline.yaml", "--progress"],
+        lambda name: options[name],
+    )
+    assert (command, path, bare) == ("", "", False)
+    assert flags == []
 
 
 def test_registered_cli_flags_drop_values() -> None:

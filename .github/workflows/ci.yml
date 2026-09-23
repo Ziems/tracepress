@@ -54,13 +54,13 @@ jobs:
           cd "$PROJECT_DIR"
           log_dir="${{ runner.temp }}/pipeline-logs"
           mkdir -p "$log_dir"
-          trace-miner summarize.yaml --progress >"$log_dir/summarize.log" 2>&1 &
+          trace-miner run summarize.yaml --progress >"$log_dir/summarize.log" 2>&1 &
           summarize_pid=$!
-          trace-miner pii.yaml --progress >"$log_dir/pii.log" 2>&1 &
+          trace-miner run pii.yaml --progress >"$log_dir/pii.log" 2>&1 &
           pii_pid=$!
-          trace-miner frustration.yaml --progress >"$log_dir/frustration.log" 2>&1 &
+          trace-miner run frustration.yaml --progress >"$log_dir/frustration.log" 2>&1 &
           frustration_pid=$!
-          trace-miner category.yaml --progress >"$log_dir/category.log" 2>&1 &
+          trace-miner run category.yaml --progress >"$log_dir/category.log" 2>&1 &
           category_pid=$!
           trace-miner serve alerts.yaml --port 8765 >"$log_dir/alerts.log" 2>&1 &
           alerts_pid=$!

@@ -144,7 +144,7 @@ pipelines:
     )
 
     assert not isolate_trace_miner_home.exists()
-    assert main(["pipeline.yaml"]) == 0
+    assert main(["run", "pipeline.yaml"]) == 0
     capsys.readouterr()
     assert isolate_trace_miner_home.is_dir()
     assert (isolate_trace_miner_home / "cache").is_dir()

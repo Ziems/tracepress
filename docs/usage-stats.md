@@ -28,7 +28,7 @@ Sent when a CLI invocation finishes, including errors and interrupts.
 
 - `schema`: `trace_miner.command_finished.v1`
 - `command` and `command_path`: `init`, `run`, `serve`, `stats`, or empty for root help and no args
-- `bare`: true when the config path was passed without `run`
+- `bare`: always false. A config path is only accepted as `trace-miner run`.
 - `command_flags`: registered flag names only
 - `status`: `completed`, `errored`, or `interrupted`
 - `duration_seconds`

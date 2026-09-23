@@ -145,17 +145,12 @@ def command_telemetry_from_argv(
 ) -> tuple[str, str, list[str], bool]:
     """Return command, command path, registered flag names, and whether the config was bare."""
     commands = {"init", "run", "serve", "stats"}
-    if not argv or argv[0] in {"-h", "--help"}:
-        flags = [argv[0]] if argv else []
+    if not argv or argv[0] in {"-h", "--help"} or argv[0] not in commands:
+        flags = [argv[0]] if argv and argv[0] in {"-h", "--help"} else []
         return "", "", flags, False
-    if argv[0] in commands:
-        command = argv[0]
-        tokens = argv[1:]
-        bare = False
-    else:
-        command = "run"
-        tokens = argv
-        bare = True
+    command = argv[0]
+    tokens = argv[1:]
+    bare = False
     options = options_for(command)
     flags: list[str] = []
     for token in tokens:

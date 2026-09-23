@@ -26,15 +26,15 @@ export OPENROUTER_API_KEY=...
 ## Run
 
 ```bash
-trace-miner summarize.yaml
+trace-miner run summarize.yaml
 ```
 
 Then try the others on the same traces:
 
 ```bash
-trace-miner pii.yaml
-trace-miner frustration.yaml
-trace-miner category.yaml
+trace-miner run pii.yaml
+trace-miner run frustration.yaml
+trace-miner run category.yaml
 ```
 
 ## Alerts
