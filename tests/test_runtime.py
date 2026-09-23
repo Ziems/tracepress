@@ -12,6 +12,7 @@ import time
 import dspy
 import pytest
 
+import trace_miner.telemetry as telemetry_module
 from trace_miner.config import load_config
 from trace_miner.errors import ConfigError, PipelineExecutionError
 from trace_miner.model import DEFAULT_LM_MODEL, DEFAULT_LM_PROVIDER, RunStats, format_run_profile
@@ -1889,3 +1890,199 @@ pipelines:
     run_config(config)
 
     assert read_jsonl(tmp_path / "output.jsonl") == [{"failures": 1, "labels": ["good"]}]
+
+
+def test_pipeline_telemetry_reports_stage_kind_duration_and_lm_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TRACE_MINER_TELEMETRY", "1")
+    monkeypatch.setattr(telemetry_module, "POSTHOG_PROJECT_API_KEY", "phc_test")
+    sent: list[dict[str, object]] = []
+    monkeypatch.setattr(telemetry_module, "_spawn_sender", sent.append)
+    telemetry_module.set_command_flags(["--progress"])
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+
+class LabelText(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label_text = dspy.Predict(LabelText)
+
+
+def keep_rows(record):
+    return record if record.get("keep") else None
+
+
+def split_parts(record, ctx):
+    ctx.emit({"id": record["id"], "part": 1})
+    ctx.emit({"id": record["id"], "part": 2})
+
+
+def score_part(record):
+    return {**record, "score": record["part"]}
+
+
+def join_parts(children):
+    return {"id": children[0]["id"], "n": len(children)}
+""",
+        """
+from: ./stages
+lm:
+  default: demo-model
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - filter: keep_rows
+      - map: label_text
+      - group:
+          expand: split_parts
+          pipeline:
+            - map: score_part
+          reduce: join_parts
+""",
+        [
+            {"id": "a", "keep": True, "text": "hello"},
+            {"id": "b", "keep": False, "text": "skip"},
+        ],
+    )
+    install_fake_lm(
+        monkeypatch,
+        {"*": chat_completion(label="ITEM")},
+        sleep=0.01,
+        prompt_tokens=10,
+        completion_tokens=4,
+        cost=1.25,
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    run_config(config)
+
+    bodies = [payload["body"] for payload in sent]
+    assert [body["event"] for body in bodies] == [  # type: ignore[index]
+        "pipeline_stage",
+        "pipeline_stage",
+        "pipeline_stage",
+        "pipeline_stage",
+        "pipeline_stage",
+        "pipeline_run",
+    ]
+    stages = [body["properties"] for body in bodies[:-1]]  # type: ignore[index]
+    run = bodies[-1]["properties"]  # type: ignore[index]
+    assert isinstance(run, dict)
+    expected = [
+        ("filter", "python", 2, 1, 0),
+        ("map", "lm", 1, 1, 1),
+        ("expand", "python", 1, 2, 0),
+        ("map", "python", 2, 2, 0),
+        ("reduce", "python", 2, 1, 0),
+    ]
+    assert len(stages) == len(expected)
+    run_id = run["run_id"]
+    for index, (stage, (kind, implementation, records_in, records_out, lm_calls)) in enumerate(zip(stages, expected, strict=True)):
+        assert isinstance(stage, dict)
+        assert stage["run_id"] == run_id
+        assert stage["index"] == index
+        assert stage["kind"] == kind
+        assert stage["implementation"] == implementation
+        assert stage["async"] is False
+        assert stage["records_in"] == records_in
+        assert stage["records_out"] == records_out
+        assert stage["lm_calls"] == lm_calls
+        assert stage["status"] == "completed"
+        assert float(stage["duration_seconds"]) >= 0
+        assert "name" not in stage
+        if implementation == "python":
+            assert "lm_model" not in stage
+            assert "lm_provider" not in stage
+    lm_stage = stages[1]
+    assert isinstance(lm_stage, dict)
+    assert lm_stage["calls"] == 1
+    assert lm_stage["lm_prompt_tokens"] == 10
+    assert lm_stage["lm_completion_tokens"] == 4
+    assert lm_stage["lm_cost_usd"] == 1.25
+    assert lm_stage["lm_provider"] == "openrouter"
+    assert lm_stage["lm_model"] == "demo-model"
+    assert float(lm_stage["duration_seconds"]) > 0
+    reduce_stage = stages[4]
+    assert isinstance(reduce_stage, dict)
+    assert reduce_stage["calls"] == 1
+    assert run["status"] == "completed"
+    assert run["command_flags"] == ["--progress"]
+    assert run["pipeline_count"] == 1
+    assert run["stage_count"] == 5
+    assert run["records_read"] == 2
+    assert run["lm_calls"] == 1
+    assert run["lm_prompt_tokens"] == 10
+    assert run["lm_completion_tokens"] == 4
+    assert run["lm_cost_usd"] == 1.25
+    assert run["lm_model"] == "demo-model"
+    dumped = json.dumps(sent)
+    for secret in ("keep_rows", "label_text", "split_parts", "score_part", "join_parts", "hello"):
+        assert secret not in dumped
+
+    before = len(sent)
+    telemetry_module.capture_cli_finished(
+        command="run",
+        command_flags=["--progress"],
+        duration_seconds=1,
+        exit_code=0,
+        exception=None,
+    )
+    assert len(sent) == before
+
+
+def test_failed_stage_telemetry_marks_that_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRACE_MINER_TELEMETRY", "1")
+    monkeypatch.setattr(telemetry_module, "POSTHOG_PROJECT_API_KEY", "phc_test")
+    sent: list[dict[str, object]] = []
+    monkeypatch.setattr(telemetry_module, "_spawn_sender", sent.append)
+    config = write_project(
+        tmp_path,
+        """
+def boom_stage(record):
+    raise RuntimeError("nope")
+
+def later_stage(record):
+    return record
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: boom_stage
+      - map: later_stage
+""",
+        [{"id": "a"}],
+    )
+
+    with pytest.raises(RuntimeError, match="nope"):
+        run_config(config)
+
+    bodies = [payload["body"] for payload in sent]
+    assert [body["event"] for body in bodies] == ["pipeline_stage", "pipeline_stage", "pipeline_run"]  # type: ignore[index]
+    failed_stage = bodies[0]["properties"]  # type: ignore[index]
+    skipped_stage = bodies[1]["properties"]  # type: ignore[index]
+    run = bodies[2]["properties"]  # type: ignore[index]
+    assert isinstance(failed_stage, dict)
+    assert isinstance(skipped_stage, dict)
+    assert isinstance(run, dict)
+    assert failed_stage["kind"] == "map"
+    assert failed_stage["implementation"] == "python"
+    assert failed_stage["status"] == "errored"
+    assert failed_stage["failed"] == 1
+    assert failed_stage["calls"] == 1
+    assert skipped_stage["calls"] == 0
+    assert skipped_stage["status"] == "completed"
+    assert run["status"] == "errored"
+    assert run["exception_type"] == "RuntimeError"
+    assert "boom_stage" not in json.dumps(sent)
+    assert "later_stage" not in json.dumps(sent)
+    assert "nope" not in json.dumps(sent)

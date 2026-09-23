@@ -9,6 +9,7 @@ import platform
 import subprocess
 import sys
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from importlib.metadata import PackageNotFoundError, distribution, version
 from typing import Any, Callable
@@ -26,8 +27,15 @@ TELEMETRY_ENV = "TRACE_MINER_TELEMETRY"
 POSTHOG_PROJECT_API_KEY = "phc_oj47o0vexqRFGmRy1u5Bm2aSx0CvhiHDygSUU6bAuix"
 POSTHOG_HOST = "https://us.i.posthog.com"
 
-COMMAND_FINISHED = "trace_miner.command_finished"
-RUN_FINISHED = "trace_miner.run_finished"
+PIPELINE_INIT = "pipeline_init"
+PIPELINE_RUN = "pipeline_run"
+PIPELINE_SERVED = "pipeline_served"
+PIPELINE_STAGE = "pipeline_stage"
+
+_EXECUTION_EVENTS = {
+    "run": PIPELINE_RUN,
+    "serve": PIPELINE_SERVED,
+}
 
 _DISABLED_VALUES = {"0", "false", "no", "off", "disabled"}
 _POSTHOG_CONTROL_KEYS = {"$process_person_profile", "$geoip_disable"}
@@ -43,6 +51,7 @@ run_command_name: ContextVar[str] = ContextVar("trace_miner_run_command", defaul
 
 _install_id: str | None = None
 _command_run_ids: list[str] = []
+_command_flags: list[str] = []
 
 
 class TelemetryEvent(BaseModel):
@@ -64,34 +73,72 @@ class TelemetryEvent(BaseModel):
         return dumped
 
 
-class CommandFinishedV1(TelemetryEvent):
-    command: str
-    command_path: str
+class PipelineInitV1(TelemetryEvent):
     command_flags: list[str]
-    bare: bool
     status: str
     duration_seconds: float
     exit_code: int
     exception_type: str | None = None
-    run_id: str | None = None
 
 
-class RunFinishedV1(TelemetryEvent):
-    run_id: str
-    command: str
+class PipelineExecutionV1(TelemetryEvent):
+    command_flags: list[str]
     status: str
     duration_seconds: float
-    exception_type: str | None = None
+    exit_code: int
     pipeline_count: int
-    lm_provider: str
-    lm_model: str
     records_read: int
     emitted: int
     failed: int
+    stage_count: int
     lm_calls: int
     lm_prompt_tokens: int
     lm_completion_tokens: int
     lm_cost_usd: float
+    run_id: str | None = None
+    exception_type: str | None = None
+    lm_provider: str | None = None
+    lm_model: str | None = None
+
+
+class PipelineStageV1(TelemetryEvent):
+    run_id: str
+    index: int
+    kind: str
+    implementation: str
+    is_async: bool = Field(alias="async")
+    duration_seconds: float
+    calls: int
+    records_in: int
+    records_out: int
+    failed: int
+    status: str
+    lm_calls: int
+    lm_prompt_tokens: int
+    lm_completion_tokens: int
+    lm_cost_usd: float
+    lm_provider: str | None = None
+    lm_model: str | None = None
+
+
+@dataclass
+class StageTelemetry:
+    index: int
+    kind: str
+    implementation: str
+    is_async: bool
+    duration_seconds: float
+    calls: int
+    records_in: int
+    records_out: int
+    failed: int
+    status: str
+    lm_calls: int = 0
+    lm_prompt_tokens: int = 0
+    lm_completion_tokens: int = 0
+    lm_cost_usd: float = 0.0
+    lm_provider: str | None = None
+    lm_model: str | None = None
 
 
 def _property_keys(model: type[TelemetryEvent]) -> set[str]:
@@ -100,8 +147,10 @@ def _property_keys(model: type[TelemetryEvent]) -> set[str]:
 
 
 _EVENT_PROPERTY_KEYS = {
-    COMMAND_FINISHED: _property_keys(CommandFinishedV1),
-    RUN_FINISHED: _property_keys(RunFinishedV1),
+    PIPELINE_INIT: _property_keys(PipelineInitV1),
+    PIPELINE_RUN: _property_keys(PipelineExecutionV1),
+    PIPELINE_SERVED: _property_keys(PipelineExecutionV1),
+    PIPELINE_STAGE: _property_keys(PipelineStageV1),
 }
 
 _SENDER_SOURCE = """\
@@ -131,6 +180,12 @@ def _sending_enabled() -> bool:
 
 def reset_command_run_ids() -> None:
     _command_run_ids.clear()
+    _command_flags.clear()
+
+
+def set_command_flags(flags: list[str]) -> None:
+    _command_flags.clear()
+    _command_flags.extend(flags)
 
 
 def record_command_run_id(run_id: str) -> None:
@@ -162,42 +217,61 @@ def command_telemetry_from_argv(
     return command, command, flags, bare
 
 
-def capture_command_finished(
+def capture_cli_finished(
     *,
     command: str,
-    command_path: str,
     command_flags: list[str],
-    bare: bool,
     duration_seconds: float,
     exit_code: int,
     exception: BaseException | None,
 ) -> None:
+    """Capture a CLI invocation that did not start a pipeline runtime."""
     if not _sending_enabled():
         return
+    if "-h" in command_flags or "--help" in command_flags:
+        return
     try:
-        status = _command_status(exit_code, exception)
-        event = CommandFinishedV1(
-            schema_="trace_miner.command_finished.v1",
-            command=command,
-            command_path=command_path,
-            command_flags=command_flags,
-            bare=bare,
-            status=status,
-            duration_seconds=duration_seconds,
-            exit_code=exit_code,
-            exception_type=_exception_type(exception, status),
-            run_id=_command_run_ids[-1] if _command_run_ids else None,
-            **_shared_context(),
-        )
-        _capture(COMMAND_FINISHED, event.properties())
+        if command == "init":
+            status = _command_status(exit_code, exception)
+            event = PipelineInitV1(
+                schema_="pipeline_init.v1",
+                command_flags=command_flags,
+                status=status,
+                duration_seconds=duration_seconds,
+                exit_code=exit_code,
+                exception_type=_exception_type(exception, status),
+                **_shared_context(),
+            )
+            _capture(PIPELINE_INIT, event.properties())
+            return
+        if command in _EXECUTION_EVENTS and not _command_run_ids:
+            _capture_execution(
+                command=command,
+                run_id=None,
+                command_flags=list(command_flags),
+                pipeline_count=0,
+                lm_provider=None,
+                lm_model=None,
+                records_read=0,
+                emitted=0,
+                failed=0,
+                lm_calls=0,
+                lm_prompt_tokens=0,
+                lm_completion_tokens=0,
+                lm_cost_usd=0.0,
+                duration_seconds=duration_seconds,
+                exit_code=exit_code,
+                exception=exception,
+                stages=[],
+            )
     except Exception:
         logger.debug("Unable to capture command telemetry", exc_info=True)
 
 
-def capture_run_finished(
+def capture_pipeline_finished(
     *,
-    run_id: str,
     command: str,
+    run_id: str,
     pipeline_count: int,
     lm_provider: str,
     lm_model: str,
@@ -210,18 +284,16 @@ def capture_run_finished(
     lm_cost_usd: float,
     duration_seconds: float,
     exception: BaseException | None,
+    stages: list[StageTelemetry],
 ) -> None:
     if not _sending_enabled():
         return
     try:
         status = _run_status(exception)
-        event = RunFinishedV1(
-            schema_="trace_miner.run_finished.v1",
-            run_id=run_id,
+        _capture_execution(
             command=command,
-            status=status,
-            duration_seconds=duration_seconds,
-            exception_type=_exception_type(exception, status),
+            run_id=run_id,
+            command_flags=list(_command_flags),
             pipeline_count=pipeline_count,
             lm_provider=lm_provider,
             lm_model=lm_model,
@@ -232,22 +304,25 @@ def capture_run_finished(
             lm_prompt_tokens=lm_prompt_tokens,
             lm_completion_tokens=lm_completion_tokens,
             lm_cost_usd=lm_cost_usd,
-            **_shared_context(),
+            duration_seconds=duration_seconds,
+            exit_code=_exit_code_for_status(status),
+            exception=exception,
+            stages=stages,
         )
-        _capture(RUN_FINISHED, event.properties())
     except Exception:
-        logger.debug("Unable to capture run telemetry", exc_info=True)
+        logger.debug("Unable to capture pipeline telemetry", exc_info=True)
 
 
-def capture_run_finished_async(
+def capture_pipeline_finished_async(
     *,
-    run_id: str,
     command: str,
+    run_id: str,
     pipeline_count: int,
     lm_provider: str,
     lm_model: str,
     stats: RunStats,
     exception: BaseException | None,
+    stages: list[StageTelemetry],
 ) -> None:
     """Schedule capture and return. Never raises."""
     if not _sending_enabled():
@@ -256,9 +331,9 @@ def capture_run_finished_async(
         asyncio.get_running_loop().run_in_executor(
             None,
             functools.partial(
-                capture_run_finished,
-                run_id=run_id,
+                capture_pipeline_finished,
                 command=command,
+                run_id=run_id,
                 pipeline_count=pipeline_count,
                 lm_provider=lm_provider,
                 lm_model=lm_model,
@@ -271,10 +346,95 @@ def capture_run_finished_async(
                 lm_cost_usd=stats.lm_cost_usd,
                 duration_seconds=stats.elapsed_s,
                 exception=exception,
+                stages=list(stages),
             ),
         )
     except Exception:
         logger.debug("Unable to schedule telemetry", exc_info=True)
+
+
+def _capture_execution(
+    *,
+    command: str,
+    run_id: str | None,
+    command_flags: list[str],
+    pipeline_count: int,
+    lm_provider: str | None,
+    lm_model: str | None,
+    records_read: int,
+    emitted: int,
+    failed: int,
+    lm_calls: int,
+    lm_prompt_tokens: int,
+    lm_completion_tokens: int,
+    lm_cost_usd: float,
+    duration_seconds: float,
+    exit_code: int,
+    exception: BaseException | None,
+    stages: list[StageTelemetry],
+) -> None:
+    event_name = _EXECUTION_EVENTS.get(command)
+    if event_name is None:
+        return
+    if run_id is not None:
+        for stage in stages:
+            _capture_stage(run_id, stage)
+    status = _run_status(exception) if run_id is not None else _command_status(exit_code, exception)
+    event = PipelineExecutionV1(
+        schema_=f"{event_name}.v1",
+        command_flags=command_flags,
+        status=status,
+        duration_seconds=duration_seconds,
+        exit_code=exit_code,
+        exception_type=_exception_type(exception, status),
+        run_id=run_id,
+        pipeline_count=pipeline_count,
+        lm_provider=lm_provider,
+        lm_model=lm_model,
+        records_read=records_read,
+        emitted=emitted,
+        failed=failed,
+        stage_count=len(stages),
+        lm_calls=lm_calls,
+        lm_prompt_tokens=lm_prompt_tokens,
+        lm_completion_tokens=lm_completion_tokens,
+        lm_cost_usd=lm_cost_usd,
+        **_shared_context(),
+    )
+    _capture(event_name, event.properties())
+
+
+def _capture_stage(run_id: str, stage: StageTelemetry) -> None:
+    event = PipelineStageV1(
+        schema_="pipeline_stage.v1",
+        run_id=run_id,
+        index=stage.index,
+        kind=stage.kind,
+        implementation=stage.implementation,
+        is_async=stage.is_async,
+        duration_seconds=stage.duration_seconds,
+        calls=stage.calls,
+        records_in=stage.records_in,
+        records_out=stage.records_out,
+        failed=stage.failed,
+        status=stage.status,
+        lm_calls=stage.lm_calls,
+        lm_prompt_tokens=stage.lm_prompt_tokens,
+        lm_completion_tokens=stage.lm_completion_tokens,
+        lm_cost_usd=stage.lm_cost_usd,
+        lm_provider=stage.lm_provider if stage.implementation == "lm" else None,
+        lm_model=stage.lm_model if stage.implementation == "lm" else None,
+        **_shared_context(),
+    )
+    _capture(PIPELINE_STAGE, event.properties())
+
+
+def _exit_code_for_status(status: str) -> int:
+    if status == "completed":
+        return 0
+    if status == "interrupted":
+        return 130
+    return 1
 
 
 def _command_status(exit_code: int, exception: BaseException | None) -> str:

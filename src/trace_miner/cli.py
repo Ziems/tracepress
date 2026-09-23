@@ -12,7 +12,7 @@ from trace_miner.init import init_project
 from trace_miner.model import format_run_profile
 from trace_miner.runtime import run_config
 from trace_miner.serve import serve
-from trace_miner.telemetry import capture_command_finished, command_telemetry_from_argv, reset_command_run_ids
+from trace_miner.telemetry import capture_cli_finished, command_telemetry_from_argv, reset_command_run_ids, set_command_flags
 
 
 _ROOT_HELP = """\
@@ -36,8 +36,9 @@ Run a batch pipeline:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     started = time.monotonic()
-    command, command_path, flags, bare = command_telemetry_from_argv(argv, _option_strings)
+    command, _, flags, _ = command_telemetry_from_argv(argv, _option_strings)
     reset_command_run_ids()
+    set_command_flags(flags)
     exit_code = 0
     caught: BaseException | None = None
     try:
@@ -57,11 +58,9 @@ def main(argv: list[str] | None = None) -> int:
         caught = exc
         raise
     finally:
-        capture_command_finished(
+        capture_cli_finished(
             command=command,
-            command_path=command_path,
             command_flags=flags,
-            bare=bare,
             duration_seconds=time.monotonic() - started,
             exit_code=exit_code,
             exception=caught,

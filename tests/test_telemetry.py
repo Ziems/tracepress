@@ -12,7 +12,15 @@ import pytest
 import trace_miner.telemetry as telemetry_module
 from trace_miner.cli import _option_strings
 from trace_miner.home import home_dir
-from trace_miner.telemetry import COMMAND_FINISHED, RUN_FINISHED, command_telemetry_from_argv
+from trace_miner.cli import main
+from trace_miner.telemetry import (
+    PIPELINE_INIT,
+    PIPELINE_RUN,
+    PIPELINE_SERVED,
+    PIPELINE_STAGE,
+    StageTelemetry,
+    command_telemetry_from_argv,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -29,22 +37,41 @@ def _enable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(telemetry_module, "POSTHOG_PROJECT_API_KEY", "phc_test")
 
 
-def _command_capture() -> None:
-    telemetry_module.capture_command_finished(
-        command="stats",
-        command_path="stats",
-        command_flags=[],
-        bare=False,
+def _stage() -> StageTelemetry:
+    return StageTelemetry(
+        index=0,
+        kind="map",
+        implementation="lm",
+        is_async=False,
+        duration_seconds=0.4,
+        calls=2,
+        records_in=2,
+        records_out=2,
+        failed=0,
+        status="completed",
+        lm_calls=2,
+        lm_prompt_tokens=10,
+        lm_completion_tokens=4,
+        lm_cost_usd=1.25,
+        lm_provider="openrouter",
+        lm_model="demo-model",
+    )
+
+
+def _init_capture() -> None:
+    telemetry_module.capture_cli_finished(
+        command="init",
+        command_flags=["--force"],
         duration_seconds=0.1,
         exit_code=0,
         exception=None,
     )
 
 
-def _run_capture(*, exception: BaseException | None = None) -> None:
-    telemetry_module.capture_run_finished(
+def _run_capture(*, exception: BaseException | None = None, command: str = "run") -> None:
+    telemetry_module.capture_pipeline_finished(
+        command=command,
         run_id="abc",
-        command="run",
         pipeline_count=1,
         lm_provider="openrouter",
         lm_model="demo-model",
@@ -57,6 +84,7 @@ def _run_capture(*, exception: BaseException | None = None) -> None:
         lm_cost_usd=1.25,
         duration_seconds=1.5,
         exception=exception,
+        stages=[_stage()],
     )
 
 
@@ -71,10 +99,11 @@ def test_opt_out_skips_build_and_send(monkeypatch: pytest.MonkeyPatch, value: st
         built.append("built")
         raise RuntimeError("built")
 
-    monkeypatch.setattr(telemetry_module, "CommandFinishedV1", refuse_build)
-    monkeypatch.setattr(telemetry_module, "RunFinishedV1", refuse_build)
+    monkeypatch.setattr(telemetry_module, "PipelineInitV1", refuse_build)
+    monkeypatch.setattr(telemetry_module, "PipelineExecutionV1", refuse_build)
+    monkeypatch.setattr(telemetry_module, "PipelineStageV1", refuse_build)
     monkeypatch.setattr(telemetry_module, "_spawn_sender", sent.append)
-    _command_capture()
+    _init_capture()
     _run_capture()
     assert built == []
     assert sent == []
@@ -118,10 +147,12 @@ def test_registered_cli_flags_drop_values() -> None:
 
 def test_allowlist_strips_unknown_properties() -> None:
     event = {
-        "event": COMMAND_FINISHED,
+        "event": PIPELINE_STAGE,
         "properties": {
-            "schema": "trace_miner.command_finished.v1",
-            "command": "run",
+            "schema": "pipeline_stage.v1",
+            "kind": "map",
+            "implementation": "lm",
+            "name": "detect_failure",
             "prompt": "secret prompt",
             "completion": "secret completion",
             "$geoip_disable": True,
@@ -129,8 +160,9 @@ def test_allowlist_strips_unknown_properties() -> None:
     }
     result = telemetry_module._allowlist_before_send(event)
     assert result is not None
-    assert result["properties"]["command"] == "run"
+    assert result["properties"]["kind"] == "map"
     assert result["properties"]["$geoip_disable"] is True
+    assert "name" not in result["properties"]
     assert "prompt" not in result["properties"]
     assert "completion" not in result["properties"]
 
@@ -175,25 +207,25 @@ def test_capture_swallows_errors(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RuntimeError("network down")
 
     monkeypatch.setattr(telemetry_module, "_spawn_sender", explode)
-    _command_capture()
+    _init_capture()
     _run_capture(exception=RuntimeError("boom"))
 
     def explode_context() -> dict[str, object]:
         raise RuntimeError("context")
 
     monkeypatch.setattr(telemetry_module, "_shared_context", explode_context)
-    _command_capture()
+    _init_capture()
 
 
 def test_sender_posts_allowlisted_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     _enable(monkeypatch)
-    received: dict[str, object] = {}
+    received: list[dict[str, object]] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
-            received["path"] = self.path
-            received["body"] = json.loads(self.rfile.read(length))
+            body = json.loads(self.rfile.read(length))
+            received.append(body)
             self.send_response(204)
             self.end_headers()
 
@@ -208,27 +240,80 @@ def test_sender_posts_allowlisted_metrics(monkeypatch: pytest.MonkeyPatch) -> No
         monkeypatch.setattr(telemetry_module, "POSTHOG_HOST", f"http://{host}:{port}")
         _run_capture()
         deadline = time.monotonic() + 5
-        while "body" not in received and time.monotonic() < deadline:
+        while len(received) < 2 and time.monotonic() < deadline:
             time.sleep(0.05)
     finally:
         server.shutdown()
         server.server_close()
 
-    assert received["path"] == "/i/v0/e/"
-    body = received["body"]
-    assert isinstance(body, dict)
-    assert body["api_key"] == "phc_test"
-    assert body["event"] == RUN_FINISHED
-    assert body["distinct_id"] == (home_dir() / "telemetry_id").read_text(encoding="utf-8").strip()
-    properties = body["properties"]
+    assert len(received) == 2
+    by_event = {body["event"]: body for body in received}
+    assert set(by_event) == {PIPELINE_STAGE, PIPELINE_RUN}
+    distinct_id = (home_dir() / "telemetry_id").read_text(encoding="utf-8").strip()
+    stage = by_event[PIPELINE_STAGE]
+    run = by_event[PIPELINE_RUN]
+    assert isinstance(stage, dict)
+    assert isinstance(run, dict)
+    assert stage["api_key"] == run["api_key"] == "phc_test"
+    assert stage["distinct_id"] == run["distinct_id"] == distinct_id
+    stage_properties = stage["properties"]
+    properties = run["properties"]
+    assert isinstance(stage_properties, dict)
     assert isinstance(properties, dict)
+    assert stage_properties["kind"] == "map"
+    assert stage_properties["implementation"] == "lm"
+    assert stage_properties["async"] is False
+    assert stage_properties["lm_cost_usd"] == 1.25
+    assert stage_properties["lm_model"] == "demo-model"
+    assert "name" not in stage_properties
     assert properties["$geoip_disable"] is True
     assert properties["$process_person_profile"] is False
     assert properties["lm_calls"] == 3
     assert properties["lm_prompt_tokens"] == 10
     assert properties["lm_completion_tokens"] == 4
     assert properties["lm_cost_usd"] == 1.25
-    assert set(properties) <= telemetry_module._EVENT_PROPERTY_KEYS[RUN_FINISHED]
+    assert properties["stage_count"] == 1
+    assert set(stage_properties) <= telemetry_module._EVENT_PROPERTY_KEYS[PIPELINE_STAGE]
+    assert set(properties) <= telemetry_module._EVENT_PROPERTY_KEYS[PIPELINE_RUN]
+    assert "prompt" not in stage_properties
     assert "prompt" not in properties
+    assert "completion" not in stage_properties
     assert "completion" not in properties
-    assert "secret" not in json.dumps(body)
+    assert "secret" not in json.dumps(received)
+
+
+def test_serve_uses_pipeline_served(monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch)
+    sent: list[dict[str, object]] = []
+    monkeypatch.setattr(telemetry_module, "_spawn_sender", sent.append)
+    _run_capture(command="serve")
+    events = [payload["body"]["event"] for payload in sent]  # type: ignore[index]
+    assert events == [PIPELINE_STAGE, PIPELINE_SERVED]
+
+
+def test_cli_events_follow_the_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _enable(monkeypatch)
+    sent: list[dict[str, object]] = []
+    monkeypatch.setattr(telemetry_module, "_spawn_sender", sent.append)
+
+    dest = tmp_path / "demo"
+    assert main(["init", str(dest), "--force"]) == 0
+    with pytest.raises(FileNotFoundError):
+        main(["run", str(tmp_path / "missing.yaml")])
+    assert main(["stats"]) == 0
+    with pytest.raises(SystemExit):
+        main(["run", "--help"])
+
+    events = [payload["body"]["event"] for payload in sent]  # type: ignore[index]
+    assert events == [PIPELINE_INIT, PIPELINE_RUN]
+    init_properties = sent[0]["body"]["properties"]  # type: ignore[index]
+    run_properties = sent[1]["body"]["properties"]  # type: ignore[index]
+    assert isinstance(init_properties, dict)
+    assert isinstance(run_properties, dict)
+    assert init_properties["command_flags"] == ["--force"]
+    assert init_properties["status"] == "completed"
+    assert run_properties["status"] == "errored"
+    assert run_properties["exception_type"] == "FileNotFoundError"
+    assert run_properties["stage_count"] == 0
+    assert "run_id" not in run_properties
+    assert "missing.yaml" not in json.dumps(sent)

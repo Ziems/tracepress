@@ -9,9 +9,10 @@ import signal
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, TextIO, get_origin
+from typing import Any, Callable, Iterable, Iterator, TextIO, get_origin
 from pydantic import BaseModel
 from rich.console import Console
 from rich.markup import escape
@@ -33,7 +34,12 @@ from trace_miner.model import (
     StageRef,
     Step,
 )
-from trace_miner.telemetry import capture_run_finished_async, record_command_run_id, run_command_name
+from trace_miner.telemetry import (
+    StageTelemetry,
+    capture_pipeline_finished_async,
+    record_command_run_id,
+    run_command_name,
+)
 
 
 _PROGRESS_NCOLS = 120
@@ -101,6 +107,54 @@ class _GroupSkipped(Exception):
 
 
 @dataclass
+class _StageBucket:
+    index: int
+    kind: str
+    implementation: str
+    is_async: bool
+    lm_model: str | None
+    lm_provider: str | None
+    duration_seconds: float = 0.0
+    calls: int = 0
+    records_in: int = 0
+    records_out: int = 0
+    failed: int = 0
+    lm_calls: int = 0
+    lm_prompt_tokens: int = 0
+    lm_completion_tokens: int = 0
+    lm_cost_usd: float = 0.0
+    status: str = "completed"
+
+    def record_lm(self, usage: LmUsage | None) -> None:
+        self.lm_calls += 1
+        if usage is None:
+            return
+        self.lm_prompt_tokens += usage.prompt_tokens
+        self.lm_completion_tokens += usage.completion_tokens
+        self.lm_cost_usd += usage.cost_usd
+
+    def telemetry(self) -> StageTelemetry:
+        return StageTelemetry(
+            index=self.index,
+            kind=self.kind,
+            implementation=self.implementation,
+            is_async=self.is_async,
+            duration_seconds=self.duration_seconds,
+            calls=self.calls,
+            records_in=self.records_in,
+            records_out=self.records_out,
+            failed=self.failed,
+            status=self.status,
+            lm_calls=self.lm_calls,
+            lm_prompt_tokens=self.lm_prompt_tokens,
+            lm_completion_tokens=self.lm_completion_tokens,
+            lm_cost_usd=self.lm_cost_usd,
+            lm_provider=self.lm_provider,
+            lm_model=self.lm_model,
+        )
+
+
+@dataclass
 class _GroupState:
     runtime: _Runtime
     spec: GroupSpec
@@ -158,18 +212,24 @@ class _GroupState:
         self.runtime.stats.retired += len(children)
         if self.reduce_progress is not None:
             self.reduce_progress.open()
-        outputs = await self.runtime.call_stage(
-            self.spec.reduce,
-            [env.record for env in children],
-            source=self.parent_env,
-            parent=self.parent_record,
-            group_id=self.group_id,
-            key=None,
-            index=None,
-            path=self.parent_env.path,
-            depth=self.depth,
-            failures=self.failures,
-        )
+        with self.runtime._measuring_stage(self.spec.reduce, calls=1, records_in=len(children)) as bucket:
+            try:
+                outputs = await self.runtime.call_stage(
+                    self.spec.reduce,
+                    [env.record for env in children],
+                    source=self.parent_env,
+                    parent=self.parent_record,
+                    group_id=self.group_id,
+                    key=None,
+                    index=None,
+                    path=self.parent_env.path,
+                    depth=self.depth,
+                    failures=self.failures,
+                )
+            except Exception:
+                bucket.failed += 1
+                raise
+            bucket.records_out += len(outputs)
         self.runtime.stats.groups_reduced += 1
         if self.reduce_progress is not None:
             self.reduce_progress.advance()
@@ -201,6 +261,10 @@ class _Runtime:
         self.capture_writes = capture_writes
         self.write_events: list[_WriteEvent] = []
         self._alert_log: Path | None = None
+        self._stage_buckets: dict[int, _StageBucket] = {}
+        self._stage_order: list[_StageBucket] = []
+        self._active_stage: _StageBucket | None = None
+        self._register_stages()
         self._prepare_dspy_lms()
 
     async def run(self) -> RunResult:
@@ -221,14 +285,15 @@ class _Runtime:
             raise
         finally:
             self.stats.elapsed_s = time.perf_counter() - started
-            capture_run_finished_async(
-                run_id=run_id,
+            capture_pipeline_finished_async(
                 command="run",
+                run_id=run_id,
                 pipeline_count=len(self.config.pipelines),
                 lm_provider=self.config.lm_provider,
                 lm_model=self.config.lm_default_model,
                 stats=self.stats,
                 exception=caught,
+                stages=self.stage_telemetry(),
             )
 
     async def _run_pipeline(self, pipeline: PipelineSpec) -> None:
@@ -308,30 +373,33 @@ class _Runtime:
     ) -> list[_Envelope]:
         assert step.stage is not None
         task = self.progress.start("alert", step.stage.name, len(envelopes))
-        if step.stage.kind == "lm" or step.stage.is_async:
-            results = await asyncio.gather(
-                *(self._call_stage_for_env_result(step.stage, env, task) for env in envelopes)
-            )
-        else:
-            results = []
-            for env in envelopes:
-                results.append(await self._call_stage_for_env_result(step.stage, env, task))
         try:
-            kept: list[_Envelope] = []
-            fired: list[_Envelope] = []
-            for env, result in results:
-                if isinstance(result, Exception):
-                    if active_group is None:
-                        raise result
-                    await active_group.fail_child(env, step.stage.name, result)
-                    continue
-                body = self._alert_body(step.stage, result)
-                if body is not None:
-                    fired.append(_Envelope(self._alert_record(step.stage.name, body, env), env.path, active_group))
-                kept.append(env)
-            if fired and self._alert_log is not None:
-                self._write_envelopes(self._alert_log, fired, append=True)
-            return kept
+            with self._measuring_stage(step.stage, calls=len(envelopes), records_in=len(envelopes)) as bucket:
+                if step.stage.kind == "lm" or step.stage.is_async:
+                    results = await asyncio.gather(
+                        *(self._call_stage_for_env_result(step.stage, env, task) for env in envelopes)
+                    )
+                else:
+                    results = []
+                    for env in envelopes:
+                        results.append(await self._call_stage_for_env_result(step.stage, env, task))
+                kept: list[_Envelope] = []
+                fired: list[_Envelope] = []
+                for env, result in results:
+                    if isinstance(result, Exception):
+                        bucket.failed += 1
+                        if active_group is None:
+                            raise result
+                        await active_group.fail_child(env, step.stage.name, result)
+                        continue
+                    body = self._alert_body(step.stage, result)
+                    if body is not None:
+                        fired.append(_Envelope(self._alert_record(step.stage.name, body, env), env.path, active_group))
+                    kept.append(env)
+                if fired and self._alert_log is not None:
+                    self._write_envelopes(self._alert_log, fired, append=True)
+                bucket.records_out += len(fired)
+                return kept
         finally:
             task.close()
 
@@ -378,29 +446,32 @@ class _Runtime:
         assert step.stage is not None
         output: list[_Envelope] = []
         task = self.progress.start(step.kind, step.stage.name, len(envelopes))
-        if step.stage.kind == "lm" or step.stage.is_async:
-            results = await asyncio.gather(
-                *(self._call_stage_for_env_result(step.stage, env, task) for env in envelopes)
-            )
-        else:
-            results = []
-            for env in envelopes:
-                results.append(await self._call_stage_for_env_result(step.stage, env, task))
         try:
-            for env, result in results:
-                if isinstance(result, Exception):
-                    if active_group is None:
-                        raise result
-                    await active_group.fail_child(env, step.stage.name, result)
-                    continue
-                emitted = result
-                self._assert_emit_count(step, env, emitted)
-                if not emitted:
-                    self.stats.dropped += 1
-                    continue
-                for i, record in enumerate(emitted, start=1):
-                    output.append(_Envelope(record, env.path + (i,), active_group))
-            return output
+            with self._measuring_stage(step.stage, calls=len(envelopes), records_in=len(envelopes)) as bucket:
+                if step.stage.kind == "lm" or step.stage.is_async:
+                    results = await asyncio.gather(
+                        *(self._call_stage_for_env_result(step.stage, env, task) for env in envelopes)
+                    )
+                else:
+                    results = []
+                    for env in envelopes:
+                        results.append(await self._call_stage_for_env_result(step.stage, env, task))
+                for env, result in results:
+                    if isinstance(result, Exception):
+                        bucket.failed += 1
+                        if active_group is None:
+                            raise result
+                        await active_group.fail_child(env, step.stage.name, result)
+                        continue
+                    emitted = result
+                    self._assert_emit_count(step, env, emitted)
+                    if not emitted:
+                        self.stats.dropped += 1
+                        continue
+                    for i, record in enumerate(emitted, start=1):
+                        output.append(_Envelope(record, env.path + (i,), active_group))
+                bucket.records_out += len(output)
+                return output
         finally:
             task.close()
 
@@ -453,22 +524,25 @@ class _Runtime:
     ) -> list[_Envelope]:
         group = self._open_group(spec, env, depth=depth, reduce_progress=reduce_progress)
         try:
-            try:
-                emitted = await self.call_stage_for_env(
-                    spec.expand,
-                    env,
-                    parent=env.record,
-                    group_id=group.group_id,
-                    key=None,
-                    depth=depth,
-                    failures=group.failures,
-                )
-            except Exception as exc:
-                if isinstance(exc, (_GroupSkipped, PipelineExecutionError)):
-                    raise
-                raise PipelineExecutionError(
-                    f"Group {group.group_id} expand stage `{spec.expand.name}` failed: {exc}"
-                ) from exc
+            with self._measuring_stage(spec.expand, calls=1, records_in=1) as bucket:
+                try:
+                    emitted = await self.call_stage_for_env(
+                        spec.expand,
+                        env,
+                        parent=env.record,
+                        group_id=group.group_id,
+                        key=None,
+                        depth=depth,
+                        failures=group.failures,
+                    )
+                except Exception as exc:
+                    bucket.failed += 1
+                    if isinstance(exc, (_GroupSkipped, PipelineExecutionError)):
+                        raise
+                    raise PipelineExecutionError(
+                        f"Group {group.group_id} expand stage `{spec.expand.name}` failed: {exc}"
+                    ) from exc
+                bucket.records_out += len(emitted)
             child_envs = [_Envelope(record, env.path + (i,), group) for i, record in enumerate(emitted, start=1)]
             survivors = await self._run_group_children(group, child_envs)
         except _GroupSkipped:
@@ -611,6 +685,58 @@ class _Runtime:
             kwargs[field.name] = parent_record[field.name]
         return kwargs
 
+    def stage_telemetry(self) -> list[StageTelemetry]:
+        return [bucket.telemetry() for bucket in self._stage_order]
+
+    def _register_stages(self) -> None:
+        for pipeline in self.config.pipelines:
+            self._register_steps(pipeline.steps)
+
+    def _register_steps(self, steps: tuple[Step, ...]) -> None:
+        for step in steps:
+            if step.stage is not None:
+                self._bucket_for(step.stage)
+            elif step.group is not None:
+                self._bucket_for(step.group.expand)
+                self._register_steps(step.group.pipeline)
+                self._bucket_for(step.group.reduce)
+
+    def _bucket_for(self, stage: StageRef) -> _StageBucket:
+        key = id(stage)
+        bucket = self._stage_buckets.get(key)
+        if bucket is None:
+            bucket = _StageBucket(
+                index=len(self._stage_order),
+                kind=stage.role,
+                implementation=stage.kind,
+                is_async=stage.is_async,
+                lm_model=stage.lm_model,
+                lm_provider=stage.lm_provider,
+            )
+            self._stage_buckets[key] = bucket
+            self._stage_order.append(bucket)
+        return bucket
+
+    @contextmanager
+    def _measuring_stage(self, stage: StageRef, *, calls: int, records_in: int) -> Iterator[_StageBucket]:
+        bucket = self._bucket_for(stage)
+        bucket.calls += calls
+        bucket.records_in += records_in
+        previous = self._active_stage
+        self._active_stage = bucket
+        started = time.perf_counter()
+        try:
+            yield bucket
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)):
+                bucket.status = "interrupted"
+            else:
+                bucket.status = "errored"
+            raise
+        finally:
+            bucket.duration_seconds += time.perf_counter() - started
+            self._active_stage = previous
+
     def _prepare_dspy_lms(self) -> None:
         models = {
             stage.lm_model
@@ -645,6 +771,8 @@ class _Runtime:
         async with self._lm_slot():
             prediction, usage = await asyncio.to_thread(_invoke_dspy_sync, stage.target, kwargs, lm)
         self.stats.record_lm(usage)
+        if self._active_stage is not None:
+            self._active_stage.record_lm(usage)
         return prediction
 
     def _lm_outputs(self, stage: StageRef, prediction: Any) -> dict[str, Any]:
@@ -929,14 +1057,15 @@ class _StreamRun:
         finally:
             self.runtime.stats.elapsed_s = time.perf_counter() - started
             self.progress.close()
-            capture_run_finished_async(
-                run_id=self.run_id,
+            capture_pipeline_finished_async(
                 command=run_command_name.get(),
+                run_id=self.run_id,
                 pipeline_count=len(self.config.pipelines),
                 lm_provider=self.config.lm_provider,
                 lm_model=self.config.lm_default_model,
                 stats=self.runtime.stats,
                 exception=caught,
+                stages=self.runtime.stage_telemetry(),
             )
 
     def _build_graph(self) -> None:
