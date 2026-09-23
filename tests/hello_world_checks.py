@@ -163,6 +163,33 @@ def check_frustration(path: Path) -> None:
     assert freecad["has_frustration"] is False, f"{FREECAD} should not flag user frustration"
 
 
+def check_doom_loop(alerts_path: Path, summaries_path: Path) -> None:
+    known = {row.get("session_id") for row in load_jsonl(summaries_path) if row.get("session_id")}
+    assert known, f"{summaries_path} has no session_id values to cross-check against"
+
+    by_session: dict[Any, list[dict[str, Any]]] = {}
+    for row in load_jsonl(alerts_path):
+        by_session.setdefault(row.get("session_id"), []).append(row)
+
+    # Each real bundled trace should reach *some* verdict — either it ran clean
+    # to its `final: true` step, or the LM judge (fairly) called an early doom
+    # loop on it. Either is a correct application of the pipeline; only silence
+    # is a failure.
+    for session_id in known:
+        entries = by_session.get(session_id, [])
+        names = {entry.get("name") for entry in entries}
+        assert names & {"flag_doom_loop", "flag_rollout_complete"}, (
+            f"session {session_id} never reached a verdict, got {entries}"
+        )
+
+    loop_sessions = [session_id for session_id in by_session if session_id not in known]
+    assert loop_sessions, "expected an extra session for the real doom-loop trace"
+    loop_entries = [entry for session_id in loop_sessions for entry in by_session[session_id]]
+    assert any(entry.get("name") == "flag_doom_loop" for entry in loop_entries), (
+        f"the real doom-loop trace never fired flag_doom_loop, got {loop_entries}"
+    )
+
+
 def check_project(project: Path) -> None:
     output = project / "output"
     check_summaries(output / "summaries.jsonl")
@@ -170,6 +197,10 @@ def check_project(project: Path) -> None:
     check_frustration(output / "frustration.jsonl")
     check_categories(output / "categories.jsonl")
     check_alerts(project / ".trace-miner" / "alerts" / "alerts.jsonl")
+    check_doom_loop(
+        project / ".trace-miner" / "alerts" / "doom_loop.jsonl",
+        output / "summaries.jsonl",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

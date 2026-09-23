@@ -64,21 +64,42 @@ jobs:
           category_pid=$!
           trace-miner serve alerts.yaml --port 8765 >"$log_dir/alerts.log" 2>&1 &
           alerts_pid=$!
+          trace-miner serve doom_loop.yaml --port 8766 >"$log_dir/doom_loop.log" 2>&1 &
+          doom_loop_pid=$!
           status=0
-          if ! python3 - "$alerts_pid" <<'PY'
+          if ! python3 - "$alerts_pid" 8765 <<'PY'
           import socket
           import sys
           import time
 
           pid = int(sys.argv[1])
+          port = int(sys.argv[2])
           deadline = time.monotonic() + 30
           while time.monotonic() < deadline:
               try:
-                  with socket.create_connection(("127.0.0.1", 8765), 0.2):
+                  with socket.create_connection(("127.0.0.1", port), 0.2):
                       raise SystemExit(0)
               except OSError:
                   time.sleep(0.1)
-          raise SystemExit(f"serve did not accept connections (pid {pid})")
+          raise SystemExit(f"serve did not accept connections (pid {pid}, port {port})")
+          PY
+          then
+            status=1
+          elif ! python3 - "$doom_loop_pid" 8766 <<'PY'
+          import socket
+          import sys
+          import time
+
+          pid = int(sys.argv[1])
+          port = int(sys.argv[2])
+          deadline = time.monotonic() + 30
+          while time.monotonic() < deadline:
+              try:
+                  with socket.create_connection(("127.0.0.1", port), 0.2):
+                      raise SystemExit(0)
+              except OSError:
+                  time.sleep(0.1)
+          raise SystemExit(f"serve did not accept connections (pid {pid}, port {port})")
           PY
           then
             status=1
@@ -90,14 +111,22 @@ jobs:
               echo "client_demo.py exited $demo_code; expected 1" >&2
               status=1
             fi
+            doom_loop_demo_code=0
+            "$demo_python" doom_loop_demo.py "http://127.0.0.1:8766" >"$log_dir/doom_loop_demo.log" 2>&1 || doom_loop_demo_code=$?
+            if [ "$doom_loop_demo_code" -ne 0 ]; then
+              echo "doom_loop_demo.py exited $doom_loop_demo_code; expected 0" >&2
+              status=1
+            fi
           fi
           kill "$alerts_pid" 2>/dev/null || true
+          kill "$doom_loop_pid" 2>/dev/null || true
           wait "$alerts_pid" || true
+          wait "$doom_loop_pid" || true
           wait "$summarize_pid" || status=1
           wait "$pii_pid" || status=1
           wait "$frustration_pid" || status=1
           wait "$category_pid" || status=1
-          for name in summarize pii frustration category alerts client_demo; do
+          for name in summarize pii frustration category alerts client_demo doom_loop doom_loop_demo; do
             echo "::group::$name"
             cat "$log_dir/$name.log"
             echo "::endgroup::"

@@ -1,11 +1,13 @@
 # Hello Trace Miner
 
 This project is a small harbor-style workspace. One `stages.py` module, three
-slim harbor traces, and five pipelines that reuse those stages.
+slim harbor traces, and six pipelines that reuse those stages.
 
 The traces are real harbor runs (failed ATRX/VEP CRISPR, failed photonic
 routing, passed FreeCAD spring clip) with planted signals so each pipeline has
 something to find: a fake SSN, a fake phone number, and a frustrated user turn.
+The doom-loop demo uses a fourth real trace with no planted signal — the loop
+in it really happened.
 
 Language-model stages need OpenRouter:
 
@@ -22,6 +24,7 @@ export OPENROUTER_API_KEY=...
 | `frustration.yaml` | Detect user frustration or impatience | `output/frustration.jsonl` |
 | `category.yaml` | Label domain and outcome | `output/categories.jsonl` |
 | `alerts.yaml` | Alert when a step contains an SSN, a phone number, or a frustrated user turn | `output/alerts.jsonl` |
+| `doom_loop.yaml` | Reduce over the last few steps at every posted step; alert if the agent is stuck repeating itself | `output/doom_loop.jsonl` |
 
 ## Run
 
@@ -61,6 +64,55 @@ aborted terminal-bench/atrx-vep-crispr step 2: ssn
 
 The later traces carry a frustrated user turn and a phone number. Those fire if you remove the earlier signal.
 
+## Doom loop
+
+`doom_loop.yaml` watches `input/doom_loop.jsonl`, the same way `alerts.yaml`
+watches `input/alerts.jsonl`, but its posted records carry a *window of recent
+steps* instead of one step. Its `group` runs `detect_doom_loop`, an LM reduce,
+over that window on every post, so the trace is judged again each time new
+steps arrive rather than only once at the end. `flag_doom_loop` alerts when the
+reduce says the agent is stuck repeating itself. `flag_rollout_complete` alerts
+once, when a posted record carries `final: true` — that's the built-in signal
+for "this rollout has finished and its last step was submitted."
+
+There's no server-side memory of a trace across posts, so the *client* keeps a
+sliding window of the last few steps and resends it on every post. DSPy's
+request cache means re-summarizing a step already seen in an earlier window is
+free; only the reduce judgment itself runs fresh each time.
+
+In one terminal:
+
+```bash
+trace-miner serve doom_loop.yaml
+```
+
+In another, from this directory:
+
+```bash
+python doom_loop_demo.py
+```
+
+`doom_loop_demo.py` posts all three bundled traces plus a fourth real trace
+from `input/doom_loop_example.jsonl`: a terminal-bench run (same Harbor job as
+the other three) where the agent backgrounds a slow test, then checks on it
+with `sleep N; cat task.output` three times running and gets nothing back
+each time before it thinks to check whether the process is even still alive.
+No planted or fabricated signal — it's an unedited real doom loop, just with
+its largest fields clipped for size. It reliably aborts mid-stream:
+
+```text
+doom loop in terminal-bench/vf2-speedup-networkx step 45: Running Bash commands that time out or produce no output, often moving to background.
+```
+
+The other three usually finish with `rollout complete (clean)`, but they're
+real traces too, not planted — a live run has also caught genuine stalls in
+`photonic-waveguide-routing` (a run of empty agent turns) and
+`freecad-spring-clip` (a run of Bash commands that just print `ok`). Either
+verdict is the reduce doing its job; only silence would mean something's
+wrong.
+
+(the exact wording is the LM's, so it varies run to run).
+
 ## What each file is
 
 - The YAML files are topology only. They name stages and how they connect.
@@ -68,9 +120,15 @@ The later traces carry a frustrated user turn and a phone number. Those fire if 
   changes every pipeline that names it. `detect_pii_in_step` uses a Pydantic
   output type (`list[PiiFinding]`) so the model returns structured spans.
 - `input/trajectories.jsonl` is three slim harbor records.
+- `input/doom_loop_example.jsonl` is one real harbor record with a genuine doom
+  loop, its largest fields clipped for size. `doom_loop_demo.py` reads it.
 - `input/alerts.jsonl` starts empty so `alerts.yaml` can be served before any
   steps are posted. Gitignored. Recreated empty by `init --force`.
 - `alerts.yaml` watches `input/alerts.jsonl`. `client_demo.py` posts steps into it.
+- `input/doom_loop.jsonl` starts empty, same as `input/alerts.jsonl`. Gitignored.
+  Recreated empty by `init --force`.
+- `doom_loop.yaml` watches `input/doom_loop.jsonl`. `doom_loop_demo.py` posts
+  step windows into it and watches for `final: true` to know a rollout ended.
 - `AGENTS.md` is the working guide for coding agents: how to run, add a
   pipeline, and write Python or LM stages.
 

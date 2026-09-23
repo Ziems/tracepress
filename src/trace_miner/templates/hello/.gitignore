@@ -1,3 +1,4 @@
 output/
 .trace-miner/
 input/alerts.jsonl
+input/doom_loop.jsonl

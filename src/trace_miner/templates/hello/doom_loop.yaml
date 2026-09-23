@@ -1,0 +1,15 @@
+from: ./stages
+id_field: session_id
+
+pipelines:
+  - name: doom_loop
+    in: input/doom_loop.jsonl
+    out: output/doom_loop.jsonl
+    pipeline:
+      - group:
+          expand: split_harbor_steps
+          pipeline:
+            - map: summarize_harbor_step
+          reduce: detect_doom_loop
+      - alert: flag_doom_loop
+      - alert: flag_rollout_complete

@@ -161,6 +161,8 @@ def _init(argv: list[str]) -> int:
     print("  category.yaml             domain and outcome")
     print("  alerts.yaml               alert on a planted signal")
     print("  client_demo.py            post traces and stop on an abort")
+    print("  doom_loop.yaml            alert on a repeated-action doom loop")
+    print("  doom_loop_demo.py         post a step window and watch for it")
     print("  stages.py                 shared Python and LM stages")
     print("  AGENTS.md                 guide for coding agents")
     print("  input/trajectories.jsonl  slim harbor traces")
@@ -175,6 +177,7 @@ def _init(argv: list[str]) -> int:
     print("Then try pii.yaml, frustration.yaml, or category.yaml")
     print("To serve:  trace-miner serve alerts.yaml")
     print("Watch it:  python client_demo.py")
+    print("Doom loop: trace-miner serve doom_loop.yaml  &&  python doom_loop_demo.py")
     return 0
 
 

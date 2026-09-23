@@ -57,24 +57,36 @@ That posts `input/trajectories.jsonl` one step at a time and exits when
 `flag_sensitive_step` returns a reason. The first hit is the planted SSN in
 the ATRX trace.
 
-To alert from a judgment over the whole rollout, summarize the steps, reduce
-those summaries, then publish with an `alert` step. The reduce merges its
-outputs onto the parent, which still carries `id_field`. The alert step
-returns a reason string or `None`. The record passes through. The event is
-written under `.trace-miner/alerts/<pipeline name>.jsonl`.
+`doom_loop.yaml` alerts from a judgment over recent steps instead of one step.
+In one terminal:
+
+```bash
+trace-miner serve doom_loop.yaml
+```
+
+In another:
+
+```bash
+python doom_loop_demo.py
+```
+
+The group's `expand` (`split_harbor_steps`) and per-child `map`
+(`summarize_harbor_step`) are the same stages `summarize.yaml` uses. Only the
+reduce and the two alerts are new:
 
 ```yaml
 - group:
-    expand: split_steps
+    expand: split_harbor_steps
     pipeline:
-      - map: summarize_step
+      - map: summarize_harbor_step
     reduce: detect_doom_loop
 - alert: flag_doom_loop
+- alert: flag_rollout_complete
 ```
 
 ```python
 class DetectDoomLoop(dspy.Signature):
-    """Decide if these summaries show an agent stuck repeating itself."""
+    """Decide if these recent steps show an agent stuck repeating itself."""
 
     step_summary: list[str] = dspy.InputField()
 
@@ -91,7 +103,28 @@ def flag_doom_loop(record):
     if not record.get("doom_loop"):
         return None
     return record.get("pattern") or "stuck repeating itself"
+
+
+def flag_rollout_complete(record):
+    if not record.get("final"):
+        return None
+    verdict = "doom loop" if record.get("doom_loop") else "clean"
+    return f"rollout complete ({verdict})"
 ```
+
+The runtime has no memory of a group across separate `POST /v1/records` calls —
+each post opens and closes its own `expand`→`reduce` group. So a reduce that
+needs to see many steps needs the *client* to resend them: `doom_loop_demo.py`
+keeps a sliding window of the last 8 raw steps and posts
+`{"session_id", "steps": window, "final": ...}` on every step. `split_harbor_steps`
+expands that `steps` list, so the group and reduce run fresh, over the current
+window, at every post. Re-summarizing a step already seen in an earlier window
+costs nothing — it hits DSPy's cache.
+
+`final` is a plain field, not a runtime concept. Set `final: true` on a
+posted record's last step for that rollout, and check `record.get("final")` in
+whatever stage should act on it — that's the whole mechanism for "this rollout
+has finished."
 
 `step_summary` is gathered from the children. A client watches the named
 pipeline and stops on `alerts.latest.reason`. A DSPy module used directly as
@@ -105,9 +138,13 @@ module's other outputs on `alerts.latest.record`.
 | `*.yaml` | Pipeline topology only: inputs, outputs, step order, model policy |
 | `alerts.yaml` | Named `alerts` pipeline; `in: input/alerts.jsonl` |
 | `client_demo.py` | Posts trajectory steps to a running `serve` and stops on an abort |
+| `doom_loop.yaml` | Named `doom_loop` pipeline; `in: input/doom_loop.jsonl` |
+| `doom_loop_demo.py` | Posts a sliding window of recent steps per trace; watches for a doom loop or `final` |
 | `stages.py` | Shared Python functions and DSPy signatures |
 | `input/trajectories.jsonl` | Three slim harbor traces |
+| `input/doom_loop_example.jsonl` | One real harbor trace with a genuine doom loop |
 | `input/alerts.jsonl` | Serve target for `alerts.yaml`. Starts empty. Gitignored. |
+| `input/doom_loop.jsonl` | Serve target for `doom_loop.yaml`. Starts empty. Gitignored. |
 | `output/` | Generated JSONL. Gitignored. Safe to overwrite |
 | `README.md` | Human walkthrough |
 
@@ -129,6 +166,7 @@ Three harbor traces with planted signals:
 | `frustration.yaml` | expand steps → LM detect → Python reduce | `output/frustration.jsonl` |
 | `category.yaml` | prepare → expand steps → LM summarize → LM categorize → compact | `output/categories.jsonl` |
 | `alerts.yaml` | `alert: flag_sensitive_step` on posted steps | `output/alerts.jsonl` |
+| `doom_loop.yaml` | expand+LM summarize+LM reduce over a posted step window, on every post | `output/doom_loop.jsonl` |
 
 Prefer copying one of these over inventing a new shape. Post live steps with
 `trace-miner serve`; do not write a helper script.
@@ -287,7 +325,8 @@ give the signature `ctx`.
 ## Adding a pipeline
 
 1. Copy the closest YAML (`pii.yaml` for per-step detection, `summarize.yaml`
-   for trajectory diagnosis, `alerts.yaml` for a served alert pipeline).
+   for trajectory diagnosis, `alerts.yaml` for a served alert pipeline,
+   `doom_loop.yaml` for a served pipeline that reduces over a step window).
 2. Add or reuse stages in `stages.py`. Name the YAML keys exactly after those
    attributes.
 3. Point `out:` at a new file under `output/`.

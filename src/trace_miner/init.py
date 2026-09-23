@@ -14,8 +14,11 @@ TEMPLATE_FILES = (
     "category.yaml",
     "alerts.yaml",
     "client_demo.py",
+    "doom_loop.yaml",
+    "doom_loop_demo.py",
     "stages.py",
     "input/trajectories.jsonl",
+    "input/doom_loop_example.jsonl",
     ".gitignore",
 )
 
@@ -45,7 +48,7 @@ def init_project(dest: Path, *, force: bool = False) -> list[Path]:
         target.write_bytes(source.read_bytes())
         written.append(target)
 
-    for name in ("alerts.jsonl",):
+    for name in ("alerts.jsonl", "doom_loop.jsonl"):
         path = dest / "input" / name
         path.parent.mkdir(parents=True, exist_ok=True)
         if force or not path.exists():

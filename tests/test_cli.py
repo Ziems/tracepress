@@ -93,6 +93,8 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert "alerts.yaml" in out
     assert "trace-miner serve alerts.yaml" in out
     assert "python client_demo.py" in out
+    assert "doom_loop.yaml" in out
+    assert "python doom_loop_demo.py" in out
     assert "AGENTS.md" in out
     assert "stream.yaml" not in out
     assert "trace-miner replay" not in out
@@ -101,17 +103,22 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert (dest / "frustration.yaml").is_file()
     assert (dest / "category.yaml").is_file()
     assert (dest / "alerts.yaml").is_file()
+    assert (dest / "doom_loop.yaml").is_file()
     assert not (dest / "stream.yaml").exists()
     assert (dest / "client_demo.py").is_file()
+    assert (dest / "doom_loop_demo.py").is_file()
     assert (dest / "stages.py").is_file()
     assert (dest / "AGENTS.md").is_file()
     assert (dest / "input" / "trajectories.jsonl").is_file()
+    assert (dest / "input" / "doom_loop_example.jsonl").is_file()
     assert not (dest / "input" / "live.jsonl").exists()
     assert (dest / "input" / "alerts.jsonl").read_text(encoding="utf-8") == ""
+    assert (dest / "input" / "doom_loop.jsonl").read_text(encoding="utf-8") == ""
     assert not (dest / "simulate_stream.py").exists()
     agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
     assert "trace-miner run summarize.yaml" in agents
     assert "trace-miner serve alerts.yaml" in agents
+    assert "trace-miner serve doom_loop.yaml" in agents
     assert "trace-miner replay" not in agents
     assert "stages.py" in agents
 
@@ -125,12 +132,23 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
         "terminal-bench/photonic-waveguide-routing",
         "terminal-bench/freecad-spring-clip",
     ]
+    loop_records = read_jsonl(dest / "input" / "doom_loop_example.jsonl")
+    assert [row["eval"]["task_name"] for row in loop_records] == ["terminal-bench/vf2-speedup-networkx"]
 
-    for name in ("summarize.yaml", "pii.yaml", "frustration.yaml", "category.yaml", "alerts.yaml"):
+    for name in (
+        "summarize.yaml",
+        "pii.yaml",
+        "frustration.yaml",
+        "category.yaml",
+        "alerts.yaml",
+        "doom_loop.yaml",
+    ):
         config = load_config(dest / name)
         assert config.pipelines[0].output.name.endswith(".jsonl")
     alerts = load_config(dest / "alerts.yaml")
     assert alerts.pipelines[0].name == "alerts"
+    doom_loop = load_config(dest / "doom_loop.yaml")
+    assert doom_loop.pipelines[0].name == "doom_loop"
 
 
 def test_init_refuses_to_overwrite(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

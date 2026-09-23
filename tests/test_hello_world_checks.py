@@ -11,12 +11,18 @@ from hello_world_checks import (
     PHOTONIC,
     check_alerts,
     check_categories,
+    check_doom_loop,
     check_frustration,
     check_pii,
     check_project,
     check_summaries,
     main,
 )
+
+ATRX_SESSION = "atrx-session"
+PHOTONIC_SESSION = "photonic-session"
+FREECAD_SESSION = "freecad-session"
+LOOP_SESSION = "loop-session"
 
 
 def _write_jsonl(path: Path, rows: list[dict[object, object]]) -> Path:
@@ -28,6 +34,7 @@ def _summary_rows() -> list[dict[object, object]]:
     return [
         {
             "task_name": ATRX,
+            "session_id": ATRX_SESSION,
             "reported_passed": False,
             "failed": True,
             "failure_cause": "HGVS annotations did not match the verifier.",
@@ -35,6 +42,7 @@ def _summary_rows() -> list[dict[object, object]]:
         },
         {
             "task_name": PHOTONIC,
+            "session_id": PHOTONIC_SESSION,
             "reported_passed": False,
             "failed": True,
             "failure_cause": "Routing never finished after the user asked it to stop delaying.",
@@ -42,6 +50,7 @@ def _summary_rows() -> list[dict[object, object]]:
         },
         {
             "task_name": FREECAD,
+            "session_id": FREECAD_SESSION,
             "reported_passed": True,
             "failed": False,
             "failure_cause": "none",
@@ -96,6 +105,15 @@ def _alert_rows() -> list[dict[object, object]]:
             "reason": "ssn",
             "session_id": "5927034d-40de-4882-8ac2-3fe2c7dbfc7d",
         }
+    ]
+
+
+def _doom_loop_rows() -> list[dict[object, object]]:
+    return [
+        {"name": "flag_rollout_complete", "reason": "rollout complete (clean)", "session_id": ATRX_SESSION},
+        {"name": "flag_rollout_complete", "reason": "rollout complete (clean)", "session_id": PHOTONIC_SESSION},
+        {"name": "flag_rollout_complete", "reason": "rollout complete (clean)", "session_id": FREECAD_SESSION},
+        {"name": "flag_doom_loop", "reason": "restarting the same service", "session_id": LOOP_SESSION},
     ]
 
 
@@ -189,6 +207,37 @@ def test_check_alerts_rejects_a_quiet_run(tmp_path: Path) -> None:
         check_alerts(_write_jsonl(tmp_path / "alerts.jsonl", rows))
 
 
+def test_check_doom_loop_accepts_planted_loop(tmp_path: Path) -> None:
+    summaries = _write_jsonl(tmp_path / "summaries.jsonl", _summary_rows())
+    check_doom_loop(_write_jsonl(tmp_path / "doom_loop.jsonl", _doom_loop_rows()), summaries)
+
+
+def test_check_doom_loop_accepts_a_known_session_flagged_as_a_loop(tmp_path: Path) -> None:
+    # A real trace with a genuine run of no-op steps may fairly get flagged
+    # instead of reaching `final`. Either verdict should be accepted.
+    summaries = _write_jsonl(tmp_path / "summaries.jsonl", _summary_rows())
+    rows = _doom_loop_rows()
+    for row in rows:
+        if row["session_id"] == PHOTONIC_SESSION:
+            row["name"] = "flag_doom_loop"
+            row["reason"] = "repeated no-op steps"
+    check_doom_loop(_write_jsonl(tmp_path / "doom_loop.jsonl", rows), summaries)
+
+
+def test_check_doom_loop_rejects_missing_verdict(tmp_path: Path) -> None:
+    summaries = _write_jsonl(tmp_path / "summaries.jsonl", _summary_rows())
+    rows = [row for row in _doom_loop_rows() if row["session_id"] != PHOTONIC_SESSION]
+    with pytest.raises(AssertionError, match="never reached a verdict"):
+        check_doom_loop(_write_jsonl(tmp_path / "doom_loop.jsonl", rows), summaries)
+
+
+def test_check_doom_loop_rejects_missing_loop_alert(tmp_path: Path) -> None:
+    summaries = _write_jsonl(tmp_path / "summaries.jsonl", _summary_rows())
+    rows = [row for row in _doom_loop_rows() if row["session_id"] != LOOP_SESSION]
+    with pytest.raises(AssertionError, match="extra session"):
+        check_doom_loop(_write_jsonl(tmp_path / "doom_loop.jsonl", rows), summaries)
+
+
 def test_check_project_and_cli(tmp_path: Path) -> None:
     output = tmp_path / "output"
     output.mkdir()
@@ -199,6 +248,7 @@ def test_check_project_and_cli(tmp_path: Path) -> None:
     _write_jsonl(output / "frustration.jsonl", _frustration_rows())
     _write_jsonl(output / "categories.jsonl", _category_rows())
     _write_jsonl(alerts / "alerts.jsonl", _alert_rows())
+    _write_jsonl(alerts / "doom_loop.jsonl", _doom_loop_rows())
     check_project(tmp_path)
     assert main([str(tmp_path)]) == 0
 
