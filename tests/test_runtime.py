@@ -1915,6 +1915,82 @@ pipelines:
     ]
 
 
+def test_later_group_map_starts_before_earlier_reduce_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import asyncio
+import time
+
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label = dspy.Predict(Label)
+
+
+def split(record, ctx):
+    ctx.emit({"id": record["id"], "text": record["text"]})
+
+
+async def merge(children, ctx):
+    if ctx.parent["id"] == "a":
+        await asyncio.sleep(0.05)
+    return {
+        "id": ctx.parent["id"],
+        "label": children[0]["label"],
+        "reduce_finished": time.perf_counter(),
+    }
+""",
+        """
+from: ./stages
+lm:
+  cache: false
+  max_concurrent: 4
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - group:
+          expand: split
+          pipeline:
+            - map: label
+          reduce: merge
+""",
+        [{"id": "a", "text": "trace-a"}, {"id": "b", "text": "trace-b"}],
+    )
+    FakeLM = install_fake_lm(monkeypatch, {"*": chat_completion(label="ITEM")}, sleep=0.02)
+    calls: list[tuple[float, str]] = []
+    call_lock = threading.Lock()
+    original = FakeLM.__call__
+
+    def tracking(self, *args, **kwargs):
+        payload = f"{args} {kwargs}"
+        with call_lock:
+            calls.append((time.perf_counter(), payload))
+        return original(self, *args, **kwargs)
+
+    FakeLM.__call__ = tracking
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    stream = io.StringIO()
+
+    run_config(config, progress=True, progress_stream=stream)
+
+    rows = read_jsonl(tmp_path / "output.jsonl")
+    assert [(row["id"], row["label"]) for row in rows] == [("a", "ITEM"), ("b", "ITEM")]
+    map_b_starts = [started for started, payload in calls if "trace-b" in payload]
+    assert map_b_starts
+    assert min(map_b_starts) < rows[0]["reduce_finished"]
+    rendered = progress_text(stream)
+    assert any("map: label" in line and "2/2" in line for line in rendered.splitlines())
+
+
 def test_lm_missing_input_field_has_clear_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = write_project(
         tmp_path,

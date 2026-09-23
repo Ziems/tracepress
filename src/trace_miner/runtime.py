@@ -443,28 +443,32 @@ class _Runtime:
             display_immediately=False,
             close_after_advance=True,
         )
-        outputs = []
         try:
-            for env in envelopes:
-                nested_outputs = await self._process_expand_group(
-                    spec,
-                    env,
-                    depth=self._depth_for(active_group),
-                    reduce_progress=task,
-                )
-                outputs.extend(_Envelope(out.record, out.path, active_group) for out in nested_outputs)
+            depth = self._depth_for(active_group)
+            groups = [
+                self._open_group(spec, env, depth=depth, reduce_progress=task) for env in envelopes
+            ]
+            nested_groups = await asyncio.gather(
+                *(self._finish_group(group) for group in groups),
+                return_exceptions=True,
+            )
+            outputs: list[_Envelope] = []
+            first_error: BaseException | None = None
+            for result in nested_groups:
+                if isinstance(result, BaseException):
+                    if first_error is None:
+                        first_error = result
+                    continue
+                outputs.extend(_Envelope(out.record, out.path, active_group) for out in result)
+            if first_error is not None:
+                raise first_error
             return outputs
         finally:
             task.close()
 
-    async def _process_expand_group(
-        self,
-        spec: GroupSpec,
-        env: _Envelope,
-        depth: int,
-        reduce_progress: _ProgressTask | None,
-    ) -> list[_Envelope]:
-        group = self._open_group(spec, env, depth=depth, reduce_progress=reduce_progress)
+    async def _finish_group(self, group: _GroupState) -> list[_Envelope]:
+        env = group.parent_env
+        spec = group.spec
         try:
             try:
                 emitted = await self.call_stage_for_env(
@@ -473,7 +477,7 @@ class _Runtime:
                     parent=env.record,
                     group_id=group.group_id,
                     key=None,
-                    depth=depth,
+                    depth=group.depth,
                     failures=group.failures,
                 )
             except Exception as exc:
@@ -767,6 +771,8 @@ class _ProgressReporter:
     def __init__(self, enabled: bool | None, stream: TextIO | None = None):
         self.stream = stream
         self.enabled = enabled
+        self._progress: Progress | None = None
+        self._shared: dict[tuple[str, str], _ProgressTask] = {}
 
     def start(
         self,
@@ -777,45 +783,31 @@ class _ProgressReporter:
         close_after_advance: bool = False,
     ) -> _ProgressTask:
         disable = None if self.enabled is None else not self.enabled
-        return _ProgressTask(
-            kind,
-            name,
-            total,
-            self.stream,
-            disable if total > 0 else True,
-            display_immediately,
-            close_after_advance,
-        )
-
-
-class _ProgressTask:
-    def __init__(
-        self,
-        kind: str,
-        name: str,
-        total: int,
-        stream: TextIO | None,
-        disable: bool | None,
-        display_immediately: bool,
-        close_after_advance: bool,
-    ):
-        self.kind = kind
-        self.name = name
-        self.total = total
-        self.stream = stream
-        self.disable = disable
-        self.close_after_advance = close_after_advance
-        self.current = 0
-        self._progress: Progress | None = None
-        self._task_id: TaskID | None = None
-        self._closed = False
+        if total <= 0:
+            disable = True
+        share = display_immediately and not close_after_advance and disable is not True
+        key = (kind, name)
+        if share:
+            existing = self._shared.get(key)
+            if existing is not None and not existing._closed:
+                existing.add_total(total)
+                existing._users += 1
+                return existing
+        task = _ProgressTask(self, kind, name, total, disable, close_after_advance)
+        if share:
+            task._users = 1
+            task._share_key = key
+            self._shared[key] = task
         if display_immediately:
-            self.open()
+            task.open()
+        return task
 
-    def open(self) -> None:
-        if self._progress is not None or self._closed or self.disable is True:
-            return
-        force_terminal = None if self.disable is None else True
+    def ensure_progress(self, disable: bool | None) -> Progress | None:
+        if disable is True:
+            return None
+        if self._progress is not None:
+            return self._progress
+        force_terminal = None if disable is None else True
         is_tty = self.stream is None or bool(getattr(self.stream, "isatty", lambda: False)())
         console = Console(
             file=self.stream,
@@ -837,7 +829,49 @@ class _ProgressTask:
             expand=True,
         )
         self._progress.start()
-        self._task_id = self._progress.add_task(
+        return self._progress
+
+    def forget(self, task: "_ProgressTask") -> None:
+        if task._share_key is not None and self._shared.get(task._share_key) is task:
+            self._shared.pop(task._share_key, None)
+
+
+class _ProgressTask:
+    def __init__(
+        self,
+        reporter: _ProgressReporter,
+        kind: str,
+        name: str,
+        total: int,
+        disable: bool | None,
+        close_after_advance: bool,
+    ):
+        self.reporter = reporter
+        self.kind = kind
+        self.name = name
+        self.total = total
+        self.disable = disable
+        self.close_after_advance = close_after_advance
+        self.current = 0
+        self._progress: Progress | None = None
+        self._task_id: TaskID | None = None
+        self._closed = False
+        self._users = 0
+        self._share_key: tuple[str, str] | None = None
+
+    def add_total(self, count: int) -> None:
+        self.total += count
+        if self._progress is not None and self._task_id is not None:
+            self._progress.update(self._task_id, total=self.total)
+
+    def open(self) -> None:
+        if self._task_id is not None or self._closed or self.disable is True:
+            return
+        progress = self.reporter.ensure_progress(self.disable)
+        if progress is None:
+            return
+        self._progress = progress
+        self._task_id = progress.add_task(
             "",
             total=self.total,
             completed=self.current,
@@ -853,19 +887,36 @@ class _ProgressTask:
             self._progress.advance(self._task_id)
         self.current += 1
         if self.close_after_advance:
-            self._close_bar()
+            self._hide()
 
     def close(self) -> None:
+        if self._share_key is not None:
+            if self._closed:
+                return
+            self._users -= 1
+            if self._users > 0:
+                return
+            self.reporter.forget(self)
         if self._closed:
             return
-        self._close_bar()
         self._closed = True
+        self._hide()
 
-    def _close_bar(self) -> None:
-        if self._progress is not None:
-            self._progress.stop()
-            self._progress = None
-            self._task_id = None
+    def _hide(self) -> None:
+        progress = self._progress
+        task_id = self._task_id
+        self._progress = None
+        self._task_id = None
+        if progress is None or progress is not self.reporter._progress:
+            return
+        others = [tid for tid in progress.task_ids if tid != task_id]
+        if others:
+            if task_id is not None:
+                progress.remove_task(task_id)
+            progress.refresh()
+            return
+        progress.stop()
+        self.reporter._progress = None
 
 
 class _CheckpointStore:

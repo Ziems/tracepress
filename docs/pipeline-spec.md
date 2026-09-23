@@ -231,7 +231,7 @@ return reduce(survivors, parent)
 
 A filter that emits nothing drops that child. A step that emits several records contributes each of them. `on_child_error: partial` drops the failing child and records it on `ctx.failures`. `skip` does not call reduce.
 
-With `ordered: true`, sort the survivors by emit path before reduce. Language-model calls inside one step still run together, up to `lm.max_concurrent`.
+With `ordered: true`, sort the survivors by emit path before reduce. Parent groups run together, so one parent's reduce does not hold up the next parent's child steps. Language-model calls across those groups share `lm.max_concurrent`.
 
 Assert at end of run that every opened group has reduced or been skipped. A group left open is a bug and must be reported loudly, not silently dropped.
 
@@ -239,7 +239,7 @@ Assert at end of run that every opened group has reduced or been skipped. A grou
 
 Without a bound, a fast producer feeding a slow map stage holds the entire input in memory. Streaming expand makes this worse rather than better, because it starts child work eagerly.
 
-This section is intentionally post-MVP. The MVP runtime finishes one parent group before it needs a bound on records in flight.
+This section is intentionally post-MVP. Parent groups already overlap, and `lm.max_concurrent` bounds simultaneous language-model calls. Record-level `max_in_flight` backpressure is still future work.
 
 Bound the number of records in flight. `concurrency.max_in_flight` caps records that have been emitted and not yet retired, where retiring means reaching a reduce, being dropped by a filter, or being written to an output. When the system is at capacity, `ctx.emit` blocks in sync stages and awaits in async stages.
 
