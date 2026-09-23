@@ -1998,12 +1998,14 @@ pipelines:
     FakeLM = install_fake_lm(monkeypatch, {"*": chat_completion(label="ITEM")}, sleep=0.02)
     calls: list[tuple[float, str]] = []
     call_lock = threading.Lock()
+    both_maps = threading.Barrier(2, timeout=2)
     original = FakeLM.__call__
 
     def tracking(self, *args, **kwargs):
         payload = f"{args} {kwargs}"
         with call_lock:
             calls.append((time.perf_counter(), payload))
+        both_maps.wait()
         return original(self, *args, **kwargs)
 
     FakeLM.__call__ = tracking
@@ -2018,7 +2020,8 @@ pipelines:
     assert map_b_starts
     assert min(map_b_starts) < rows[0]["reduce_finished"]
     rendered = progress_text(stream)
-    assert any("map: label" in line and "2/2" in line for line in rendered.splitlines())
+    lines = [line for chunk in rendered.split("\r") for line in chunk.splitlines() if line]
+    assert any("map: label" in line and "2/2" in line for line in lines)
 
 
 def test_lm_missing_input_field_has_clear_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

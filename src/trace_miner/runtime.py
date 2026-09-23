@@ -896,6 +896,7 @@ class _ProgressTask:
         self.open()
         if self._progress is not None and self._task_id is not None:
             self._progress.advance(self._task_id)
+            self._progress.refresh()
         self.current += 1
         if self.close_after_advance:
             self._hide()
@@ -916,6 +917,8 @@ class _ProgressTask:
     def _hide(self) -> None:
         progress = self._progress
         task_id = self._task_id
+        completed = self.current
+        total = self.total
         self._progress = None
         self._task_id = None
         if progress is None or progress is not self.reporter._progress:
@@ -925,9 +928,15 @@ class _ProgressTask:
             if task_id is not None:
                 progress.remove_task(task_id)
             progress.refresh()
-            return
-        progress.stop()
-        self.reporter._progress = None
+        else:
+            progress.stop()
+            self.reporter._progress = None
+        # Live frames are easy to lose when the next stage reuses the stream.
+        # Write a finished line that stays in the log.
+        stream = progress.console.file
+        if stream is not None and total > 0:
+            stream.write(f"[trace-miner] {self.kind}: {self.name} {completed}/{total}\n")
+            stream.flush()
 
 
 class _CheckpointStore:
