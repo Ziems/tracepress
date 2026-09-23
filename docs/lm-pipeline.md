@@ -250,12 +250,23 @@ which uses `anthropic/claude-sonnet-5` on OpenRouter. A string value such as
 `default: gpt-4o-mini` is the model id on the inherited provider.
 
 `lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 64 and must be a
-positive integer.
+positive integer. It sizes two things, not just a semaphore: a dedicated thread pool for
+dispatching blocking LM calls (rather than `asyncio.to_thread`'s shared default pool, which
+caps at `min(32, cpu_count+4)` regardless of this setting), and LiteLLM's underlying HTTP
+connection pool via `litellm.sync_transport` (LiteLLM otherwise inherits `httpx`'s default
+100-connection cap). Without both, raising `lm.max_concurrent` past those hidden ceilings has
+no effect. Measured on a real 263-trace/17,501-call fresh (uncached) scan: ~7.2 records/sec
+before this fix, ~62 records/sec after, at `max_concurrent: 256`.
 
 `lm.cache` enables DSPy's LM request cache. It defaults to `true` so identical provider calls
 are reused. Set it to `false` to force a fresh call every time. This is not the post-MVP
 record-level pipeline cache. The cache directory is `~/.trace-miner/cache`
 (override the home directory with `TRACE_MINER_HOME`).
+
+`lm.max_tokens` caps the number of tokens each LM call may generate, passed straight through to
+`dspy.LM(..., max_tokens=...)`. It is unset by default, which means no cap is applied on Trace
+Miner's side — the provider/model's own ceiling governs instead. It applies to every LM stage;
+there is no per-role or per-step override. Must be a positive integer when provided.
 
 The resolved model id is passed to the LM adapter/provider. It is not a signature input field
 and is not visible to the module unless the adapter's backend chooses to bind it there.

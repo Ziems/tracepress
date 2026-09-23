@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import functools
 import hashlib
 import inspect
 import json
@@ -201,6 +203,7 @@ class _Runtime:
         self._root_counter = 0
         self._open_groups: list[_GroupState] = []
         self._lm_semaphore: asyncio.Semaphore | None = None
+        self._lm_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._dspy_lms: dict[tuple[str, str], Any] = {}
         self.progress = _ProgressReporter(progress, progress_stream)
         self.append_outputs = append_outputs
@@ -229,6 +232,7 @@ class _Runtime:
             caught = exc
             raise
         finally:
+            self.close()
             self.stats.elapsed_s = time.perf_counter() - started
             depth, width = _pipeline_span(self.config)
             capture_pipeline_finished_async(
@@ -663,6 +667,7 @@ class _Runtime:
         if not choices:
             return
         configure_lm_cache()
+        _configure_lm_connection_pool(self.config.lm_max_concurrent)
         lms: dict[tuple[str, str], Any] = {}
         api_keys: dict[str, str] = {}
         for provider_name, model in choices:
@@ -676,7 +681,7 @@ class _Runtime:
                     )
                 api_keys[provider_name] = api_key
             lms[(provider_name, model)] = _make_lm(
-                provider_name, model, api_key, self.config.lm_cache, provider.extra_body
+                provider_name, model, api_key, self.config.lm_cache, self.config.lm_max_tokens, provider.extra_body
             )
         self._dspy_lms = lms
 
@@ -685,6 +690,26 @@ class _Runtime:
             self._lm_semaphore = asyncio.Semaphore(self.config.lm_max_concurrent)
         return self._lm_semaphore
 
+    def _lm_thread_pool(self) -> concurrent.futures.ThreadPoolExecutor:
+        # asyncio.to_thread's shared default executor caps at min(32, cpu_count+4)
+        # threads, silently limiting real LM concurrency far below lm.max_concurrent
+        # on most machines. A dedicated pool sized to match keeps the semaphore
+        # meaningful instead of gating on a smaller, hidden ceiling.
+        if self._lm_executor is None:
+            self._lm_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.config.lm_max_concurrent, thread_name_prefix="trace-miner-lm"
+            )
+        return self._lm_executor
+
+    def close(self) -> None:
+        if self._lm_executor is not None:
+            self._lm_executor.shutdown(wait=False)
+            self._lm_executor = None
+
+    async def _run_in_lm_pool(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._lm_thread_pool(), functools.partial(fn, *args, **kwargs))
+
     async def _invoke_lm(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
         if stage.uses_jev:
             return await self._invoke_jev(stage, kwargs)
@@ -692,7 +717,7 @@ class _Runtime:
 
     async def _invoke_jev(self, stage: StageRef, kwargs: dict[str, Any]) -> Any:
         async with self._lm_slot():
-            prediction = await asyncio.to_thread(stage.target, **kwargs)
+            prediction = await self._run_in_lm_pool(stage.target, **kwargs)
         self.stats.record_lm(getattr(prediction, "_jev_usage", None))
         return prediction
 
@@ -700,7 +725,7 @@ class _Runtime:
         assert stage.lm_provider is not None and stage.lm_model is not None
         lm = self._dspy_lms[(stage.lm_provider, stage.lm_model)]
         async with self._lm_slot():
-            prediction, usage = await asyncio.to_thread(_invoke_dspy_sync, stage.target, kwargs, lm)
+            prediction, usage = await self._run_in_lm_pool(_invoke_dspy_sync, stage.target, kwargs, lm)
         self.stats.record_lm(usage)
         return prediction
 
@@ -1045,6 +1070,7 @@ class _StreamRun:
             caught = exc
             raise
         finally:
+            self.runtime.close()
             self.runtime.stats.elapsed_s = time.perf_counter() - started
             self.progress.close()
             depth, width = _pipeline_span(self.config)
@@ -1448,16 +1474,35 @@ def _iter_stages(config: Config) -> Iterable[StageRef]:
         yield from walk(pipeline.steps)
 
 
+def _configure_lm_connection_pool(max_concurrent: int) -> None:
+    # httpx's own HTTPTransport defaults to a 100-connection cap. LiteLLM's sync
+    # HTTPHandler builds its client with no explicit `limits=`, so it inherits that
+    # cap regardless of lm.max_concurrent -- silently bottlenecking every LM call
+    # once max_concurrent exceeds it. LiteLLM picks up a transport override from
+    # this module-level attribute if set (see
+    # litellm.llms.custom_httpx.http_handler.HTTPHandler._create_sync_transport),
+    # so size it to match what we actually asked for.
+    import httpx
+    import litellm
+
+    litellm.sync_transport = httpx.HTTPTransport(
+        limits=httpx.Limits(max_connections=max_concurrent, max_keepalive_connections=max_concurrent)
+    )
+
+
 def _make_lm(
     provider: str,
     model: str,
     api_key: str,
     cache: bool,
+    max_tokens: int | None,
     extra_body: dict[str, Any] | None,
 ) -> Any:
     import dspy
 
     kwargs: dict[str, Any] = {"api_key": api_key, "cache": cache, "timeout": 120}
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
     return dspy.LM(f"{provider}/{model}", **kwargs)

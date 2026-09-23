@@ -1607,6 +1607,104 @@ pipelines:
         load_config(config)
 
 
+def test_lm_max_tokens_is_passed_to_the_lm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label = dspy.Predict(Label)
+""",
+        """
+from: ./stages
+lm:
+  max_tokens: 256
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    FakeLM = install_fake_lm(monkeypatch, {"*": chat_completion(label="ORE")})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    loaded = load_config(config)
+    assert loaded.lm_max_tokens == 256
+    run_config(loaded)
+    assert FakeLM.instances[0].init_kwargs["max_tokens"] == 256
+
+
+def test_lm_max_tokens_defaults_to_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label = dspy.Predict(Label)
+""",
+        """
+from: ./stages
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    FakeLM = install_fake_lm(monkeypatch, {"*": chat_completion(label="ORE")})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    loaded = load_config(config)
+    assert loaded.lm_max_tokens is None
+    run_config(loaded)
+    assert "max_tokens" not in FakeLM.instances[0].init_kwargs
+
+
+def test_lm_max_tokens_must_be_a_positive_integer(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        """
+import dspy
+
+
+class Label(dspy.Signature):
+    text: str = dspy.InputField()
+    label: str = dspy.OutputField()
+
+
+label = dspy.Predict(Label)
+""",
+        """
+from: ./stages
+lm:
+  max_tokens: 0
+pipelines:
+  - in: input.jsonl
+    out: output.jsonl
+    pipeline:
+      - map: label
+""",
+        [{"id": "a", "text": "ore"}],
+    )
+    with pytest.raises(ConfigError, match="lm.max_tokens"):
+        load_config(config)
+
+
 def test_lm_pydantic_output_is_structured_and_jsonl_writable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

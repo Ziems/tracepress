@@ -16,6 +16,7 @@ from trace_miner.model import (
     DEFAULT_LM_CACHE,
     DEFAULT_LM_MODEL,
     DEFAULT_LM_MAX_CONCURRENT,
+    DEFAULT_LM_MAX_TOKENS,
     DEFAULT_LM_PROVIDER,
     DEFAULT_REDUCE_LM_MODEL,
     LM_MODEL_ROLES,
@@ -34,7 +35,7 @@ from trace_miner.model import (
 
 
 _KNOWN_TOP_LEVEL = {"from", "defaults", "id_field", "pipelines", "concurrency", "lm"}
-_KNOWN_LM_KEYS = {"cache", "default", "max_concurrent", "provider", *LM_MODEL_ROLES}
+_KNOWN_LM_KEYS = {"cache", "default", "max_concurrent", "max_tokens", "provider", *LM_MODEL_ROLES}
 _KNOWN_STEP_OPTIONS = {"stage", "lm"}
 _KNOWN_PER_STEP_LM_KEYS = {"model", "provider"}
 _KNOWN_LM_CHOICE_KEYS = {"model", "provider"}
@@ -73,7 +74,7 @@ def load_config(path: str | Path) -> Config:
 
     module = _load_stage_module(raw["from"], base_dir)
     defaults = _parse_defaults(raw.get("defaults", {}))
-    lm_models, lm_max_concurrent, lm_cache = _parse_lm_config(raw.get("lm"))
+    lm_models, lm_max_concurrent, lm_cache, lm_max_tokens = _parse_lm_config(raw.get("lm"))
     id_field = raw.get("id_field")
     if id_field is not None and not isinstance(id_field, str):
         raise ConfigError("`id_field` must be a string when provided.")
@@ -98,6 +99,7 @@ def load_config(path: str | Path) -> Config:
         lm_models.default.model,
         lm_max_concurrent,
         lm_cache,
+        lm_max_tokens,
         pipelines,
     )
 
@@ -119,12 +121,13 @@ def _parse_defaults(raw: Any) -> Defaults:
     return Defaults(on_child_error, ordered)
 
 
-def _parse_lm_config(raw: Any) -> tuple[LmModels, int, bool]:
+def _parse_lm_config(raw: Any) -> tuple[LmModels, int, bool, int | None]:
     if raw is None:
         return (
             _lm_models(DEFAULT_LM_PROVIDER, None, {}, default_was_set=False),
             DEFAULT_LM_MAX_CONCURRENT,
             DEFAULT_LM_CACHE,
+            DEFAULT_LM_MAX_TOKENS,
         )
     if not isinstance(raw, dict):
         raise ConfigError("`lm` must be a mapping.")
@@ -154,7 +157,15 @@ def _parse_lm_config(raw: Any) -> tuple[LmModels, int, bool]:
     cache = raw.get("cache", DEFAULT_LM_CACHE)
     if not isinstance(cache, bool):
         raise ConfigError("`lm.cache` must be a boolean when provided.")
-    return _lm_models(provider, default, by_role, default_was_set=default_was_set), max_concurrent, cache
+    max_tokens = raw.get("max_tokens", DEFAULT_LM_MAX_TOKENS)
+    if max_tokens is not None and (not isinstance(max_tokens, int) or max_tokens <= 0):
+        raise ConfigError("`lm.max_tokens` must be a positive integer when provided.")
+    return (
+        _lm_models(provider, default, by_role, default_was_set=default_was_set),
+        max_concurrent,
+        cache,
+        max_tokens,
+    )
 
 
 def _lm_models(

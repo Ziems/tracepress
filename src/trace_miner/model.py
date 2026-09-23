@@ -15,6 +15,7 @@ DEFAULT_LM_MODEL = "deepseek/deepseek-v4.1-flash"
 DEFAULT_REDUCE_LM_MODEL = "anthropic/claude-sonnet-5"
 DEFAULT_LM_MAX_CONCURRENT = 64
 DEFAULT_LM_CACHE = True
+DEFAULT_LM_MAX_TOKENS = None
 LM_MODEL_ROLES = ("alert", "expand", "filter", "map", "reduce")
 
 
@@ -117,6 +118,7 @@ class Config:
     lm_default_model: str
     lm_max_concurrent: int
     lm_cache: bool
+    lm_max_tokens: int | None
     pipelines: tuple[PipelineSpec, ...]
 
 

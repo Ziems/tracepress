@@ -49,6 +49,7 @@ id_field: session_id            # optional; names the record in errors and alert
 lm:                             # optional LM defaults
   max_concurrent: 64
   cache: true                   # LM cache under ~/.trace-miner/cache
+  max_tokens: 4096               # optional cap on generated tokens per call
   default:
     provider: openrouter        # openrouter, openai, or anthropic
     model: deepseek/deepseek-v4.1-flash
