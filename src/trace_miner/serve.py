@@ -303,7 +303,7 @@ def _build_app(
             return PlainTextResponse(f"Invalid JSON: {exc}\n", status_code=400)
         if not isinstance(record, dict):
             return PlainTextResponse("Record must be a JSON object.\n", status_code=400)
-        _append_record(root_input, record)
+        _append_record(root_input, sessions.note(record))
         wake.set()
         return Response(status_code=202)
 
@@ -327,6 +327,7 @@ def _build_app(
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
+    sessions = _Sessions(config.id_field)
     return Starlette(
         routes=[
             Route("/v1/records", records, methods=["POST"]),
@@ -364,8 +365,11 @@ def _display_url(host: str, port: int) -> str:
 def _event_filter(config: Config, query: dict[str, str]) -> tuple[str, str, str]:
     output = query.get("output", "")
     if not output:
-        raise _RequestError(400, "Missing `output`.")
-    if output not in published_outputs(config):
+        names = list(published_outputs(config))
+        if len(names) != 1:
+            raise _RequestError(400, "Missing `output`.")
+        output = names[0]
+    elif output not in published_outputs(config):
         raise _RequestError(404, f"Unknown output `{output}`.")
     if config.id_field:
         field = config.id_field
@@ -386,6 +390,27 @@ def _matches(record: Any, field: str, value: str) -> bool:
     if not isinstance(record, dict) or field not in record:
         return False
     return str(record[field]) == value
+
+
+class _Sessions:
+    """Steps already accepted for each id_field value."""
+
+    def __init__(self, id_field: str | None):
+        self.id_field = id_field
+        self._steps: dict[str, list[dict[str, Any]]] = {}
+
+    def note(self, posted: dict[str, Any]) -> dict[str, Any]:
+        if not self.id_field:
+            return posted
+        raw_id = posted.get(self.id_field)
+        if raw_id is None or isinstance(raw_id, dict | list):
+            return posted
+        step = {key: value for key, value in posted.items() if key != "steps"}
+        history = self._steps.setdefault(str(raw_id), [])
+        history.append(step)
+        record = dict(step)
+        record["steps"] = [dict(item) for item in history]
+        return record
 
 
 def _append_record(path: Path, record: Any) -> None:

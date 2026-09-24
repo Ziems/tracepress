@@ -2,7 +2,6 @@
 
 import json
 import sys
-import time
 from pathlib import Path
 
 from trace_miner.client import Client
@@ -15,16 +14,14 @@ def main() -> None:
     for trace in _load_traces(path):
         session_id = str(trace.get("session_id") or "")
         task = str((trace.get("eval") or {}).get("task_name") or session_id)
-        with client.watch("alerts", session_id=session_id) as alerts:
+        with client.watch_events(session_id=session_id) as events:
             for step in trace.get("steps") or []:
-                if alerts.latest:
-                    _stop(task, step.get("step_id"), alerts.latest)
                 record = _step_record(session_id, step)
                 print(f"post {task} step {record['step_id']}", flush=True)
                 client.post_step(record)
-                _wait_for_alert(alerts, 1.0)
-                if alerts.latest:
-                    _stop(task, record["step_id"], alerts.latest)
+                for alert in events.take(timeout=1.0):
+                    if alert.name == "flag_sensitive_step":
+                        raise SystemExit(f"aborted {task} step {record['step_id']}: {alert.reason}")
     print("posted every trace")
 
 
@@ -61,16 +58,6 @@ def _observation_text(step: dict) -> str:
 def _clip(text: str, limit: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 3] + "..."
-
-
-def _wait_for_alert(alerts, timeout: float) -> None:
-    deadline = time.monotonic() + timeout
-    while alerts.latest is None and time.monotonic() < deadline:
-        time.sleep(0.02)
-
-
-def _stop(task: str, step_id: object, alert) -> None:
-    raise SystemExit(f"aborted {task} step {step_id}: {alert.reason}")
 
 
 if __name__ == "__main__":

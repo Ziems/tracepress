@@ -112,13 +112,14 @@ On the eval host:
 from trace_miner.client import Client
 
 client = Client("http://pipeline-host:8765")
-with client.watch("alerts", session_id="r1") as alerts:
+with client.watch_events(session_id="r1") as events:
     client.post_step(step)
-    if alerts.latest:
-        raise SystemExit(alerts.latest.reason)
+    for alert in events.take():
+        if alert.name == "flag_sensitive_step":
+            raise SystemExit(alert.reason)
 ```
 
-`alerts.latest` stays empty until an alert fires. The eval machine does not read the files.
+`take()` returns the alerts that have arrived since the last call. The eval machine does not read the files.
 
 `python client_demo.py` in the new project posts the bundled traces and stops on the planted SSN:
 

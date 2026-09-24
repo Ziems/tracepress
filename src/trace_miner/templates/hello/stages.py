@@ -362,18 +362,10 @@ detect_doom_loop = _DetectDoomLoop()
 
 
 def flag_doom_loop(record):
-    """Alert when the reduce over the current step window judges a doom loop."""
+    """Alert when the reduce over the submitted steps judges a doom loop."""
     if not record.get("doom_loop"):
         return None
     return record.get("pattern") or "stuck repeating itself"
-
-
-def flag_rollout_complete(record):
-    """Alert once when the client marks its last posted step `final`."""
-    if not record.get("final"):
-        return None
-    verdict = "doom loop" if record.get("doom_loop") else "clean"
-    return f"rollout complete ({verdict})"
 
 
 def compact_harbor_classification(record):

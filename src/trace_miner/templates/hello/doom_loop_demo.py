@@ -1,20 +1,15 @@
-"""Post a trace's steps into a served doom_loop pipeline, one step at a time.
+"""Post each trace one step at a time into a served doom_loop pipeline.
 
-Each post carries a sliding window of the last WINDOW_SIZE steps rather than the
-whole trace so far, so the reduce stays a constant-size judgment call at every
-step. DSPy's cache means re-summarizing a step already in an earlier window costs
-nothing. The last step of each trace is posted with `final: true`, which is the
-signal `flag_rollout_complete` watches for.
+The server remembers every step already submitted for the session. An alert
+named flag_doom_loop means stop. Silence through the posted steps means clean.
 """
 
 import json
 import sys
-import time
 from pathlib import Path
 
 from trace_miner.client import Client
 
-WINDOW_SIZE = 8
 LOOP_TASK = "terminal-bench/coq-block-bound"
 
 # terminal-bench/coq-block-bound really is a doom loop: the agent edits Main.v,
@@ -71,55 +66,30 @@ def main() -> None:
 
 
 def _run_trace(client: Client, session_id: str, task: str, steps: list[dict]) -> str:
-    window: list[dict] = []
-    with client.watch("doom_loop", session_id=session_id) as alerts:
+    with client.watch_events(session_id=session_id) as events:
         for i, step in enumerate(steps, start=1):
-            window.append(step)
-            if len(window) > WINDOW_SIZE:
-                window.pop(0)
-            record = {"session_id": session_id, "steps": window, "final": i == len(steps)}
             print(f"post {task} step {i}/{len(steps)}", flush=True)
-            client.post_step(record)
-            # Most steps never fire an alert, so this is a brief opportunistic
-            # check, not a wait for the server to finish — `serve` processes
-            # posts strictly in order, so racing ahead is safe; we only pay a
-            # longer wait once, below, for whichever verdict is still in flight.
-            _wait_for_alert(alerts, 0.3)
-            outcome = _outcome_from_alert(alerts, task, i)
-            if outcome is not None:
-                return outcome
-        # Posting outruns processing on a long trace, so give the server real
-        # time to drain its backlog and deliver the last step's verdict. 60s
-        # was measured too short here: six traces posted back to back build a
-        # real backlog, and a trace's own verdict doesn't arrive until the
-        # server has worked through everything queued ahead of it too.
-        _wait_for_alert(alerts, 300.0)
-        outcome = _outcome_from_alert(alerts, task, len(steps))
-        if outcome is not None:
-            return outcome
-    print(f"{task}: no verdict posted", flush=True)
+            client.post_step({"session_id": session_id, **step})
+            if _flagged(events.take(timeout=0.3), task, i):
+                return "doom_loop"
+        # Posts run ahead of the LM. Wait once for this session's judgment.
+        if _flagged(events.take(timeout=300.0), task, len(steps)):
+            return "doom_loop"
+    print(f"{task}: no doom loop", flush=True)
     return "clean"
 
 
-def _outcome_from_alert(alerts, task: str, step: int) -> str | None:
-    if not alerts.latest:
-        return None
-    reason = alerts.latest.reason or ""
-    if reason.startswith("rollout complete"):
-        print(f"{task}: {reason}", flush=True)
-        return "doom_loop" if "doom loop" in reason else "clean"
-    print(f"doom loop in {task} at step {step}: {reason}", flush=True)
-    return "doom_loop"
+def _flagged(alerts, task: str, step: int) -> bool:
+    for alert in alerts:
+        if alert.name != "flag_doom_loop":
+            continue
+        print(f"doom loop in {task} at step {step}: {alert.reason}", flush=True)
+        return True
+    return False
 
 
 def _load_traces(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _wait_for_alert(alerts, timeout: float) -> None:
-    deadline = time.monotonic() + timeout
-    while alerts.latest is None and time.monotonic() < deadline:
-        time.sleep(0.02)
 
 
 if __name__ == "__main__":

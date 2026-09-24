@@ -71,21 +71,24 @@ def flag_doom_loop(record):
 
 ## N4. Client
 
-`Client` is a sync helper. `post_step` only sends. `watch` returns the alert stream for one named pipeline. A background thread reads it. `alerts.latest` stays `None` until an alert event arrives. A newer event replaces it. `alerts.latest.reason` is the string a Python stage returned. A DSPy alert leaves it empty and puts the module outputs on `alerts.latest.record`. `alerts.latest.name` is the stage name. Any alert is stop-worthy. The library does not raise.
+`Client` is a sync helper. `post_step` only sends. `watch_events` reads the alert stream for the one pipeline this server is running. A background thread reads it. `events.take()` returns every alert that arrived since the last call, in arrival order. `alert.reason` is the string a Python stage returned. A DSPy alert leaves it empty and puts the module outputs on `alert.record`. `alert.name` is the stage name. The caller decides which names are worth acting on. The library does not raise.
 
 ```python
 client = Client("http://pipeline-host:8765")
 
-with client.watch("alerts", rollout_id="r1") as alerts:
+with client.watch_events(rollout_id="r1") as events:
     for step in agent.run():
-        if alerts.latest:
-            raise EvalAborted(alerts.latest.reason)
         client.post_step(step)
+        for alert in events.take():
+            if alert.name == "flag_doom_loop":
+                raise EvalAborted(alert.reason)
 ```
 
-The keyword is the field name. `rollout_id` is just the field in this example; `watch("alerts", session_id="s1")` matches `session_id` instead. `watch` opens the SSE connection before the loop starts, reconnects with `Last-Event-ID` if the connection drops, and joins the listener on exit. One step may still run after the alert, because the check is at the top of the loop. The posted record already carries the same id.
+The keyword is the field name. `rollout_id` is just the field in this example; `watch_events(session_id="s1")` matches `session_id` instead. `watch_events` opens the SSE connection before the loop starts, reconnects with `Last-Event-ID` if the connection drops, and joins the listener on exit. `take()` without a timeout returns whatever is already queued. `take(timeout=1)` waits up to that many seconds for the next alert. The posted record already carries the same id.
 
-HTTP remains the contract. Another language can POST and read `text/event-stream` without this helper.
+Each POST is one step. The server keeps every step already accepted for that id and runs the pipeline on the session so far. The inbox line is the latest step plus `steps`, the list of submitted steps. Restarting the server forgets that list.
+
+HTTP remains the contract. Another language can POST and read `text/event-stream` without this helper. Omit `output` on `GET /v1/events` when the server has one pipeline.
 
 ## N5. Non-goals
 

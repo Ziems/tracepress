@@ -110,9 +110,6 @@ def _alert_rows() -> list[dict[object, object]]:
 
 def _doom_loop_rows() -> list[dict[object, object]]:
     return [
-        {"name": "flag_rollout_complete", "reason": "rollout complete (clean)", "session_id": ATRX_SESSION},
-        {"name": "flag_rollout_complete", "reason": "rollout complete (clean)", "session_id": PHOTONIC_SESSION},
-        {"name": "flag_rollout_complete", "reason": "rollout complete (clean)", "session_id": FREECAD_SESSION},
         {"name": "flag_doom_loop", "reason": "restarting the same service", "session_id": LOOP_SESSION},
     ]
 
@@ -212,29 +209,10 @@ def test_check_doom_loop_accepts_planted_loop(tmp_path: Path) -> None:
     check_doom_loop(_write_jsonl(tmp_path / "doom_loop.jsonl", _doom_loop_rows()), summaries)
 
 
-def test_check_doom_loop_accepts_a_known_session_flagged_as_a_loop(tmp_path: Path) -> None:
-    # A real trace with a genuine run of no-op steps may fairly get flagged
-    # instead of reaching `final`. Either verdict should be accepted.
-    summaries = _write_jsonl(tmp_path / "summaries.jsonl", _summary_rows())
-    rows = _doom_loop_rows()
-    for row in rows:
-        if row["session_id"] == PHOTONIC_SESSION:
-            row["name"] = "flag_doom_loop"
-            row["reason"] = "repeated no-op steps"
-    check_doom_loop(_write_jsonl(tmp_path / "doom_loop.jsonl", rows), summaries)
-
-
-def test_check_doom_loop_rejects_missing_verdict(tmp_path: Path) -> None:
-    summaries = _write_jsonl(tmp_path / "summaries.jsonl", _summary_rows())
-    rows = [row for row in _doom_loop_rows() if row["session_id"] != PHOTONIC_SESSION]
-    with pytest.raises(AssertionError, match="never reached a verdict"):
-        check_doom_loop(_write_jsonl(tmp_path / "doom_loop.jsonl", rows), summaries)
-
-
 def test_check_doom_loop_rejects_missing_loop_alert(tmp_path: Path) -> None:
     summaries = _write_jsonl(tmp_path / "summaries.jsonl", _summary_rows())
-    rows = [row for row in _doom_loop_rows() if row["session_id"] != LOOP_SESSION]
-    with pytest.raises(AssertionError, match="extra session"):
+    rows = [{"name": "flag_sensitive_step", "reason": "ssn", "session_id": LOOP_SESSION}]
+    with pytest.raises(AssertionError, match="never fired flag_doom_loop"):
         check_doom_loop(_write_jsonl(tmp_path / "doom_loop.jsonl", rows), summaries)
 
 

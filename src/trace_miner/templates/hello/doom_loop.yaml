@@ -13,4 +13,3 @@ pipelines:
             - map: summarize_harbor_step
           reduce: detect_doom_loop
       - alert: flag_doom_loop
-      - alert: flag_rollout_complete

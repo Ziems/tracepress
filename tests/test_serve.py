@@ -13,7 +13,7 @@ import pytest
 
 from trace_miner.client import Client
 from trace_miner.config import load_config
-from trace_miner.errors import ConfigError, PipelineExecutionError, TraceMinerError
+from trace_miner.errors import ConfigError
 from trace_miner.init import init_project
 from trace_miner.serve import start_serve
 
@@ -90,25 +90,40 @@ def read_event(response) -> tuple[str | None, dict]:
             data.append(line[5:].lstrip())
 
 
-def test_alert_sets_latest_for_the_matching_id(tmp_path: Path) -> None:
+def test_alert_arrives_for_the_matching_id(tmp_path: Path) -> None:
     config = write_project(tmp_path, STAGES, CONFIG, {"input.jsonl": []})
     server = start_serve(config, output=tmp_path / "alerts.jsonl", port=0, poll_interval=30, progress=False)
     try:
         client = Client(server.url)
-        with client.watch("alerts", rollout_id="r1") as alerts:
+        with client.watch_events(rollout_id="r1") as events:
             client.post_step({"rollout_id": "r1", "tool_calls": ["bash"]})
-            assert wait_until(lambda: {"rollout_id": "r1", "tool_calls": ["bash"]} in read_jsonl(tmp_path / "alerts.jsonl"))
-            assert alerts.latest is None
+            assert wait_until(
+                lambda: any(
+                    record.get("rollout_id") == "r1" and record.get("tool_calls") == ["bash"]
+                    for record in read_jsonl(tmp_path / "alerts.jsonl")
+                )
+            )
+            assert events.take() == []
 
             client.post_step({"rollout_id": "r2", "flag": True, "reason": "other"})
-            assert wait_until(lambda: any(record.get("rollout_id") == "r2" for record in read_jsonl(tmp_path / ".trace-miner" / "alerts" / "alerts.jsonl")))
-            assert alerts.latest is None
+            assert wait_until(
+                lambda: any(
+                    record.get("rollout_id") == "r2"
+                    for record in read_jsonl(tmp_path / ".trace-miner" / "alerts" / "alerts.jsonl")
+                )
+            )
+            assert events.take() == []
 
             client.post_step({"rollout_id": "r1", "flag": True, "reason": "repeated bash"})
-            assert wait_until(lambda: alerts.latest is not None)
-            assert alerts.latest is not None
-            assert alerts.latest.name == "doom_loop"
-            assert alerts.latest.reason == "repeated bash"
+            found: list = []
+
+            def arrived() -> bool:
+                found.extend(events.take())
+                return any(alert.name == "doom_loop" for alert in found)
+
+            assert wait_until(arrived)
+            assert found[-1].name == "doom_loop"
+            assert found[-1].reason == "repeated bash"
     finally:
         server.close()
 
@@ -146,9 +161,8 @@ def test_unknown_output_name_is_rejected(tmp_path: Path) -> None:
     config = write_project(tmp_path, STAGES, CONFIG, {"input.jsonl": []})
     server = start_serve(config, port=0, poll_interval=30, progress=False)
     try:
-        with pytest.raises(TraceMinerError, match="404"):
-            with Client(server.url).watch("missing", rollout_id="r1"):
-                pass
+        with pytest.raises(HTTPError, match="404"):
+            urlopen(Request(f"{server.url}/v1/events?output=missing&field=rollout_id&rollout_id=r1"), timeout=5)
     finally:
         server.close()
 
@@ -180,13 +194,18 @@ def doom_loop(record):
     server = start_serve(config, port=0, poll_interval=30, progress=False)
     try:
         client = Client(server.url)
-        with client.watch("alerts", rollout_id="r1") as alerts:
+        with client.watch_events(rollout_id="r1") as events:
             client.post_step({"rollout_id": "r1", "boom": True})
             assert wait_until(lambda: server._thread is not None and server._thread.is_alive())
             client.post_step({"rollout_id": "r1", "flag": True, "reason": "still here"})
-            assert wait_until(lambda: alerts.latest is not None)
-            assert alerts.latest is not None
-            assert alerts.latest.reason == "still here"
+            found: list = []
+
+            def arrived() -> bool:
+                found.extend(events.take())
+                return any(alert.reason == "still here" for alert in found)
+
+            assert wait_until(arrived)
+            assert found[-1].reason == "still here"
     finally:
         server.close()
 

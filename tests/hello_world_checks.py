@@ -171,17 +171,6 @@ def check_doom_loop(alerts_path: Path, summaries_path: Path) -> None:
     for row in load_jsonl(alerts_path):
         by_session.setdefault(row.get("session_id"), []).append(row)
 
-    # Each real bundled trace should reach *some* verdict — either it ran clean
-    # to its `final: true` step, or the LM judge (fairly) called an early doom
-    # loop on it. Either is a correct application of the pipeline; only silence
-    # is a failure.
-    for session_id in known:
-        entries = by_session.get(session_id, [])
-        names = {entry.get("name") for entry in entries}
-        assert names & {"flag_doom_loop", "flag_rollout_complete"}, (
-            f"session {session_id} never reached a verdict, got {entries}"
-        )
-
     loop_sessions = [session_id for session_id in by_session if session_id not in known]
     assert loop_sessions, "expected an extra session for the real doom-loop trace"
     loop_entries = [entry for session_id in loop_sessions for entry in by_session[session_id]]

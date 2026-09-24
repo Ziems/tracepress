@@ -24,21 +24,26 @@ class Alert:
         return True
 
 
-class Alerts:
+class Events:
     def __init__(self) -> None:
-        self._latest: Alert | None = None
+        self._pending: list[Alert] = []
         self._lock = threading.Lock()
 
-    @property
-    def latest(self) -> Alert | None:
-        with self._lock:
-            return self._latest
+    def take(self, timeout: float | None = None) -> list[Alert]:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            with self._lock:
+                if self._pending or deadline is None or time.monotonic() >= deadline:
+                    found = list(self._pending)
+                    self._pending.clear()
+                    return found
+            time.sleep(0.02)
 
     def _note(self, record: Any) -> None:
         if not isinstance(record, dict) or not record.get("name"):
             return
         with self._lock:
-            self._latest = Alert(record)
+            self._pending.append(Alert(record))
 
 
 class Client:
@@ -63,18 +68,18 @@ class Client:
             raise TraceMinerError(f"POST /v1/records failed: {exc.reason}") from exc
 
     @contextmanager
-    def watch(self, output: str, **match: str) -> Iterator[Alerts]:
+    def watch_events(self, **match: str) -> Iterator[Events]:
         if len(match) != 1:
-            raise TraceMinerError("`watch` matches one field, for example watch('alerts', rollout_id='r1').")
+            raise TraceMinerError("`watch_events` matches one field, for example watch_events(session_id='s1').")
         field, value = next(iter(match.items()))
-        alerts = Alerts()
+        events = Events()
         stop = threading.Event()
         ready = threading.Event()
         error: list[BaseException] = []
         session = _WatchSession()
         thread = threading.Thread(
             target=self._listen,
-            args=(output, field, value, alerts, stop, ready, error, session),
+            args=(field, value, events, stop, ready, error, session),
             name="trace-miner-watch",
             daemon=True,
         )
@@ -90,7 +95,7 @@ class Client:
             thread.join(timeout=2)
             raise error[0]
         try:
-            yield alerts
+            yield events
         finally:
             stop.set()
             session.close()
@@ -98,10 +103,9 @@ class Client:
 
     def _listen(
         self,
-        output: str,
         field: str,
         value: str,
-        alerts: Alerts,
+        events: Events,
         stop: threading.Event,
         ready: threading.Event,
         error: list[BaseException],
@@ -109,7 +113,7 @@ class Client:
     ) -> None:
         last_id: str | None = None
         connected = False
-        query = urlencode([("output", output), ("field", field), (field, value)])
+        query = urlencode([("field", field), (field, value)])
         url = f"{self.base_url}/v1/events?{query}"
         while not stop.is_set():
             headers = self._headers({"Accept": "text/event-stream"})
@@ -148,7 +152,7 @@ class Client:
                         record = json.loads(data)
                     except json.JSONDecodeError:
                         continue
-                    alerts._note(record)
+                    events._note(record)
             except Exception:
                 if stop.is_set():
                     return

@@ -68,18 +68,7 @@ The later traces carry a frustrated user turn and a phone number. Those fire if 
 
 ## Doom loop
 
-`doom_loop.yaml` is served the same way as `alerts.yaml`, but its posted records carry a *window of recent
-steps* instead of one step. Its `group` runs `detect_doom_loop`, an LM reduce,
-over that window on every post, so the trace is judged again each time new
-steps arrive rather than only once at the end. `flag_doom_loop` alerts when the
-reduce says the agent is stuck repeating itself. `flag_rollout_complete` alerts
-once, when a posted record carries `final: true` — that's the built-in signal
-for "this rollout has finished and its last step was submitted."
-
-There's no server-side memory of a trace across posts, so the *client* keeps a
-sliding window of the last few steps and resends it on every post. DSPy's
-request cache means re-summarizing a step already seen in an earlier window is
-free; only the reduce judgment itself runs fresh each time.
+`doom_loop.yaml` is served the same way as `alerts.yaml`. Post one step at a time. The server remembers every step already submitted for that `session_id` and runs the group over that list. `flag_doom_loop` alerts when the reduce says the agent is stuck repeating itself. No alert means keep going.
 
 In one terminal:
 
@@ -123,8 +112,7 @@ of `detect_doom_loop`'s prompt flagged 23 of those 157 traces; most turned out
 to be traces like the two look-alikes here. Tightening the signature's
 criteria (see `AGENTS.md`) cut that to 1 false alarm out of 157.
 
-The three original bundled traces should finish with `rollout complete
-(clean)` too. A run of empty or no-op agent turns is idle, not a doom loop.
+The three original bundled traces may stay quiet. A run of empty or no-op agent turns is idle, not a doom loop. The real doom-loop trace must fire `flag_doom_loop`. The two look-alikes must not.
 
 ## What each file is
 
@@ -138,8 +126,7 @@ The three original bundled traces should finish with `rollout complete
   size. `doom_loop_demo.py` reads it.
 - `alerts.yaml` is served with `trace-miner serve`. `client_demo.py` posts steps
   over HTTP. The inbox is `.trace-miner/inbox/alerts.jsonl`.
-- `doom_loop.yaml` is served the same way. `doom_loop_demo.py` posts step
-  windows and watches for `final: true` to know a rollout ended.
+- `doom_loop.yaml` is served the same way. `doom_loop_demo.py` posts one step at a time and stops on `flag_doom_loop`.
 - `AGENTS.md` is the working guide for coding agents: how to run, add a
   pipeline, and write Python or LM stages.
 

@@ -75,7 +75,7 @@ python doom_loop_demo.py
 
 The group's `expand` (`split_harbor_steps`) and per-child `map`
 (`summarize_harbor_step`) are the same stages `summarize.yaml` uses. Only the
-reduce and the two alerts are new:
+reduce and the alert are new:
 
 ```yaml
 - group:
@@ -84,7 +84,6 @@ reduce and the two alerts are new:
       - map: summarize_harbor_step
     reduce: detect_doom_loop
 - alert: flag_doom_loop
-- alert: flag_rollout_complete
 ```
 
 ```python
@@ -154,13 +153,6 @@ def flag_doom_loop(record):
     if not record.get("doom_loop"):
         return None
     return record.get("pattern") or "stuck repeating itself"
-
-
-def flag_rollout_complete(record):
-    if not record.get("final"):
-        return None
-    verdict = "doom loop" if record.get("doom_loop") else "clean"
-    return f"rollout complete ({verdict})"
 ```
 
 `detect_doom_loop` is a **custom `dspy.Module`**, not a plain function — that
@@ -196,24 +188,11 @@ back to "repeats itself" without re-running that kind of check — the LM will
 happily pattern-match on "same tool called several times" unless told exactly
 what to exclude.
 
-The runtime has no memory of a group across separate `POST /v1/records` calls —
-each post opens and closes its own `expand`→`reduce` group. So a reduce that
-needs to see many steps needs the *client* to resend them: `doom_loop_demo.py`
-keeps a sliding window of the last 8 raw steps and posts
-`{"session_id", "steps": window, "final": ...}` on every step. `split_harbor_steps`
-expands that `steps` list, so the group and reduce run fresh, over the current
-window, at every post. Re-summarizing a step already seen in an earlier window
-costs nothing — it hits DSPy's cache.
+The server remembers every step already accepted for a session, keyed by `id_field`. Each POST is one step. The inbox line is that step plus `steps`, the list of steps submitted so far. `split_harbor_steps` expands that list. DSPy's cache skips re-summarizing a step it has already seen. The reduce still runs, because the list grew by one. Restarting the server forgets the list.
 
-`final` is a plain field, not a runtime concept. Set `final: true` on a
-posted record's last step for that rollout, and check `record.get("final")` in
-whatever stage should act on it — that's the whole mechanism for "this rollout
-has finished."
-
-`step_summary` is gathered from the children. A client watches the named
-pipeline and stops on `alerts.latest.reason`. A DSPy module used directly as
+`step_summary` is gathered from the children. A client calls `watch_events(session_id=...)` and acts on alerts whose `name` it cares about. `events.take()` returns every alert since the last call. A DSPy module used directly as
 `alert:` needs exactly one bool output. False sends nothing. True sends the
-module's other outputs on `alerts.latest.record`.
+module's other outputs on `alert.record`.
 
 ## Layout
 
@@ -223,7 +202,7 @@ module's other outputs on `alerts.latest.record`.
 | `alerts.yaml` | Named `alerts` pipeline for `serve` |
 | `client_demo.py` | Posts trajectory steps to a running `serve` and stops on an abort |
 | `doom_loop.yaml` | Named `doom_loop` pipeline for `serve` |
-| `doom_loop_demo.py` | Posts a sliding window of recent steps per trace; watches for a doom loop or `final` |
+| `doom_loop_demo.py` | Posts one step at a time and stops on `flag_doom_loop` |
 | `classify.yaml` | One Jev map over a prepared trajectory; no per-step summarize |
 | `stages.py` | Shared Python functions and DSPy signatures |
 | `input/trajectories.jsonl` | Three slim harbor traces |
