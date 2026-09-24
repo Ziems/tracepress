@@ -5,7 +5,8 @@ long-running execution mode that follows append-only JSONL inputs and processes 
 are written.
 
 `trace-miner serve` is the only command that starts this runtime. Posted records are appended to
-the pipeline's root input, and serve follows that file. There is no `stream` or `replay` command.
+`.trace-miner/inbox/<config-stem>.jsonl` beside the config, and serve follows that file. There is
+no `stream` or `replay` command.
 
 The goal is not to turn Trace Miner into a queue, scheduler, or distributed stream processor.
 The goal is a practical local process that can sit next to a growing `.jsonl` file and keep the
@@ -16,32 +17,31 @@ declared pipelines moving.
 Batch mode stays the default:
 
 ```bash
-uv run trace-miner run pipeline.yaml
+uv run trace-miner run pipeline.yaml --in traces.jsonl --out findings.jsonl
 ```
 
 Live mode is `serve`:
 
 ```bash
-uv run trace-miner serve pipeline.yaml
+uv run trace-miner serve pipeline.yaml --out findings.jsonl
 ```
 
-The follow runtime watches root input files, reads complete appended JSONL lines, runs the configured
-pipelines, and appends outputs to their declared JSONL files.
+The follow runtime watches the inbox, reads complete appended JSONL lines, runs the pipeline, and
+appends finished records to `--out` when that flag is set.
 
-The config topology remains the same. A pipeline is still a pipeline; a stage still cannot name
-a downstream destination; `tee` still names an output path in config. Following changes the
-runtime's read/write policy, not the shape of the graph.
+A stage still cannot name a downstream destination. `tee` still names a side path in config.
+Following changes the runtime's read/write policy. A config has one pipeline.
 
 ## S2. MVP boundary
 
 In scope:
 
 - Started only by `trace-miner serve`.
-- Follow append-only root input files.
+- Follow the append-only inbox file.
 - Treat a newline-terminated JSONL line as the unit of ingestion.
 - Ignore partial trailing lines until the newline arrives.
-- Append to pipeline `out` and `tee` files instead of overwriting them.
-- Remember one byte offset per root input, and resume from that checkpoint by default.
+- Append to `--out` and `tee` files instead of overwriting them. Skip `--out` when it is omitted.
+- Remember one byte offset for the inbox, and resume from that checkpoint by default.
 - Support `map`, `filter`, `stage`, `tee`, `alert`, and `expand` groups.
 - Preserve the existing async stage and LM concurrency behavior.
 - Reuse the existing compact progress reporting, but make it rate-oriented rather than
@@ -67,7 +67,7 @@ downstream pipelines. The next line is read after the current line's outputs are
 
 Streaming inputs are append-only JSONL files.
 
-The runtime records one byte offset per root input path. On startup:
+The runtime records one byte offset for the inbox. On startup:
 
 - If a checkpoint exists, seek to the saved offset.
 - If no checkpoint exists, default to `--from-start`.
@@ -82,7 +82,7 @@ line should stop loudly rather than silently corrupting the stream.
 
 ## S5. Checkpoints
 
-Store one byte offset per root input. Write it after that line's outputs, tees, and downstream
+Store one byte offset for the inbox. Write it after that line's outputs, tees, and downstream
 pipelines have been written. Resume from those offsets.
 
 Checkpoint state lives next to the config by default:
@@ -122,25 +122,11 @@ This is slower than buffered batch output but much easier to reason about.
 
 ## S7. Pipeline DAG semantics
 
-There are two reasonable ways to stream a multi-pipeline DAG:
+Serve follows one inbox and runs one pipeline:
 
-1. Write each pipeline output to disk and have downstream pipelines tail those files.
-2. Compile the config into an in-memory DAG and route emitted records directly to downstream
-   pipeline nodes while still writing declared outputs.
-
-Use option 2 for the eventual implementation. It preserves the config model while avoiding
-file-tail races between stages of the same process.
-
-For the streaming MVP, support one source-to-sink DAG inside one process:
-
-- Root inputs are tailed from disk.
-- Pipeline `out` and `tee` paths are still written to disk.
-- `alert` steps append to the pipeline's alert log. That log is not a DAG edge.
-- If another pipeline's `in` matches an upstream `out` or `tee`, records are routed in memory to
-  that downstream pipeline after the upstream write succeeds.
-
-This keeps streaming behavior consistent with batch DAG ordering without requiring users to run
-one process per intermediate file.
+- The inbox is tailed from disk.
+- `--out`, when set, and `tee` paths are written to disk.
+- `alert` steps append to the pipeline's alert log.
 
 ## S8. Group semantics
 
@@ -196,10 +182,9 @@ If `--progress` is disabled, do not print periodic status. Errors still go to st
      `--progress`, and `--no-progress`.
    - Reuse config validation. `by` and `every` already fail at load time.
 
-5. Implement streaming DAG routing.
-   - Build producer-to-consumer edges from normalized `out` and `tee` paths, just like batch.
-   - Tail only root input files.
-   - Route upstream outputs to downstream pipelines in memory.
+5. Follow the inbox.
+   - Tail the inbox file created for this config.
+   - Append finished records to `--out` when it is set.
 
 6. Add tests.
    - Processes appended lines after startup.

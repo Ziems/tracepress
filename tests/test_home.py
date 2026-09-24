@@ -135,16 +135,14 @@ def test_cli_creates_home_and_records_batch_usage(
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output/findings.jsonl
-    pipeline:
+  - pipeline:
       - map: keep
 """,
         encoding="utf-8",
     )
 
     assert not isolate_trace_miner_home.exists()
-    assert main(["run", "pipeline.yaml"]) == 0
+    assert main(["run", "pipeline.yaml", "--in", "input.jsonl", "--out", "output/findings.jsonl"]) == 0
     capsys.readouterr()
     assert isolate_trace_miner_home.is_dir()
     assert (isolate_trace_miner_home / "cache").is_dir()

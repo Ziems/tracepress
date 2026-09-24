@@ -265,7 +265,7 @@ def test_cli_events_follow_the_command(monkeypatch: pytest.MonkeyPatch, tmp_path
     dest = tmp_path / "demo"
     assert main(["init", str(dest), "--force"]) == 0
     with pytest.raises(FileNotFoundError):
-        main(["run", str(tmp_path / "missing.yaml")])
+        main(["run", str(tmp_path / "missing.yaml"), "--in", "input.jsonl", "--out", "output.jsonl"])
     assert main(["stats"]) == 0
     with pytest.raises(SystemExit):
         main(["run", "--help"])

@@ -50,8 +50,6 @@ from: ./stages
 id_field: rollout_id
 pipelines:
   - name: alerts
-    in: input.jsonl
-    out: alerts.jsonl
     pipeline:
       - alert: doom_loop
 """
@@ -94,7 +92,7 @@ def read_event(response) -> tuple[str | None, dict]:
 
 def test_alert_sets_latest_for_the_matching_id(tmp_path: Path) -> None:
     config = write_project(tmp_path, STAGES, CONFIG, {"input.jsonl": []})
-    server = start_serve(config, port=0, poll_interval=30, progress=False)
+    server = start_serve(config, output=tmp_path / "alerts.jsonl", port=0, poll_interval=30, progress=False)
     try:
         client = Client(server.url)
         with client.watch("alerts", rollout_id="r1") as alerts:
@@ -227,17 +225,13 @@ def test_serve_rejects_multiple_root_inputs(tmp_path: Path) -> None:
 from: ./stages
 pipelines:
   - name: left
-    in: a.jsonl
-    out: a-out.jsonl
     pipeline: []
   - name: right
-    in: b.jsonl
-    out: b-out.jsonl
     pipeline: []
 """,
         {"a.jsonl": [], "b.jsonl": []},
     )
-    with pytest.raises(PipelineExecutionError, match="exactly one root input"):
+    with pytest.raises(ConfigError, match="exactly one pipeline"):
         start_serve(config, port=0, progress=False)
 
 
@@ -249,17 +243,13 @@ def test_duplicate_pipeline_name_fails_at_load(tmp_path: Path) -> None:
 from: ./stages
 pipelines:
   - name: alerts
-    in: input.jsonl
-    out: one.jsonl
     pipeline: []
   - name: alerts
-    in: input.jsonl
-    out: two.jsonl
     pipeline: []
 """,
         {"input.jsonl": []},
     )
-    with pytest.raises(ConfigError, match="Duplicate pipeline name `alerts`"):
+    with pytest.raises(ConfigError, match="exactly one pipeline"):
         load_config(config)
 
 

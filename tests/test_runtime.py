@@ -22,7 +22,42 @@ from trace_miner.model import (
     RunStats,
     format_run_profile,
 )
-from trace_miner.runtime import run_config, run_config_async, run_stream, run_stream_async
+from trace_miner.runtime import (
+    run_config as _run_config,
+    run_config_async as _run_config_async,
+    run_stream as _run_stream,
+    run_stream_async as _run_stream_async,
+)
+
+
+def _io(config, inputs=None, output=None):
+    path = config.config_path if hasattr(config, "config_path") else Path(config)
+    parent = path.parent
+    if inputs is None:
+        inputs = [parent / "input.jsonl"]
+    if output is None:
+        output = parent / "output.jsonl"
+    return inputs, output
+
+
+def run_config(config, inputs=None, output=None, **kwargs):
+    inputs, output = _io(config, inputs, output)
+    return _run_config(config, inputs=inputs, output=output, **kwargs)
+
+
+async def run_config_async(config, inputs=None, output=None, **kwargs):
+    inputs, output = _io(config, inputs, output)
+    return await _run_config_async(config, inputs=inputs, output=output, **kwargs)
+
+
+def run_stream(config, inputs=None, output=None, **kwargs):
+    inputs, output = _io(config, inputs, output)
+    return _run_stream(config, inputs=inputs, output=output, **kwargs)
+
+
+async def run_stream_async(config, inputs=None, output=None, **kwargs):
+    inputs, output = _io(config, inputs, output)
+    return await _run_stream_async(config, inputs=inputs, output=output, **kwargs)
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -135,9 +170,7 @@ def add_one(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - filter: keep
       - tee: kept.jsonl
       - map: label
@@ -184,8 +217,6 @@ from: ./stages
 id_field: session_id
 pipelines:
   - name: findings
-    in: input.jsonl
-    out: output.jsonl
     pipeline:
       - group:
           expand: split
@@ -220,9 +251,7 @@ def not_a_reason(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - alert: not_a_reason
 """,
         [{"id": "a"}],
@@ -266,8 +295,6 @@ from: ./stages
 id_field: session_id
 pipelines:
   - name: alerts
-    in: input.jsonl
-    out: output.jsonl
     pipeline:
       - alert: detect_frustration
 """,
@@ -312,9 +339,7 @@ quote = dspy.Predict(Quote)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - alert: quote
 """,
         [{"message": "hi"}],
@@ -340,9 +365,7 @@ async def add_one(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - filter: keep
       - map: label
       - stage: add_one
@@ -369,9 +392,7 @@ def double(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: double
 """,
         [{"id": "a", "value": 2}, {"id": "b", "value": 3}],
@@ -400,9 +421,7 @@ def merge(children):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           pipeline: []
@@ -429,9 +448,7 @@ def double(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: double
 """,
         [],
@@ -469,9 +486,7 @@ def double(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: double
 """,
         [],
@@ -499,9 +514,7 @@ def double(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: double
 """,
         [{"id": "a", "value": 2}],
@@ -528,9 +541,7 @@ def double(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: double
 """,
         [{"id": "old", "value": 2}],
@@ -554,9 +565,7 @@ def double(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: double
 """,
         [],
@@ -580,9 +589,7 @@ def double(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: double
 """,
         [{"id": "a", "value": 2}, {"id": "bad", "value": 1}, {"id": "b", "value": 3}],
@@ -598,7 +605,7 @@ pipelines:
     assert result.stats.records_read == 3
 
 
-def test_stream_routes_records_through_pipeline_dag(tmp_path: Path) -> None:
+def test_second_pipeline_block_is_rejected(tmp_path: Path) -> None:
     config = write_project(
         tmp_path,
         """
@@ -611,22 +618,16 @@ def add_one(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: intermediate.jsonl
-    pipeline:
+  - pipeline:
       - map: double
-  - in: intermediate.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: add_one
 """,
         [{"id": "a", "value": 2}],
     )
 
-    run_stream(config, max_records=1, poll_interval=0.01, progress=False)
-
-    assert read_jsonl(tmp_path / "intermediate.jsonl") == [{"id": "a", "value": 4}]
-    assert read_jsonl(tmp_path / "output.jsonl") == [{"id": "a", "value": 5}]
+    with pytest.raises(ConfigError, match="exactly one pipeline"):
+        load_config(config)
 
 
 def test_by_and_every_groups_are_rejected(tmp_path: Path) -> None:
@@ -640,9 +641,7 @@ def total(children):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           by: kind
           reduce: total
@@ -658,9 +657,7 @@ pipelines:
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           every: 2
           reduce: total
@@ -688,9 +685,7 @@ def merge(children, ctx):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           pipeline:
@@ -738,9 +733,7 @@ def merge_docs(children, ctx):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: docs
           pipeline:
@@ -780,9 +773,7 @@ def duplicate(record, ctx):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: duplicate
 """,
         [{"id": "a"}],
@@ -803,9 +794,7 @@ def bad(record, ctx):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - stage: bad
 """,
         [{"id": "a"}],
@@ -825,9 +814,7 @@ def as_list(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: as_list
 """,
         [{"id": "a"}],
@@ -855,9 +842,7 @@ def merge(children, ctx):
     base_config = """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           on_child_error: {policy}
@@ -891,9 +876,7 @@ def test_load_time_validation_unknown_stage_and_bad_signature(tmp_path: Path) ->
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: missing
 """,
         [{"id": 1}],
@@ -909,9 +892,7 @@ pipelines:
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: bad
 """,
         [{"id": 1}],
@@ -920,51 +901,21 @@ pipelines:
         load_config(bad)
 
 
-def test_path_dag_duplicate_out_and_tee_dependency(tmp_path: Path) -> None:
+def test_duplicate_tee_paths_are_rejected(tmp_path: Path) -> None:
     config = write_project(
         tmp_path,
-        """
-def tag(record):
-    return {**record, "tag": True}
-""",
-        """
-from: ./stages
-pipelines:
-  - in: input.jsonl
-    out: first.jsonl
-    pipeline:
-      - tee: intermediate.jsonl
-  - in: ./intermediate.jsonl
-    out: second.jsonl
-    pipeline:
-      - map: tag
-""",
-        [{"id": 1}],
-    )
-
-    run_config(config)
-
-    assert read_jsonl(tmp_path / "second.jsonl") == [{"id": 1, "tag": True}]
-
-    duplicate_dir = tmp_path / "duplicate"
-    duplicate_dir.mkdir()
-    duplicate = write_project(
-        duplicate_dir,
         "def ok(record): return record\n",
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: ./same.jsonl
-    pipeline: []
-  - in: input.jsonl
-    out: sub/../same.jsonl
-    pipeline: []
+  - pipeline:
+      - tee: ./same.jsonl
+      - tee: sub/../same.jsonl
 """,
         [{"id": 1}],
     )
-    with pytest.raises(ConfigError, match="Multiple pipeline"):
-        load_config(duplicate)
+    with pytest.raises(ConfigError, match="Multiple tee targets"):
+        load_config(config)
 
 
 def test_post_mvp_features_are_rejected(tmp_path: Path) -> None:
@@ -979,9 +930,7 @@ from: ./stages
 concurrency:
   max_in_flight: 5
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: ok
 """,
         [{"id": 1}],
@@ -1013,9 +962,7 @@ from: ./stages
 lm:
   default: deepseek/deepseek-v4.1-flash
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map:
           stage: label
           lm:
@@ -1064,9 +1011,7 @@ label = dspy.Predict(Label)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "hello"}],
@@ -1086,9 +1031,7 @@ from: ./stages
 lm:
   default: deepseek/deepseek-v4.1-flash
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map:
           stage: py_stage
           lm:
@@ -1107,9 +1050,7 @@ from: ./stages
 lm:
   default: deepseek/deepseek-v4.1-flash
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - filter: label
 """,
         [{"id": "a", "text": "hello"}],
@@ -1125,9 +1066,7 @@ from: ./stages
 lm:
   provider: "open ai"
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "hello"}],
@@ -1144,9 +1083,7 @@ lm:
   provider: openai
   default: gpt-4o-mini
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map:
           stage: label
           lm:
@@ -1186,9 +1123,7 @@ merge = dspy.Predict(Merge)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           pipeline:
@@ -1214,9 +1149,7 @@ from: ./stages
 lm:
   default: openai/gpt-4o-mini
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           pipeline:
@@ -1241,9 +1174,7 @@ lm:
   map: deepseek/deepseek-v4.1-flash
   reduce: anthropic/claude-sonnet-5
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           pipeline:
@@ -1269,9 +1200,7 @@ from: ./stages
 lm:
   map: ""
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1313,9 +1242,7 @@ lm:
     provider: anthropic
     model: claude-sonnet-5
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           pipeline:
@@ -1371,9 +1298,7 @@ label = dspy.Predict(Label)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1424,9 +1349,7 @@ lm:
   provider: openai
   default: gpt-4o-mini
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """
     path = write_project(tmp_path, stages, config, [{"id": "a", "text": "ore"}])
@@ -1475,9 +1398,7 @@ from: ./stages
 lm:
   cache: false
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1514,9 +1435,7 @@ label = LabelModule()
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1540,9 +1459,7 @@ label = Label
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1566,9 +1483,7 @@ label = Program()
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1596,9 +1511,7 @@ from: ./stages
 lm:
   cache: 1
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1626,9 +1539,7 @@ from: ./stages
 lm:
   max_tokens: 256
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1659,9 +1570,7 @@ label = dspy.Predict(Label)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1694,9 +1603,7 @@ from: ./stages
 lm:
   max_tokens: 0
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1734,9 +1641,7 @@ detect = dspy.Predict(Detect)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: detect
 """,
         [{"id": "a", "text": "ssn 123-45-6789"}],
@@ -1773,9 +1678,7 @@ label = dspy.Predict(Label)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -1813,9 +1716,7 @@ from: ./stages
 lm:
   max_concurrent: 2
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map:
           stage: label
           lm:
@@ -1871,9 +1772,7 @@ from: ./stages
 lm:
   max_concurrent: 2
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}, {"id": "b", "text": "coal"}],
@@ -1935,9 +1834,7 @@ def merge(children, ctx):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           pipeline:
@@ -1970,9 +1867,7 @@ label = dspy.Predict(Label)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "text": "ore"}],
@@ -2024,9 +1919,7 @@ from: ./stages
 lm:
   max_concurrent: 2
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": str(i), "text": f"item-{i}"} for i in range(5)],
@@ -2082,9 +1975,7 @@ lm:
   cache: false
   max_concurrent: 4
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           pipeline:
@@ -2141,9 +2032,7 @@ from: ./stages
 lm:
   default: deepseek/deepseek-v4.1-flash
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: label
 """,
         [{"id": "a", "body": "hello"}],
@@ -2217,9 +2106,7 @@ from: ./stages
 lm:
   default: deepseek/deepseek-v4.1-flash
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           pipeline:
@@ -2279,9 +2166,7 @@ from: ./stages
 lm:
   default: deepseek/deepseek-v4.1-flash
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split
           on_child_error: partial
@@ -2342,9 +2227,7 @@ from: ./stages
 lm:
   default: demo-model
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - filter: keep_rows
       - map: label_text
       - group:
@@ -2424,9 +2307,7 @@ def later_stage(record):
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: boom_stage
       - map: later_stage
 """,

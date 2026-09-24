@@ -27,7 +27,7 @@ commands:
   stats     Show local usage totals
 
 Run a batch pipeline:
-  trace-miner run pipeline.yaml
+  trace-miner run pipeline.yaml --in traces.jsonl --out findings.jsonl
 
 `trace-miner <command> --help` documents each command.
 """
@@ -79,7 +79,7 @@ def _dispatch(argv: list[str]) -> int:
         return _stats(rest)
     if command not in {"init", "run", "serve"}:
         print(f"trace-miner: unknown command `{command}`", file=sys.stderr)
-        print("Run a pipeline with `trace-miner run <config.yaml>`.", file=sys.stderr)
+        print("Run a pipeline with `trace-miner run <config.yaml> --in <file> --out <file>`.", file=sys.stderr)
         return 2
     ensure_home()
     if command == "init":
@@ -173,10 +173,10 @@ def _init(argv: list[str]) -> int:
     print("  export OPENROUTER_API_KEY=...")
     if dest != Path.cwd().resolve():
         print(f"  cd {rel}")
-    print("  trace-miner run summarize.yaml")
+    print("  trace-miner run summarize.yaml --in input/trajectories.jsonl --out output/summaries.jsonl")
     print()
     print("Then try pii.yaml, frustration.yaml, or category.yaml")
-    print("To serve:  trace-miner serve alerts.yaml")
+    print("To serve:  trace-miner serve alerts.yaml --out output/alerts.jsonl")
     print("Watch it:  python client_demo.py")
     print("Doom loop: trace-miner serve doom_loop.yaml  &&  python doom_loop_demo.py")
     return 0
@@ -207,6 +207,8 @@ def _batch_parser(prog: str = "trace-miner") -> argparse.ArgumentParser:
         description="Run a batch pipeline from a YAML config.",
     )
     parser.add_argument("config", type=Path, help="Pipeline YAML path.")
+    parser.add_argument("--in", dest="inputs", action="append", required=True, type=Path, help="Input JSONL. Repeat to read several files in order.")
+    parser.add_argument("--out", dest="output", required=True, type=Path, help="Output JSONL.")
     progress = parser.add_mutually_exclusive_group()
     progress.add_argument("--progress", action="store_true", dest="progress", help="Always show stage progress bars.")
     progress.add_argument("--no-progress", action="store_false", dest="progress", help="Disable progress bars.")
@@ -220,13 +222,12 @@ def _batch(argv: list[str], *, prog: str = "trace-miner") -> int:
 
     try:
         config = load_config(args.config)
-        result = run_config(config, progress=args.progress)
+        result = run_config(config, inputs=args.inputs, output=args.output, progress=args.progress)
     except TraceMinerError as exc:
         print(f"trace-miner: {exc}", file=sys.stderr)
         return 1
     record_run("run", result.stats, extra={"config": str(config.config_path)})
-    for pipeline in config.pipelines:
-        print(f"Wrote {_display_path(pipeline.output)}")
+    print(f"Wrote {_display_path(args.output)}")
     print(format_run_profile(result.stats))
     return 0
 
@@ -245,6 +246,7 @@ def _serve_parser() -> argparse.ArgumentParser:
         description="Accept records over HTTP and push alerts.",
     )
     parser.add_argument("config", type=Path, help="Pipeline YAML path.")
+    parser.add_argument("--out", dest="output", type=Path, help="Also write finished records to this JSONL.")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address. Default: 127.0.0.1.")
     parser.add_argument("--port", type=int, default=8765, help="Bind port. Default: 8765.")
     parser.add_argument("--checkpoint", type=Path, help="Checkpoint file. Default: .trace-miner/ beside the config.")
@@ -274,6 +276,7 @@ def _serve(argv: list[str]) -> int:
     try:
         result = serve(
             args.config,
+            output=args.output,
             host=args.host,
             port=args.port,
             checkpoint_path=args.checkpoint,

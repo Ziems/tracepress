@@ -30,26 +30,26 @@ export OPENROUTER_API_KEY=...
 ## Run
 
 ```bash
-trace-miner run summarize.yaml
+trace-miner run summarize.yaml --in input/trajectories.jsonl --out output/summaries.jsonl
 ```
 
 Then try the others on the same traces:
 
 ```bash
-trace-miner run pii.yaml
-trace-miner run frustration.yaml
-trace-miner run category.yaml
-trace-miner run classify.yaml
+trace-miner run pii.yaml --in input/trajectories.jsonl --out output/pii.jsonl
+trace-miner run frustration.yaml --in input/trajectories.jsonl --out output/frustration.jsonl
+trace-miner run category.yaml --in input/trajectories.jsonl --out output/categories.jsonl
+trace-miner run classify.yaml --in input/trajectories.jsonl --out output/classifications.jsonl
 ```
 
 ## Alerts
 
-`alerts.yaml` watches `input/alerts.jsonl`. `flag_sensitive_step` is an `alert` step. It returns a reason when a posted step contains an SSN, a phone number, or the phrase "taking forever". The posted step still lands in `output/alerts.jsonl`. The alert itself is written under `.trace-miner/alerts/`.
+`flag_sensitive_step` is an `alert` step. It returns a reason when a posted step contains an SSN, a phone number, or the phrase "taking forever". With `--out`, the posted step lands in that JSONL. The alert itself is written under `.trace-miner/alerts/`. Posted records are stored in `.trace-miner/inbox/alerts.jsonl`.
 
 In one terminal:
 
 ```bash
-trace-miner serve alerts.yaml
+trace-miner serve alerts.yaml --out output/alerts.jsonl
 ```
 
 In another, from this directory:
@@ -68,8 +68,7 @@ The later traces carry a frustrated user turn and a phone number. Those fire if 
 
 ## Doom loop
 
-`doom_loop.yaml` watches `input/doom_loop.jsonl`, the same way `alerts.yaml`
-watches `input/alerts.jsonl`, but its posted records carry a *window of recent
+`doom_loop.yaml` is served the same way as `alerts.yaml`, but its posted records carry a *window of recent
 steps* instead of one step. Its `group` runs `detect_doom_loop`, an LM reduce,
 over that window on every post, so the trace is judged again each time new
 steps arrive rather than only once at the end. `flag_doom_loop` alerts when the
@@ -85,7 +84,7 @@ free; only the reduce judgment itself runs fresh each time.
 In one terminal:
 
 ```bash
-trace-miner serve doom_loop.yaml
+trace-miner serve doom_loop.yaml --out output/doom_loop.jsonl
 ```
 
 In another, from this directory:
@@ -137,13 +136,10 @@ The three original bundled traces should finish with `rollout complete
 - `input/doom_loop_examples.jsonl` is three real harbor records — one genuine
   doom loop, two confirmed look-alikes — their largest fields clipped for
   size. `doom_loop_demo.py` reads it.
-- `input/alerts.jsonl` starts empty so `alerts.yaml` can be served before any
-  steps are posted. Gitignored. Recreated empty by `init --force`.
-- `alerts.yaml` watches `input/alerts.jsonl`. `client_demo.py` posts steps into it.
-- `input/doom_loop.jsonl` starts empty, same as `input/alerts.jsonl`. Gitignored.
-  Recreated empty by `init --force`.
-- `doom_loop.yaml` watches `input/doom_loop.jsonl`. `doom_loop_demo.py` posts
-  step windows into it and watches for `final: true` to know a rollout ended.
+- `alerts.yaml` is served with `trace-miner serve`. `client_demo.py` posts steps
+  over HTTP. The inbox is `.trace-miner/inbox/alerts.jsonl`.
+- `doom_loop.yaml` is served the same way. `doom_loop_demo.py` posts step
+  windows and watches for `final: true` to know a rollout ended.
 - `AGENTS.md` is the working guide for coding agents: how to run, add a
   pipeline, and write Python or LM stages.
 

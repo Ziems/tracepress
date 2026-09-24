@@ -17,7 +17,7 @@ from starlette.routing import Route
 from trace_miner.config import load_config
 from trace_miner.errors import PipelineExecutionError, TraceMinerError
 from trace_miner.model import Config, RunResult
-from trace_miner.runtime import published_outputs, root_inputs, run_stream_async
+from trace_miner.runtime import published_outputs, run_stream_async
 from trace_miner.telemetry import run_command_name
 
 
@@ -131,9 +131,14 @@ class RunningServe:
             raise self.error
 
 
+def inbox_path(config: Config) -> Path:
+    return config.base_dir / ".trace-miner" / "inbox" / f"{config.config_path.stem}.jsonl"
+
+
 def serve(
     config_or_path: Config | str | Path,
     *,
+    output: str | Path | None = None,
     host: str = "127.0.0.1",
     port: int = 8765,
     checkpoint_path: str | Path | None = None,
@@ -146,6 +151,7 @@ def serve(
 ) -> RunResult:
     running = start_serve(
         config_or_path,
+        output=output,
         host=host,
         port=port,
         checkpoint_path=checkpoint_path,
@@ -170,6 +176,7 @@ def serve(
 def start_serve(
     config_or_path: Config | str | Path,
     *,
+    output: str | Path | None = None,
     host: str = "127.0.0.1",
     port: int = 8765,
     checkpoint_path: str | Path | None = None,
@@ -181,9 +188,9 @@ def start_serve(
     progress_stream: Any = None,
 ) -> RunningServe:
     config = load_config(config_or_path) if not isinstance(config_or_path, Config) else config_or_path
-    roots = root_inputs(config)
-    if len(roots) != 1:
-        raise PipelineExecutionError("`trace-miner serve` requires exactly one root input.")
+    spool = inbox_path(config)
+    spool.parent.mkdir(parents=True, exist_ok=True)
+    spool.touch(exist_ok=True)
     running = RunningServe()
 
     def run() -> None:
@@ -192,6 +199,8 @@ def start_serve(
                 _serve_on_loop(
                     running,
                     config,
+                    spool=spool,
+                    output=output,
                     host=host,
                     port=port,
                     checkpoint_path=checkpoint_path,
@@ -224,6 +233,8 @@ async def _serve_on_loop(
     running: RunningServe,
     config: Config,
     *,
+    spool: Path,
+    output: str | Path | None,
     host: str,
     port: int,
     checkpoint_path: str | Path | None,
@@ -240,7 +251,7 @@ async def _serve_on_loop(
     running._loop = loop
     running._stop = stop
     hub = _Hub(published_outputs(config))
-    app = _build_app(hub, config, root_inputs(config)[0], wake)
+    app = _build_app(hub, config, spool, wake)
     server = uvicorn.Server(
         uvicorn.Config(app, host=host, port=port, log_level="error", access_log=False, lifespan="off")
     )
@@ -253,6 +264,8 @@ async def _serve_on_loop(
         try:
             return await run_stream_async(
                 config,
+                inputs=[spool],
+                output=output,
                 checkpoint_path=checkpoint_path,
                 from_start=from_start,
                 from_end=from_end,

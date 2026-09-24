@@ -9,15 +9,17 @@ bodies in YAML. Do not invent a second stage module unless the user asks.
 ## Commands
 
 ```bash
-trace-miner run <config.yaml> [--progress]
-trace-miner serve <config.yaml> [--host 127.0.0.1] [--port 8765]
+trace-miner run <config.yaml> --in <file> --out <file> [--progress]
+trace-miner serve <config.yaml> [--out <file>] [--host 127.0.0.1] [--port 8765]
 trace-miner stats
 ```
 
-`run` executes a batch pipeline. `--progress` always shows stage bars.
+`run` reads `--in` and writes `--out`. Repeat `--in` to read several files in
+order. `--progress` always shows stage bars.
 
-`serve` accepts steps over HTTP and pushes alerts. `alerts.yaml` is the
-bundled example. Bind beyond localhost with `--host`.
+`serve` accepts steps over HTTP and pushes alerts. It has no `--in`. `--out`
+also writes finished records. `alerts.yaml` is the bundled example. Bind
+beyond localhost with `--host`.
 
 `stats` prints local usage totals from `~/.trace-miner/`.
 
@@ -27,25 +29,25 @@ LM stages need OpenRouter:
 
 ```bash
 export OPENROUTER_API_KEY=...
-trace-miner run summarize.yaml
+trace-miner run summarize.yaml --in input/trajectories.jsonl --out output/summaries.jsonl
 ```
 
-Then inspect `output/summaries.jsonl`. A successful run prints each output path
+Then inspect `output/summaries.jsonl`. A successful run prints the output path
 and a one-line profile (wall time, plus LM calls / tokens / cost).
 
 The other bundled pipelines reuse the same traces and `stages.py`:
 
 ```bash
-trace-miner run pii.yaml
-trace-miner run frustration.yaml
-trace-miner run category.yaml
-trace-miner run classify.yaml
+trace-miner run pii.yaml --in input/trajectories.jsonl --out output/pii.jsonl
+trace-miner run frustration.yaml --in input/trajectories.jsonl --out output/frustration.jsonl
+trace-miner run category.yaml --in input/trajectories.jsonl --out output/categories.jsonl
+trace-miner run classify.yaml --in input/trajectories.jsonl --out output/classifications.jsonl
 ```
 
 `alerts.yaml` serves alerts. In one terminal:
 
 ```bash
-trace-miner serve alerts.yaml
+trace-miner serve alerts.yaml --out output/alerts.jsonl
 ```
 
 In another, from this directory:
@@ -62,7 +64,7 @@ the ATRX trace.
 In one terminal:
 
 ```bash
-trace-miner serve doom_loop.yaml
+trace-miner serve doom_loop.yaml --out output/doom_loop.jsonl
 ```
 
 In another:
@@ -217,18 +219,16 @@ module's other outputs on `alerts.latest.record`.
 
 | Path | Role |
 | --- | --- |
-| `*.yaml` | Pipeline topology only: inputs, outputs, step order, model policy |
-| `alerts.yaml` | Named `alerts` pipeline; `in: input/alerts.jsonl` |
+| `*.yaml` | Pipeline topology only: step order and model policy |
+| `alerts.yaml` | Named `alerts` pipeline for `serve` |
 | `client_demo.py` | Posts trajectory steps to a running `serve` and stops on an abort |
-| `doom_loop.yaml` | Named `doom_loop` pipeline; `in: input/doom_loop.jsonl` |
+| `doom_loop.yaml` | Named `doom_loop` pipeline for `serve` |
 | `doom_loop_demo.py` | Posts a sliding window of recent steps per trace; watches for a doom loop or `final` |
 | `classify.yaml` | One Jev map over a prepared trajectory; no per-step summarize |
 | `stages.py` | Shared Python functions and DSPy signatures |
 | `input/trajectories.jsonl` | Three slim harbor traces |
 | `input/doom_loop_examples.jsonl` | Three real harbor traces: one confirmed doom loop, two confirmed look-alikes |
-| `input/alerts.jsonl` | Serve target for `alerts.yaml`. Starts empty. Gitignored. |
-| `input/doom_loop.jsonl` | Serve target for `doom_loop.yaml`. Starts empty. Gitignored. |
-| `output/` | Generated JSONL. Gitignored. Safe to overwrite |
+| `output/` | Generated JSONL from `--out`. Gitignored. Safe to overwrite |
 | `README.md` | Human walkthrough |
 
 `from: ./stages` in every YAML resolves names against `stages.py`. A stage name
@@ -274,9 +274,7 @@ lm:
     model: anthropic/claude-sonnet-5
 
 pipelines:
-  - in: input/trajectories.jsonl
-    out: output/findings.jsonl
-    pipeline:
+  - pipeline:
       - map: prepare_harbor_trajectory
       - group:
           expand: split_harbor_steps
@@ -287,9 +285,10 @@ pipelines:
 
 Rules:
 
-- `in` and `out` are JSONL paths relative to the config file.
-- One YAML file can hold multiple pipeline blocks. If one's `in` is another's
-  `out`, they run in that order.
+- A YAML holds one pipeline. `run` takes `--in` and `--out`. `serve` takes an
+  optional `--out` and no `--in`.
+- Repeat `--in` to read several JSONL files in order. Chain two pipelines by
+  running the second on the first's `--out`, or use `tee` for a side file.
 - `id_field` is for error messages, not grouping.
 - `lm.default`, `lm.map`, `lm.filter`, `lm.expand`, `lm.reduce`, and `lm.alert` each take `provider` and `model`. Providers are `openrouter`, `openai`, and `anthropic`.
 - A missing role uses `default`. A missing `provider` uses the default provider. When `default` is omitted, reduce uses OpenRouter `anthropic/claude-sonnet-5` and other LM steps use OpenRouter `deepseek/deepseek-v4.1-flash`.
@@ -455,9 +454,8 @@ categorize_trajectory = JevPredict(CategorizeTrajectory)
    `doom_loop.yaml` for a served pipeline that reduces over a step window).
 2. Add or reuse stages in `stages.py`. Name the YAML keys exactly after those
    attributes.
-3. Point `out:` at a new file under `output/`.
-4. Run `trace-miner run new-pipeline.yaml`.
-5. Read the output JSONL and the profile line. If cost or time looks wrong,
+3. Run `trace-miner run new-pipeline.yaml --in input/trajectories.jsonl --out output/findings.jsonl`.
+4. Read the output JSONL and the profile line. If cost or time looks wrong,
    change the signature or the expand, not the runtime.
 
 When adding traces, append JSON objects to `input/trajectories.jsonl`. Each

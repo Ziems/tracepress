@@ -114,8 +114,8 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert (dest / "input" / "trajectories.jsonl").is_file()
     assert (dest / "input" / "doom_loop_examples.jsonl").is_file()
     assert not (dest / "input" / "live.jsonl").exists()
-    assert (dest / "input" / "alerts.jsonl").read_text(encoding="utf-8") == ""
-    assert (dest / "input" / "doom_loop.jsonl").read_text(encoding="utf-8") == ""
+    assert not (dest / "input" / "alerts.jsonl").exists()
+    assert not (dest / "input" / "doom_loop.jsonl").exists()
     assert not (dest / "simulate_stream.py").exists()
     agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
     assert "trace-miner run summarize.yaml" in agents
@@ -151,7 +151,8 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
         "doom_loop.yaml",
     ):
         config = load_config(dest / name)
-        assert config.pipelines[0].output.name.endswith(".jsonl")
+        assert config.pipelines[0].output is None
+        assert config.pipelines[0].inputs == ()
     alerts = load_config(dest / "alerts.yaml")
     assert alerts.pipelines[0].name == "alerts"
     doom_loop = load_config(dest / "doom_loop.yaml")
@@ -255,15 +256,13 @@ def test_batch_prints_output_path(tmp_path: Path, capsys: pytest.CaptureFixture[
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output/findings.jsonl
-    pipeline:
+  - pipeline:
       - map: keep
 """,
         encoding="utf-8",
     )
 
-    assert main(["run", "pipeline.yaml"]) == 0
+    assert main(["run", "pipeline.yaml", "--in", "input.jsonl", "--out", "output/findings.jsonl"]) == 0
     out = capsys.readouterr().out
     assert "Wrote output/findings.jsonl" in out
     assert "LM calls" not in out
@@ -273,7 +272,7 @@ pipelines:
 def test_batch_does_not_print_output_on_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     config = tmp_path / "pipeline.yaml"
     config.write_text("pipelines: []\n", encoding="utf-8")
-    assert main(["run", str(config)]) == 1
+    assert main(["run", str(config), "--in", "input.jsonl", "--out", "output.jsonl"]) == 1
     captured = capsys.readouterr()
     assert "Wrote " not in captured.out
     assert "trace-miner:" in captured.err

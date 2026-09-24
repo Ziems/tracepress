@@ -214,9 +214,7 @@ lm:
     model: anthropic/claude-sonnet-5
 
 pipelines:
-  - in: traces.jsonl
-    out: overviews.jsonl
-    pipeline:
+  - pipeline:
       - filter: keep
       - map:
           stage: label

@@ -44,9 +44,7 @@ defaults:                       # optional, applied to every group unless overri
 id_field: id                    # optional, see section 11
 
 pipelines:
-  - in: traces.jsonl
-    out: overviews.jsonl
-    pipeline:
+  - pipeline:
       - filter: keep
       - tee: kept.jsonl
       - group:
@@ -68,7 +66,7 @@ pipelines:
 | `defaults`    | no       | Group options applied when a group does not specify them.                                     |
 | `concurrency` | post-MVP | Backpressure limits. See section 7.                                                           |
 | `id_field`    | no       | Record field used for error messages. See section 11.                                         |
-| `pipelines`   | yes      | List of pipeline blocks.                                                                      |
+| `pipelines`   | yes      | Exactly one pipeline block.                                                                   |
 
 
 ### Pipeline block keys
@@ -76,12 +74,11 @@ pipelines:
 
 | Key        | Required | Meaning                                                                    |
 | ---------- | -------- | -------------------------------------------------------------------------- |
-| `in`       | yes      | Input file path, or a list of paths read in order.                         |
-| `out`      | yes      | Output file path. Records reaching the end of `pipeline` are written here. |
 | `pipeline` | yes      | Ordered list of steps.                                                     |
+| `name`     | no       | Public name used by `serve` subscribers.                                   |
 
 
-Pipelines execute in dependency order. A pipeline whose `in` matches another pipeline's `out` runs after it. This is what gives you a DAG without DAG syntax. Fan out is expressed by two pipelines sharing an `in`. See section 10 for the path matching rules, which are load-bearing and easy to get wrong.
+`run` supplies the JSONL paths: `--in` (repeatable, read in order) and `--out`. `serve` has no input path. Posted records land in `.trace-miner/inbox/<config-stem>.jsonl` beside the config. `--out` is optional and writes records that finish the pipeline. A second pipeline block is a load error. Chain files by running again, or use `tee` for a side file.
 
 ### Step forms
 
@@ -283,16 +280,12 @@ Sort by **emit path**, the tuple of emit indices from the pipeline root down to 
 
 Do not sort by arrival time and do not sort by a record field.
 
-## 10. Path matching and the DAG
+## 10. Paths
 
-Pipeline ordering depends entirely on path comparison, so define it exactly.
-
-- Resolve every `in`, `out`, and `tee` path relative to the config file's directory.
+- `--in` and `--out` resolve relative to the working directory. `tee` paths resolve relative to the config file's directory.
 - Normalize, resolving symlinks and `..`. Compare normalized absolute paths for exact equality. No globbing, no prefix matching.
-- Two pipelines declaring the same `out` is a load error, not an implicit merge. If someone wants a merge they should say so with a list-valued `in` on a downstream pipeline.
-- An `in` that no pipeline produces must exist on disk at load time.
-- **A** `tee` **target read by another pipeline as** `in` **is a real DAG edge** and participates in ordering exactly like an `out`. Without this you get a race that only appears on a fast machine. The tee is declared in config, so this costs nothing in visibility.
-- Detect cycles at load time and report the full cycle path in the error.
+- Two `tee` steps writing the same normalized path is a load error.
+- Every `--in` file must exist when `run` starts. `serve` creates its inbox if it is missing.
 
 ## 11. Record identity
 
@@ -331,7 +324,7 @@ Do not sort side channels the way children are sorted. Sorting requires bufferin
 
 ## 13. Resumability (post-MVP)
 
-Post-MVP, support the cheap version only. A pipeline block whose `out` exists and is newer than all of its inputs is skipped, and a `--force` flag disables this. Named jsonl intermediates make this nearly free and it turns a failure at 80% into a partial rerun.
+Post-MVP, support the cheap version only. A run whose `--out` exists and is newer than all of its `--in` files is skipped, and a `--force` flag disables this.
 
 Explicitly out of scope: resuming mid-pipeline with half-finished groups. That needs group state persisted to disk and is a deliberate no. If a pipeline block dies, that block reruns from its input in full.
 
@@ -412,9 +405,9 @@ The implementation is correct when these pass.
 **Config**
 
 1. **Load-time validation.** Unknown stage name, unknown step key, a group without `expand`, a group that declares `by` or `every`, and a pipeline cycle all fail before any record is read.
-2. **Duplicate** `out`**.** Two pipelines writing the same normalized path is a load error.
-3. **Tee ordering.** A pipeline reading another's `tee` target runs after it, verified by forcing the producer to be slow.
-4. **Path normalization.** `./a.jsonl` and `sub/../a.jsonl` are recognized as the same file.
+2. **One pipeline.** A second pipeline block is a load error.
+3. **Duplicate tee.** Two `tee` steps writing the same normalized path is a load error.
+4. **Path normalization.** `./a.jsonl` and `sub/../a.jsonl` are recognized as the same `tee` target.
 
 ### Post-MVP acceptance tests
 
@@ -438,4 +431,4 @@ The implementation is correct when these pass.
 
 **Resume**
 
-1. **Skip completed.** A pipeline whose `out` is newer than its `in` is skipped, and `--force` reruns it.
+1. **Skip completed.** A run whose `--out` is newer than its `--in` files is skipped, and `--force` reruns it.

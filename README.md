@@ -18,7 +18,7 @@ The GitHub repo is private, so that command needs credentials that can clone it.
 export OPENROUTER_API_KEY=...
 trace-miner init my-trace-pipelines
 cd my-trace-pipelines
-trace-miner run summarize.yaml
+trace-miner run summarize.yaml --in input/trajectories.jsonl --out output/summaries.jsonl
 ```
 
 That writes `stages.py`, three example traces, and five demo pipelines: `summarize.yaml`, `pii.yaml`, `frustration.yaml`, `category.yaml`, and `alerts.yaml`. Open `output/summaries.jsonl` when it finishes.
@@ -27,16 +27,16 @@ That writes `stages.py`, three example traces, and five demo pipelines: `summari
 
 ```bash
 trace-miner init [directory] [--force]
-trace-miner run <config.yaml> [--progress]
-trace-miner serve <config.yaml> [--host 127.0.0.1] [--port 8765]
+trace-miner run <config.yaml> --in <file> --out <file> [--progress]
+trace-miner serve <config.yaml> [--out <file>] [--host 127.0.0.1] [--port 8765]
 trace-miner stats
 ```
 
-`init` writes a hello-world project. Omit the directory to be prompted; the default is `hello-world`. `--force` overwrites.
+`init` writes a hello-world project. Omit the directory to be prompted; the default is `hello-world`
 
-`run` executes a batch pipeline. `--progress` always shows stage bars.
+`run` reads JSONL from `--in` and writes JSONL to `--out`. Repeat `--in` to read several files in order. `--progress` always shows stage bars.
 
-`serve` accepts steps over HTTP and pushes alerts. A client watches a named pipeline. Bind beyond localhost with `--host`.
+`serve` accepts steps over HTTP and pushes alerts. It does not take `--in`. `--out` also writes the finished records to JSONL. A client watches a named pipeline. Bind beyond localhost with `--host`.
 
 `stats` prints local usage totals from `~/.trace-miner/`.
 
@@ -61,9 +61,7 @@ lm:                             # optional LM defaults
     model: anthropic/claude-sonnet-5
 
 pipelines:
-  - in: input/trajectories.jsonl
-    out: output/findings.jsonl
-    pipeline:
+  - pipeline:
       - filter: has_steps
       - group:
           expand: split_steps      # one parent -> many children
@@ -98,15 +96,15 @@ detect_failure = dspy.Predict(DetectFailure)
 
 Steps are `map`, `filter`, `stage`, `tee`, `alert`, and `group`. A group expands one parent, runs a child pipeline, then reduces.
 
-## Alerts
+## Real Time Alerts
 
 On the pipeline host:
 
 ```bash
-trace-miner serve alerts.yaml --host 0.0.0.0 --port 8765
+trace-miner serve alerts.yaml --out output/alerts.jsonl --host 0.0.0.0 --port 8765
 ```
 
-`alerts.yaml` names the pipeline `alerts`. `flag_sensitive_step` returns a reason for a planted SSN, phone number, or "taking forever". The step is written to `output/alerts.jsonl`. The alert is written under `.trace-miner/alerts/`.
+`alerts.yaml` names the pipeline `alerts`. `flag_sensitive_step` returns a reason for a planted SSN, phone number, or "taking forever". With `--out`, the step is written to that JSONL. The alert is written under `.trace-miner/alerts/`.
 
 On the eval host:
 

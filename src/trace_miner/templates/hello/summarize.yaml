@@ -11,9 +11,7 @@ lm:
     model: anthropic/claude-sonnet-5
 
 pipelines:
-  - in: input/trajectories.jsonl
-    out: output/summaries.jsonl
-    pipeline:
+  - pipeline:
       - map: prepare_harbor_trajectory
       - group:
           expand: split_harbor_steps

@@ -49,10 +49,4 @@ def init_project(dest: Path, *, force: bool = False) -> list[Path]:
         target.write_bytes(source.read_bytes())
         written.append(target)
 
-    for name in ("alerts.jsonl", "doom_loop.jsonl"):
-        path = dest / "input" / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if force or not path.exists():
-            path.write_text("", encoding="utf-8")
-            written.append(path)
     return written

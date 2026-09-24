@@ -3,7 +3,5 @@ id_field: session_id
 
 pipelines:
   - name: alerts
-    in: input/alerts.jsonl
-    out: output/alerts.jsonl
     pipeline:
       - alert: flag_sensitive_step

@@ -100,10 +100,10 @@ class GroupSpec:
 
 @dataclass(frozen=True)
 class PipelineSpec:
-    inputs: tuple[Path, ...]
-    output: Path
     steps: tuple[Step, ...]
     source_index: int
+    inputs: tuple[Path, ...] = ()
+    output: Path | None = None
     name: str | None = None
 
 

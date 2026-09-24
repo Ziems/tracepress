@@ -19,8 +19,10 @@ from rich.console import Console
 from rich.markup import escape
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TaskID, TextColumn, TimeElapsedColumn
 
-from trace_miner.config import load_config
-from trace_miner.errors import PipelineExecutionError
+from collections.abc import Sequence
+
+from trace_miner.config import bind_io, load_config
+from trace_miner.errors import ConfigError, PipelineExecutionError
 from trace_miner.home import configure_lm_cache
 from trace_miner.model import (
     Config,
@@ -259,7 +261,8 @@ class _Runtime:
         self._alert_log.write_text("", encoding="utf-8")
         try:
             outputs = await self.apply_steps(envelopes, pipeline.steps, active_group=None)
-            self._write_envelopes(pipeline.output, outputs, append=self.append_outputs)
+            if pipeline.output is not None:
+                self._write_envelopes(pipeline.output, outputs, append=self.append_outputs)
             self.stats.retired += len(outputs)
             return outputs
         finally:
@@ -274,7 +277,8 @@ class _Runtime:
         self._alert_log = alert_log_path(self.config, pipeline)
         try:
             outputs = await self.apply_steps(envelopes, pipeline.steps, active_group=None)
-            self._write_envelopes(pipeline.output, outputs, append=True)
+            if pipeline.output is not None:
+                self._write_envelopes(pipeline.output, outputs, append=True)
             self.stats.retired += len(outputs)
             return outputs
         finally:
@@ -1108,23 +1112,13 @@ class _StreamRun:
         )
 
     def _build_graph(self) -> None:
-        produced: set[Path] = set()
-        for pipeline in self.config.pipelines:
-            produced.add(pipeline.output)
-            produced.update(_collect_runtime_tee_paths(pipeline.steps))
-
-        consumers: dict[Path, list[PipelineSpec]] = {}
-        for pipeline in self.config.pipelines:
-            for path in pipeline.inputs:
-                consumers.setdefault(path, []).append(pipeline)
-
-        root_inputs = sorted({path for pipeline in self.config.pipelines for path in pipeline.inputs if path not in produced})
-        self.root_inputs = tuple(root_inputs)
+        pipeline = self.config.pipelines[0]
+        self.root_inputs = pipeline.inputs
         self._published_by_path = {
             path: name for name, paths in published_outputs(self.config).items() for path in paths
         }
-        self.consumers = consumers
-        self.root_consumers = {path: consumers.get(path, []) for path in self.root_inputs}
+        self.consumers = {path: [pipeline] for path in pipeline.inputs}
+        self.root_consumers = dict(self.consumers)
 
     def _load_offsets(self) -> None:
         checkpoint = None if self.reset_checkpoint else self.checkpoint.load()
@@ -1259,16 +1253,6 @@ def _step_span(steps: tuple[Step, ...], group_depth: int) -> tuple[int, int]:
     return depth, width
 
 
-def _collect_runtime_tee_paths(steps: tuple[Step, ...]) -> tuple[Path, ...]:
-    paths: list[Path] = []
-    for step in steps:
-        if step.kind == "tee" and step.path is not None:
-            paths.append(step.path)
-        elif step.kind == "group" and step.group is not None:
-            paths.extend(_collect_runtime_tee_paths(step.group.pipeline))
-    return tuple(paths)
-
-
 def _read_available_jsonl(path: Path, offset: int) -> Iterable[_JsonlLine]:
     size = path.stat().st_size
     if size < offset:
@@ -1308,12 +1292,7 @@ def _bind_stop_signals(event: asyncio.Event) -> None:
 
 
 def root_inputs(config: Config) -> tuple[Path, ...]:
-    produced: set[Path] = set()
-    for pipeline in config.pipelines:
-        produced.add(pipeline.output)
-        produced.update(_collect_runtime_tee_paths(pipeline.steps))
-    roots = {path for pipeline in config.pipelines for path in pipeline.inputs if path not in produced}
-    return tuple(sorted(roots))
+    return config.pipelines[0].inputs
 
 
 def alert_log_path(config: Config, pipeline: PipelineSpec) -> Path:
@@ -1330,32 +1309,62 @@ def published_outputs(config: Config) -> dict[str, tuple[Path, ...]]:
     return found
 
 
+def _prepare_run(
+    config_or_path: Config | str | Path,
+    inputs: Sequence[str | Path],
+    output: str | Path | None,
+    *,
+    require_inputs: bool,
+) -> Config:
+    config = load_config(config_or_path) if not isinstance(config_or_path, Config) else config_or_path
+    config = bind_io(config, inputs=inputs, output=output)
+    if require_inputs:
+        for path in config.pipelines[0].inputs:
+            if not path.exists():
+                raise ConfigError(f"Input file does not exist: {path}")
+    return config
+
+
 async def run_config_async(
     config_or_path: Config | str | Path,
     *,
+    inputs: Sequence[str | Path],
+    output: str | Path,
     progress: bool | None = False,
     progress_stream: TextIO | None = None,
 ) -> RunResult:
-    config = load_config(config_or_path) if not isinstance(config_or_path, Config) else config_or_path
+    config = _prepare_run(config_or_path, inputs, output, require_inputs=True)
     return await _Runtime(config, progress=progress, progress_stream=progress_stream).run()
 
 
 def run_config(
     config_or_path: Config | str | Path,
     *,
+    inputs: Sequence[str | Path],
+    output: str | Path,
     progress: bool | None = False,
     progress_stream: TextIO | None = None,
 ) -> RunResult:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(run_config_async(config_or_path, progress=progress, progress_stream=progress_stream))
+        return asyncio.run(
+            run_config_async(
+                config_or_path,
+                inputs=inputs,
+                output=output,
+                progress=progress,
+                progress_stream=progress_stream,
+            )
+        )
     raise PipelineExecutionError("`run_config` cannot be called from a running event loop; use `run_config_async`.")
 
 
 async def run_stream_async(
     config_or_path: Config | str | Path,
     *,
+    inputs: Sequence[str | Path],
+    output: str | Path | None = None,
     checkpoint_path: str | Path | None = None,
     from_start: bool = False,
     from_end: bool = False,
@@ -1370,7 +1379,7 @@ async def run_stream_async(
     on_write: Callable[[str, Path, Any, int], None] | None = None,
     on_ready: Callable[[], None] | None = None,
 ) -> RunResult:
-    config = load_config(config_or_path) if not isinstance(config_or_path, Config) else config_or_path
+    config = _prepare_run(config_or_path, inputs, output, require_inputs=True)
     checkpoint = Path(checkpoint_path).expanduser().resolve() if checkpoint_path is not None else None
     return await _StreamRun(
         config,
@@ -1393,6 +1402,8 @@ async def run_stream_async(
 def run_stream(
     config_or_path: Config | str | Path,
     *,
+    inputs: Sequence[str | Path],
+    output: str | Path | None = None,
     checkpoint_path: str | Path | None = None,
     from_start: bool = False,
     from_end: bool = False,
@@ -1409,6 +1420,8 @@ def run_stream(
         return asyncio.run(
             run_stream_async(
                 config_or_path,
+                inputs=inputs,
+                output=output,
                 checkpoint_path=checkpoint_path,
                 from_start=from_start,
                 from_end=from_end,

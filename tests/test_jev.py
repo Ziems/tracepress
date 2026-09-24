@@ -20,7 +20,17 @@ from trace_miner.jev import (
     JevPredict,
     JevSystemOneResponse,
 )
-from trace_miner.runtime import run_config
+from trace_miner.runtime import run_config as _run_config
+
+
+def run_config(config, inputs=None, output=None, **kwargs):
+    path = config.config_path if hasattr(config, "config_path") else Path(config)
+    parent = path.parent
+    if inputs is None:
+        inputs = [parent / "input.jsonl"]
+    if output is None:
+        output = parent / "output.jsonl"
+    return _run_config(config, inputs=inputs, output=output, **kwargs)
 
 
 def write_jsonl(path: Path, records: list[object]) -> None:
@@ -200,9 +210,7 @@ gate = JevPredict(Gate)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: gate
 """,
         [{"text": "note"}],
@@ -238,9 +246,7 @@ gate = JevPredict(Gate)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map:
           stage: gate
           lm:
@@ -257,9 +263,7 @@ pipelines:
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: gate
           reduce: gate
@@ -294,9 +298,7 @@ gate = JevPredict(Gate)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: gate
 """,
         [{"id": "a", "text": "note", "untouched": True}],
@@ -357,9 +359,7 @@ gate = JevPredict(Gate)
         """
 from: ./stages
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: gate
 """,
         [{"text": "note"}],
@@ -403,9 +403,7 @@ from: ./stages
 lm:
   default: openai/gpt-5.6-luna
 pipelines:
-  - in: input.jsonl
-    out: output.jsonl
-    pipeline:
+  - pipeline:
       - map: gate
 """,
         [{"text": "note"}],

@@ -8,9 +8,7 @@ lm:
     model: deepseek/deepseek-v4.1-flash
 
 pipelines:
-  - in: input/trajectories.jsonl
-    out: output/pii.jsonl
-    pipeline:
+  - pipeline:
       - group:
           expand: split_harbor_steps
           pipeline:

@@ -5,6 +5,8 @@ import importlib.util
 import inspect
 import os
 import sys
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any, get_origin
@@ -52,6 +54,18 @@ _GROUP_KEYS = {
 _CHILD_ERROR_POLICIES = {"fail", "partial", "skip"}
 
 
+def bind_io(config: Config, *, inputs: Sequence[str | Path], output: str | Path | None) -> Config:
+    if not inputs:
+        raise ConfigError("At least one input is required.")
+    pipeline = config.pipelines[0]
+    bound = replace(
+        pipeline,
+        inputs=tuple(_resolve_cli_path(item) for item in inputs),
+        output=None if output is None else _resolve_cli_path(output),
+    )
+    return replace(config, pipelines=(bound,))
+
+
 def load_config(path: str | Path) -> Config:
     config_path = Path(path).expanduser().resolve()
     base_dir = config_path.parent
@@ -82,13 +96,11 @@ def load_config(path: str | Path) -> Config:
     pipelines_raw = raw["pipelines"]
     if not isinstance(pipelines_raw, list) or not pipelines_raw:
         raise ConfigError("`pipelines` must be a non-empty list.")
+    if len(pipelines_raw) != 1:
+        raise ConfigError("`pipelines` must contain exactly one pipeline.")
 
-    pipelines = tuple(
-        _parse_pipeline(block, i, base_dir, module, defaults, lm_models)
-        for i, block in enumerate(pipelines_raw)
-    )
-    pipelines = _sort_pipelines(pipelines)
-    _validate_pipeline_names(pipelines)
+    pipelines = (_parse_pipeline(pipelines_raw[0], 0, base_dir, module, defaults, lm_models),)
+    _validate_tee_paths(pipelines[0])
     return Config(
         config_path,
         base_dir,
@@ -220,7 +232,7 @@ def _parse_pipeline(
 ) -> PipelineSpec:
     if not isinstance(raw, dict):
         raise ConfigError(f"Pipeline {source_index + 1} must be a mapping.")
-    required = {"in", "out", "pipeline"}
+    required = {"pipeline"}
     missing = required - set(raw)
     if missing:
         raise ConfigError(f"Pipeline {source_index + 1} missing key(s): {sorted(missing)}")
@@ -228,15 +240,8 @@ def _parse_pipeline(
     if unknown:
         raise ConfigError(f"Pipeline {source_index + 1} unknown key(s): {sorted(unknown)}")
     name = _parse_pipeline_name(raw.get("name"), source_index)
-
-    inputs_raw = raw["in"]
-    input_items = inputs_raw if isinstance(inputs_raw, list) else [inputs_raw]
-    if not input_items:
-        raise ConfigError(f"Pipeline {source_index + 1} must have at least one input.")
-    inputs = tuple(_normalize_path(item, base_dir, f"pipeline {source_index + 1} input") for item in input_items)
-    output = _normalize_path(raw["out"], base_dir, f"pipeline {source_index + 1} output")
     steps = _parse_steps(raw["pipeline"], base_dir, module, defaults, lm_models, f"pipeline {source_index + 1}")
-    return PipelineSpec(inputs, output, steps, source_index, name)
+    return PipelineSpec(steps, source_index, name=name)
 
 
 def _parse_steps(
@@ -524,6 +529,13 @@ def _normalize_path(raw: Any, base_dir: Path, where: str) -> Path:
     return Path(os.path.realpath(path))
 
 
+def _resolve_cli_path(raw: str | Path) -> Path:
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return Path(os.path.realpath(path))
+
+
 def _parse_pipeline_name(raw: Any, source_index: int) -> str | None:
     if raw is None:
         return None
@@ -532,56 +544,12 @@ def _parse_pipeline_name(raw: Any, source_index: int) -> str | None:
     return raw
 
 
-def _validate_pipeline_names(pipelines: tuple[PipelineSpec, ...]) -> None:
-    seen: dict[str, int] = {}
-    for pipeline in pipelines:
-        if pipeline.name is None:
-            continue
-        previous = seen.get(pipeline.name)
-        if previous is not None:
-            raise ConfigError(f"Duplicate pipeline name `{pipeline.name}`.")
-        seen[pipeline.name] = pipeline.source_index
-
-
-def _sort_pipelines(pipelines: tuple[PipelineSpec, ...]) -> tuple[PipelineSpec, ...]:
-    producer: dict[Path, int] = {}
-    for i, pipeline in enumerate(pipelines):
-        for path in (pipeline.output, *_collect_tee_paths(pipeline.steps)):
-            if path in producer:
-                raise ConfigError(f"Multiple pipeline outputs or tee targets write {path}.")
-            producer[path] = i
-
-    deps: dict[int, set[int]] = {i: set() for i in range(len(pipelines))}
-    for i, pipeline in enumerate(pipelines):
-        for input_path in pipeline.inputs:
-            dep = producer.get(input_path)
-            if dep is None:
-                if not input_path.exists():
-                    raise ConfigError(f"Input file does not exist: {input_path}")
-            elif dep != i:
-                deps[i].add(dep)
-
-    ordered: list[int] = []
-    visiting: list[int] = []
-    visited: set[int] = set()
-
-    def visit(i: int) -> None:
-        if i in visited:
-            return
-        if i in visiting:
-            cycle = visiting[visiting.index(i) :] + [i]
-            rendered = " -> ".join(str(pipelines[j].output) for j in cycle)
-            raise ConfigError(f"Pipeline cycle detected: {rendered}")
-        visiting.append(i)
-        for dep in sorted(deps[i]):
-            visit(dep)
-        visiting.pop()
-        visited.add(i)
-        ordered.append(i)
-
-    for i in range(len(pipelines)):
-        visit(i)
-    return tuple(pipelines[i] for i in ordered)
+def _validate_tee_paths(pipeline: PipelineSpec) -> None:
+    seen: set[Path] = set()
+    for path in _collect_tee_paths(pipeline.steps):
+        if path in seen:
+            raise ConfigError(f"Multiple tee targets write {path}.")
+        seen.add(path)
 
 
 def _collect_tee_paths(steps: tuple[Step, ...]) -> tuple[Path, ...]:

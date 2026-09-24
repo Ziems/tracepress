@@ -9,15 +9,15 @@ JSONL paths and checkpoints stay on the pipeline host. The client only has a bas
 `serve` is the live path. It runs the follow runtime and an HTTP server in one process:
 
 ```bash
-trace-miner serve pipeline.yaml --host 0.0.0.0 --port 8765
+trace-miner serve pipeline.yaml --out steps.jsonl --host 0.0.0.0 --port 8765
 ```
 
-It binds `127.0.0.1` unless `--host` is set.
+It binds `127.0.0.1` unless `--host` is set. `--out` is optional.
 
-- `POST /v1/records` appends one JSON object as a newline-terminated line to the single root input and returns `202` once that append is flushed. It does not wait for the pipeline.
+- `POST /v1/records` appends one JSON object as a newline-terminated line to `.trace-miner/inbox/<config-stem>.jsonl` beside the config and returns `202` once that append is flushed. It does not wait for the pipeline.
 - `GET /v1/events` is a Server-Sent Events response for one named pipeline's alert log.
 
-A config with more than one root input is a startup error.
+`--out` writes records that finish the pipeline. Omit it and only the alert log is written.
 
 ## N2. Names
 
@@ -26,8 +26,6 @@ A pipeline may declare `name`. The name is optional, unique, and is the only pub
 ```yaml
 pipelines:
   - name: alerts
-    in: input/alerts.jsonl
-    out: output/steps.jsonl
     pipeline:
       - group:
           expand: split_steps
@@ -37,7 +35,7 @@ pipelines:
       - alert: flag_doom_loop
 ```
 
-`serve` publishes that pipeline's alert log, `.trace-miner/alerts/<name>.jsonl`, under `name`. It does not publish `out` or `tee` files. Subscribers receive alert events only.
+`serve` publishes that pipeline's alert log, `.trace-miner/alerts/<name>.jsonl`, under `name`. It does not publish `--out` or `tee` files. Subscribers receive alert events only.
 
 `GET /v1/events?output=alerts&field=rollout_id&rollout_id=r1` keeps records whose named field matches. The field is whatever the caller is correlating, `rollout_id` in this example. When the config sets `id_field`, that field is the filter and the `field` query must match it. Otherwise `field` is required, and the value is the query parameter of that name.
 
@@ -69,7 +67,7 @@ def flag_doom_loop(record):
 {"name": "flag_doom_loop", "reason": "retrying the same pytest command", "rollout_id": "r1"}
 ```
 
-`name` is the stage name. `reason` is the string a Python `alert` stage returned. `rollout_id` here is `id_field`, copied from the record or from the group parent. The record that continues down the pipeline is unchanged, and it is what `out` receives. A DSPy `alert` stage, used directly rather than as a reduce, has exactly one bool output. False stays quiet. True writes the module's outputs onto the event.
+`name` is the stage name. `reason` is the string a Python `alert` stage returned. `rollout_id` here is `id_field`, copied from the record or from the group parent. The record that continues down the pipeline is unchanged, and it is what `--out` receives when that flag is set. A DSPy `alert` stage, used directly rather than as a reduce, has exactly one bool output. False stays quiet. True writes the module's outputs onto the event.
 
 ## N4. Client
 
