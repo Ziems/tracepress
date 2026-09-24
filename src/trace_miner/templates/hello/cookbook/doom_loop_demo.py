@@ -37,7 +37,7 @@ FALSE_POSITIVE_TASKS = {
 def main() -> None:
     url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8765"
     client = Client(url)
-    here = Path(__file__).resolve().parent
+    here = Path(__file__).resolve().parent.parent
     traces = [
         *_load_traces(here / "input" / "trajectories.jsonl"),
         *_load_traces(here / "input" / _EXAMPLES_FILE),

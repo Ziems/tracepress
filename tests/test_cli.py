@@ -88,28 +88,25 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert main(["init", str(dest)]) == 0
     out = capsys.readouterr().out
     assert "Created a hello-world project" in out
-    assert "trace-miner run summarize.yaml" in out
-    assert "pii.yaml" in out
-    assert "alerts.yaml" in out
-    assert "trace-miner serve alerts.yaml" in out
-    assert "python client_demo.py" in out
-    assert "doom_loop.yaml" in out
-    assert "classify.yaml" in out
-    assert "python doom_loop_demo.py" in out
+    assert "trace-miner run pipeline.yaml" in out
+    assert "cookbook/" in out
     assert "AGENTS.md" in out
     assert "stream.yaml" not in out
     assert "trace-miner replay" not in out
-    assert (dest / "summarize.yaml").is_file()
-    assert (dest / "pii.yaml").is_file()
-    assert (dest / "frustration.yaml").is_file()
-    assert (dest / "category.yaml").is_file()
-    assert (dest / "classify.yaml").is_file()
-    assert (dest / "alerts.yaml").is_file()
-    assert (dest / "doom_loop.yaml").is_file()
-    assert not (dest / "stream.yaml").exists()
-    assert (dest / "client_demo.py").is_file()
-    assert (dest / "doom_loop_demo.py").is_file()
+    assert (dest / "pipeline.yaml").is_file()
     assert (dest / "stages.py").is_file()
+    cookbook = dest / "cookbook"
+    assert (cookbook / "summarize.yaml").is_file()
+    assert (cookbook / "pii.yaml").is_file()
+    assert (cookbook / "frustration.yaml").is_file()
+    assert (cookbook / "category.yaml").is_file()
+    assert (cookbook / "classify.yaml").is_file()
+    assert (cookbook / "alerts.yaml").is_file()
+    assert (cookbook / "doom_loop.yaml").is_file()
+    assert (cookbook / "client_demo.py").is_file()
+    assert (cookbook / "doom_loop_demo.py").is_file()
+    assert (cookbook / "stages.py").is_file()
+    assert not (dest / "stream.yaml").exists()
     assert (dest / "AGENTS.md").is_file()
     assert (dest / "input" / "trajectories.jsonl").is_file()
     assert (dest / "input" / "doom_loop_examples.jsonl").is_file()
@@ -118,9 +115,10 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
     assert not (dest / "input" / "doom_loop.jsonl").exists()
     assert not (dest / "simulate_stream.py").exists()
     agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
-    assert "trace-miner run summarize.yaml" in agents
-    assert "trace-miner serve alerts.yaml" in agents
-    assert "trace-miner serve doom_loop.yaml" in agents
+    assert "trace-miner run pipeline.yaml" in agents
+    assert "trace-miner run cookbook/summarize.yaml" in agents
+    assert "trace-miner serve cookbook/alerts.yaml" in agents
+    assert "trace-miner serve cookbook/doom_loop.yaml" in agents
     assert "trace-miner replay" not in agents
     assert "stages.py" in agents
 
@@ -141,6 +139,9 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
         "terminal-bench/takens-embedding-lean",
     ]
 
+    hello = load_config(dest / "pipeline.yaml")
+    assert hello.pipelines[0].output is None
+    assert hello.pipelines[0].inputs == ()
     for name in (
         "summarize.yaml",
         "pii.yaml",
@@ -150,12 +151,12 @@ def test_init_creates_hello_world_project(tmp_path: Path, capsys: pytest.Capture
         "alerts.yaml",
         "doom_loop.yaml",
     ):
-        config = load_config(dest / name)
+        config = load_config(cookbook / name)
         assert config.pipelines[0].output is None
         assert config.pipelines[0].inputs == ()
-    alerts = load_config(dest / "alerts.yaml")
+    alerts = load_config(cookbook / "alerts.yaml")
     assert alerts.pipelines[0].name == "alerts"
-    doom_loop = load_config(dest / "doom_loop.yaml")
+    doom_loop = load_config(cookbook / "doom_loop.yaml")
     assert doom_loop.pipelines[0].name == "doom_loop"
 
 
@@ -170,9 +171,9 @@ def test_init_refuses_to_overwrite(tmp_path: Path, capsys: pytest.CaptureFixture
 def test_init_force_overwrites(tmp_path: Path) -> None:
     dest = tmp_path / "demo"
     assert main(["init", str(dest)]) == 0
-    (dest / "summarize.yaml").write_text("broken\n", encoding="utf-8")
+    (dest / "pipeline.yaml").write_text("broken\n", encoding="utf-8")
     assert main(["init", str(dest), "--force"]) == 0
-    assert "from:" in (dest / "summarize.yaml").read_text(encoding="utf-8")
+    assert "from:" in (dest / "pipeline.yaml").read_text(encoding="utf-8")
 
 
 def test_init_prompts_for_project_name(
@@ -187,7 +188,7 @@ def test_init_prompts_for_project_name(
     assert main(["init"]) == 0
     out = capsys.readouterr().out
     assert "Created a hello-world project in demo/" in out
-    assert (tmp_path / "demo" / "summarize.yaml").is_file()
+    assert (tmp_path / "demo" / "pipeline.yaml").is_file()
     assert (tmp_path / "demo" / "stages.py").is_file()
 
 
@@ -203,7 +204,7 @@ def test_init_uses_hello_world_default(
     assert main(["init"]) == 0
     out = capsys.readouterr().out
     assert "Created a hello-world project in hello-world/" in out
-    assert (tmp_path / "hello-world" / "summarize.yaml").is_file()
+    assert (tmp_path / "hello-world" / "pipeline.yaml").is_file()
 
 
 def test_init_reprompts_until_name_is_valid(
@@ -218,7 +219,7 @@ def test_init_reprompts_until_name_is_valid(
 
     assert main(["init"]) == 0
     assert "must be a new directory" in capsys.readouterr().err
-    assert (tmp_path / "demo" / "summarize.yaml").is_file()
+    assert (tmp_path / "demo" / "pipeline.yaml").is_file()
 
 
 def test_init_uses_hello_world_when_stdin_is_not_a_tty(
@@ -229,7 +230,7 @@ def test_init_uses_hello_world_when_stdin_is_not_a_tty(
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
     assert main(["init"]) == 0
-    assert (tmp_path / "hello-world" / "summarize.yaml").is_file()
+    assert (tmp_path / "hello-world" / "pipeline.yaml").is_file()
 
 
 def test_bare_config_is_rejected(

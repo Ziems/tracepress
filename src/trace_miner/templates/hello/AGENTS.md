@@ -4,7 +4,8 @@ You are working in a Trace Miner project. YAML pipelines over JSONL traces.
 Stage logic is ordinary Python or a DSPy signature.
 
 YAML owns topology. Python owns logic. Do not put prompts, routing, or stage
-bodies in YAML. Do not invent a second stage module unless the user asks.
+bodies in YAML. `pipeline.yaml` uses `stages.py`. The examples in `cookbook/`
+share `cookbook/stages.py`. Do not add another stage module unless the user asks.
 
 ## Commands
 
@@ -18,7 +19,7 @@ trace-miner stats
 order. `--progress` always shows stage bars.
 
 `serve` accepts steps over HTTP and pushes alerts. It has no `--in`. `--out`
-also writes finished records. `alerts.yaml` is the bundled example. Bind
+also writes finished records. `cookbook/alerts.yaml` is the bundled example. Bind
 beyond localhost with `--host`.
 
 `stats` prints local usage totals from `~/.trace-miner/`.
@@ -29,52 +30,53 @@ LM stages need OpenRouter:
 
 ```bash
 export OPENROUTER_API_KEY=...
-trace-miner run summarize.yaml --in input/trajectories.jsonl --out output/summaries.jsonl
+trace-miner run pipeline.yaml --in input/trajectories.jsonl --out output/hello.jsonl
 ```
 
-Then inspect `output/summaries.jsonl`. A successful run prints the output path
+Then inspect `output/hello.jsonl`. A successful run prints the output path
 and a one-line profile (wall time, plus LM calls / tokens / cost).
 
-The other bundled pipelines reuse the same traces and `stages.py`:
+The cookbook pipelines reuse the same traces and `cookbook/stages.py`:
 
 ```bash
-trace-miner run pii.yaml --in input/trajectories.jsonl --out output/pii.jsonl
-trace-miner run frustration.yaml --in input/trajectories.jsonl --out output/frustration.jsonl
-trace-miner run category.yaml --in input/trajectories.jsonl --out output/categories.jsonl
-trace-miner run classify.yaml --in input/trajectories.jsonl --out output/classifications.jsonl
+trace-miner run cookbook/summarize.yaml --in input/trajectories.jsonl --out output/summaries.jsonl
+trace-miner run cookbook/pii.yaml --in input/trajectories.jsonl --out output/pii.jsonl
+trace-miner run cookbook/frustration.yaml --in input/trajectories.jsonl --out output/frustration.jsonl
+trace-miner run cookbook/category.yaml --in input/trajectories.jsonl --out output/categories.jsonl
+trace-miner run cookbook/classify.yaml --in input/trajectories.jsonl --out output/classifications.jsonl
 ```
 
-`alerts.yaml` serves alerts. In one terminal:
+`cookbook/alerts.yaml` serves alerts. In one terminal:
 
 ```bash
-trace-miner serve alerts.yaml --out output/alerts.jsonl
+trace-miner serve cookbook/alerts.yaml --out output/alerts.jsonl
 ```
 
 In another, from this directory:
 
 ```bash
-python client_demo.py
+python cookbook/client_demo.py
 ```
 
 That posts `input/trajectories.jsonl` one step at a time and exits when
 `flag_sensitive_step` returns a reason. The first hit is the planted SSN in
 the ATRX trace.
 
-`doom_loop.yaml` alerts from a judgment over recent steps instead of one step.
+`cookbook/doom_loop.yaml` alerts from a judgment over submitted steps.
 In one terminal:
 
 ```bash
-trace-miner serve doom_loop.yaml --out output/doom_loop.jsonl
+trace-miner serve cookbook/doom_loop.yaml --out output/doom_loop.jsonl
 ```
 
 In another:
 
 ```bash
-python doom_loop_demo.py
+python cookbook/doom_loop_demo.py
 ```
 
 The group's `expand` (`split_harbor_steps`) and per-child `map`
-(`summarize_harbor_step`) are the same stages `summarize.yaml` uses. Only the
+(`summarize_harbor_step`) are the same stages `cookbook/summarize.yaml` uses. Only the
 reduce and the alert are new:
 
 ```yaml
@@ -198,19 +200,18 @@ module's other outputs on `alert.record`.
 
 | Path | Role |
 | --- | --- |
-| `*.yaml` | Pipeline topology only: step order and model policy |
-| `alerts.yaml` | Named `alerts` pipeline for `serve` |
-| `client_demo.py` | Posts trajectory steps to a running `serve` and stops on an abort |
-| `doom_loop.yaml` | Named `doom_loop` pipeline for `serve` |
-| `doom_loop_demo.py` | Posts one step at a time and stops on `flag_doom_loop` |
-| `classify.yaml` | One Jev map over a prepared trajectory; no per-step summarize |
-| `stages.py` | Shared Python functions and DSPy signatures |
+| `pipeline.yaml` | Expand steps, map a summary, reduce to a label |
+| `stages.py` | Stages named by `pipeline.yaml` |
+| `cookbook/*.yaml` | Example pipelines: summarize, PII, alerts, doom loop |
+| `cookbook/stages.py` | Stages those examples share |
+| `cookbook/client_demo.py` | Posts trajectory steps to a running `serve` and stops on an abort |
+| `cookbook/doom_loop_demo.py` | Posts one step at a time and stops on `flag_doom_loop` |
 | `input/trajectories.jsonl` | Three slim harbor traces |
 | `input/doom_loop_examples.jsonl` | Three real harbor traces: one confirmed doom loop, two confirmed look-alikes |
 | `output/` | Generated JSONL from `--out`. Gitignored. Safe to overwrite |
 | `README.md` | Human walkthrough |
 
-`from: ./stages` in every YAML resolves names against `stages.py`. A stage name
+`from: ./stages` resolves against the `stages.py` next to that YAML. A stage name
 in config must be a module-level attribute there.
 
 ## What is already here
@@ -223,13 +224,13 @@ Three harbor traces with planted signals:
 
 | Config | Pattern | Output |
 | --- | --- | --- |
-| `summarize.yaml` | prepare → expand steps → LM summarize → LM diagnose → compact | `output/summaries.jsonl` |
-| `pii.yaml` | expand steps → LM detect → Python reduce | `output/pii.jsonl` |
-| `frustration.yaml` | expand steps → LM detect → Python reduce | `output/frustration.jsonl` |
-| `category.yaml` | prepare → expand steps → LM summarize → LM categorize → compact | `output/categories.jsonl` |
-| `classify.yaml` | prepare → Jev categorize → compact | `output/classifications.jsonl` |
-| `alerts.yaml` | `alert: flag_sensitive_step` on posted steps | `output/alerts.jsonl` |
-| `doom_loop.yaml` | expand+LM summarize+LM reduce over a posted step window, on every post | `output/doom_loop.jsonl` |
+| `cookbook/summarize.yaml` | prepare → expand steps → LM summarize → LM diagnose → compact | `output/summaries.jsonl` |
+| `cookbook/pii.yaml` | expand steps → LM detect → Python reduce | `output/pii.jsonl` |
+| `cookbook/frustration.yaml` | expand steps → LM detect → Python reduce | `output/frustration.jsonl` |
+| `cookbook/category.yaml` | prepare → expand steps → LM summarize → LM categorize → compact | `output/categories.jsonl` |
+| `cookbook/classify.yaml` | prepare → Jev categorize → compact | `output/classifications.jsonl` |
+| `cookbook/alerts.yaml` | `alert: flag_sensitive_step` on posted steps | `output/alerts.jsonl` |
+| `cookbook/doom_loop.yaml` | expand + LM summarize + LM reduce over submitted steps, on every post | `output/doom_loop.jsonl` |
 
 Prefer copying one of these over inventing a new shape. Post live steps with
 `trace-miner serve`; do not write a helper script.
@@ -307,7 +308,7 @@ or `skip` to drop the whole group.
 
 ## How a stage is written
 
-Add new stages to `stages.py`. Keep helpers private with a leading underscore.
+Add new stages to `cookbook/stages.py`. Keep helpers private with a leading underscore.
 
 ### Python stages
 
@@ -376,7 +377,7 @@ detect_pii_in_step = dspy.Predict(DetectPiiInStep)
   the keys the record actually had.
 - Output fields merge into the record. Unmentioned keys pass through.
 - Pydantic outputs are parsed by DSPy. JSONL writes dump models to dicts.
-  See `PiiFinding` in `stages.py`.
+  See `PiiFinding` in `cookbook/stages.py`.
 - LM stages do not receive `ctx`. If you need `ctx`, wrap the module in a
   Python function; the wrapper is then a Python stage.
 - Instructions live on the signature docstring, `Field(description=...)`, and
@@ -427,11 +428,11 @@ categorize_trajectory = JevPredict(CategorizeTrajectory)
 
 ## Adding a pipeline
 
-1. Copy the closest YAML (`pii.yaml` for per-step detection, `summarize.yaml`
-   for trajectory diagnosis, `classify.yaml` for a Jev classification,
-   `alerts.yaml` for a served alert pipeline,
-   `doom_loop.yaml` for a served pipeline that reduces over a step window).
-2. Add or reuse stages in `stages.py`. Name the YAML keys exactly after those
+1. Copy the closest YAML (`cookbook/pii.yaml` for per-step detection, `cookbook/summarize.yaml`
+   for trajectory diagnosis, `cookbook/classify.yaml` for a Jev classification,
+   `cookbook/alerts.yaml` for a served alert pipeline,
+   `cookbook/doom_loop.yaml` for a served pipeline that reduces over submitted steps).
+2. Add or reuse stages in `cookbook/stages.py`. Name the YAML keys exactly after those
    attributes.
 3. Run `trace-miner run new-pipeline.yaml --in input/trajectories.jsonl --out output/findings.jsonl`.
 4. Read the output JSONL and the profile line. If cost or time looks wrong,
@@ -453,7 +454,7 @@ shape is different. Clip long strings before they reach an LM.
 - Do not add `lm:` options to a Python stage or a Jev stage.
 - Do not change `from:` unless the user wants a different module.
 - Do not edit files under `output/` as source. They are run products.
-- Do not invent a file-tail helper. Use `trace-miner serve` and `client_demo.py`.
+- Do not invent a file-tail helper. Use `trace-miner serve` and `cookbook/client_demo.py`.
 
 ## Debugging
 

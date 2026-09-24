@@ -10,7 +10,7 @@ from trace_miner.client import Client
 def main() -> None:
     url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8765"
     client = Client(url)
-    path = Path(__file__).resolve().parent / "input" / "trajectories.jsonl"
+    path = Path(__file__).resolve().parent.parent / "input" / "trajectories.jsonl"
     for trace in _load_traces(path):
         session_id = str(trace.get("session_id") or "")
         task = str((trace.get("eval") or {}).get("task_name") or session_id)

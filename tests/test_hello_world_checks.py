@@ -219,7 +219,7 @@ def test_check_doom_loop_rejects_missing_loop_alert(tmp_path: Path) -> None:
 def test_check_project_and_cli(tmp_path: Path) -> None:
     output = tmp_path / "output"
     output.mkdir()
-    alerts = tmp_path / ".trace-miner" / "alerts"
+    alerts = tmp_path / "cookbook" / ".trace-miner" / "alerts"
     alerts.mkdir(parents=True)
     _write_jsonl(output / "summaries.jsonl", _summary_rows())
     _write_jsonl(output / "pii.jsonl", _pii_rows())

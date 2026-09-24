@@ -185,9 +185,9 @@ def check_project(project: Path) -> None:
     check_pii(output / "pii.jsonl")
     check_frustration(output / "frustration.jsonl")
     check_categories(output / "categories.jsonl")
-    check_alerts(project / ".trace-miner" / "alerts" / "alerts.jsonl")
+    check_alerts(project / "cookbook" / ".trace-miner" / "alerts" / "alerts.jsonl")
     check_doom_loop(
-        project / ".trace-miner" / "alerts" / "doom_loop.jsonl",
+        project / "cookbook" / ".trace-miner" / "alerts" / "doom_loop.jsonl",
         output / "summaries.jsonl",
     )
 

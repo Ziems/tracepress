@@ -1,137 +1,254 @@
 # Hello Trace Miner
 
-This project is a small harbor-style workspace. One `stages.py` module, three
-slim harbor traces, and seven pipelines that reuse those stages.
-
-The traces are real harbor runs (failed ATRX/VEP CRISPR, failed photonic
-routing, passed FreeCAD spring clip) with planted signals so each pipeline has
-something to find: a fake SSN, a fake phone number, and a frustrated user turn.
-The doom-loop demo adds three more real traces with no planted signal: one
-genuine doom loop and two that only look like one.
+Find a failure, planted PII, a frustrated user, or a doom loop in three example harbor traces.
 
 Language-model stages need OpenRouter:
 
 ```bash
 export OPENROUTER_API_KEY=...
+trace-miner run pipeline.yaml --in input/trajectories.jsonl --out output/hello.jsonl
 ```
 
-## Pipelines
+`pipeline.yaml` summarizes each step, then reduces those summaries to a label. Open `output/hello.jsonl` when it finishes.
+
+```yaml
+from: ./stages
+id_field: session_id
+
+lm:
+  default:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+
+pipelines:
+  - pipeline:
+      - group:
+          expand: split_steps
+          pipeline:
+            - map: summarize_step
+          reduce: label_trajectory
+      - map: compact
+```
+
+```python
+class SummarizeStep(dspy.Signature):
+    """Name the concrete action in this step."""
+
+    step_id: int = dspy.InputField()
+    message: str = dspy.InputField()
+    step_summary: str = dspy.OutputField(desc="One sentence, at most 15 words.")
+
+summarize_step = dspy.Predict(SummarizeStep)
+
+
+class LabelTrajectory(dspy.Signature):
+    """Name what this agent trajectory was trying to do."""
+
+    step_summary: list[str] = dspy.InputField()
+    label: str = dspy.OutputField(desc="A few words naming the task.")
+
+label_trajectory = dspy.Predict(LabelTrajectory)
+```
+
+`step_summary` on the reduce is a list gathered from the mapped steps. `compact` keeps `session_id`, `task_name`, and `label`.
+
+## Cookbook
 
 | Config | What it does | Output |
 | --- | --- | --- |
-| `summarize.yaml` | Summarize each step, then diagnose the trajectory | `output/summaries.jsonl` |
-| `pii.yaml` | Detect SSN / phone / email in each step | `output/pii.jsonl` |
-| `frustration.yaml` | Detect user frustration or impatience | `output/frustration.jsonl` |
-| `category.yaml` | Label domain and outcome | `output/categories.jsonl` |
-| `classify.yaml` | Classify a trajectory with Jev, without summarizing each step | `output/classifications.jsonl` |
-| `alerts.yaml` | Alert when a step contains an SSN, a phone number, or a frustrated user turn | `output/alerts.jsonl` |
-| `doom_loop.yaml` | Reduce over the last few steps at every posted step; alert if the agent is stuck repeating itself | `output/doom_loop.jsonl` |
+| `cookbook/summarize.yaml` | Summarize each step, then diagnose the trajectory | `output/summaries.jsonl` |
+| `cookbook/pii.yaml` | Detect SSN / phone / email in each step | `output/pii.jsonl` |
+| `cookbook/frustration.yaml` | Detect user frustration or impatience | `output/frustration.jsonl` |
+| `cookbook/category.yaml` | Label domain and outcome | `output/categories.jsonl` |
+| `cookbook/classify.yaml` | Classify a trajectory with Jev, without summarizing each step | `output/classifications.jsonl` |
+| `cookbook/alerts.yaml` | Alert when a step contains an SSN, a phone number, or a frustrated user turn | `output/alerts.jsonl` |
+| `cookbook/doom_loop.yaml` | Alert when the agent is stuck repeating itself | `output/doom_loop.jsonl` |
+
+
+The traces are real harbor runs with three planted signals: a fake SSN, a fake phone number, and a user turn that says "taking forever".
 
 ## Run
 
 ```bash
-trace-miner run summarize.yaml --in input/trajectories.jsonl --out output/summaries.jsonl
+trace-miner run cookbook/summarize.yaml --in input/trajectories.jsonl --out output/summaries.jsonl
+trace-miner run cookbook/pii.yaml --in input/trajectories.jsonl --out output/pii.jsonl
+trace-miner run cookbook/frustration.yaml --in input/trajectories.jsonl --out output/frustration.jsonl
+trace-miner run cookbook/category.yaml --in input/trajectories.jsonl --out output/categories.jsonl
+trace-miner run cookbook/classify.yaml --in input/trajectories.jsonl --out output/classifications.jsonl
 ```
 
-Then try the others on the same traces:
+`cookbook/summarize.yaml` is the shape of a batch pipeline. YAML names the stages. `cookbook/stages.py` is ordinary Python or a DSPy signature.
 
-```bash
-trace-miner run pii.yaml --in input/trajectories.jsonl --out output/pii.jsonl
-trace-miner run frustration.yaml --in input/trajectories.jsonl --out output/frustration.jsonl
-trace-miner run category.yaml --in input/trajectories.jsonl --out output/categories.jsonl
-trace-miner run classify.yaml --in input/trajectories.jsonl --out output/classifications.jsonl
+```yaml
+from: ./stages
+id_field: session_id
+
+lm:
+  max_concurrent: 256
+  default:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+  reduce:
+    provider: openrouter
+    model: anthropic/claude-sonnet-5
+
+pipelines:
+  - pipeline:
+      - map: prepare_harbor_trajectory
+      - group:
+          expand: split_harbor_steps
+          pipeline:
+            - map: summarize_harbor_step
+          reduce: analyze_harbor_trajectory
+      - map: compact_harbor_summary
 ```
+
+A group expands one parent, runs a child pipeline, then reduces. A `list` input on the reduce is gathered from the children. The signatures below are the shape. The full versions are in `cookbook/stages.py`.
+
+```python
+def split_harbor_steps(record, ctx):
+    for step in record.get("steps", []):
+        ctx.emit({"step_index": step.get("step_id", 0), "message": step.get("message", "")})
+
+
+class SummarizeHarborStep(dspy.Signature):
+    """Name the concrete action in this step. Skip empty or no-op steps."""
+
+    message: str = dspy.InputField()
+    tool_calls: list[str] = dspy.InputField()
+    step_summary: str = dspy.OutputField(desc="One sentence naming what the agent did.")
+
+summarize_harbor_step = dspy.Predict(SummarizeHarborStep)
+```
+
+
 
 ## Alerts
 
-`flag_sensitive_step` is an `alert` step. It returns a reason when a posted step contains an SSN, a phone number, or the phrase "taking forever". With `--out`, the posted step lands in that JSONL. The alert itself is written under `.trace-miner/alerts/`. Posted records are stored in `.trace-miner/inbox/alerts.jsonl`.
+`cookbook/alerts.yaml` is one alert stage. `flag_sensitive_step` returns a reason for a planted SSN, phone number, or "taking forever". With `--out`, the step is written to that JSONL. The alert is written under `cookbook/.trace-miner/alerts/`.
+
+```yaml
+from: ./stages
+id_field: session_id
+
+pipelines:
+  - name: alerts
+    pipeline:
+      - alert: flag_sensitive_step
+```
+
+```python
+def flag_sensitive_step(record):
+    text = f"{record.get('message') or ''} {record.get('observation') or ''}"
+    if _SSN.search(text):
+        return "ssn"
+    if _PHONE.search(text):
+        return "phone number"
+    if "taking forever" in text.lower():
+        return "frustrated user"
+    return None
+```
 
 In one terminal:
 
 ```bash
-trace-miner serve alerts.yaml --out output/alerts.jsonl
+trace-miner serve cookbook/alerts.yaml --out output/alerts.jsonl
 ```
 
 In another, from this directory:
 
 ```bash
-python client_demo.py
+python cookbook/client_demo.py
 ```
 
-`client_demo.py` posts each step of `input/trajectories.jsonl`. It stops at the first alert, which is the SSN planted in the ATRX trace:
+The demo posts each step and stops on the planted SSN:
 
 ```text
 aborted terminal-bench/atrx-vep-crispr step 2: ssn
 ```
 
-The later traces carry a frustrated user turn and a phone number. Those fire if you remove the earlier signal.
+The same loop, without the demo:
+
+```python
+from trace_miner.client import Client
+
+client = Client("http://127.0.0.1:8765")
+with client.watch_events(session_id="r1") as events:
+    client.post_step(step)
+    for alert in events.take():
+        if alert.name == "flag_sensitive_step":
+            raise SystemExit(alert.reason)
+```
+
+`take()` returns the alerts that have arrived since the last call. The phone number and the frustrated turn fire if you remove the earlier signal.
 
 ## Doom loop
 
-`doom_loop.yaml` is served the same way as `alerts.yaml`. Post one step at a time. The server remembers every step already submitted for that `session_id` and runs the group over that list. `flag_doom_loop` alerts when the reduce says the agent is stuck repeating itself. No alert means keep going.
+To judge the whole rollout, expand the steps, reduce, then alert. The server remembers every step already submitted for that `session_id` and runs this pipeline on that list. No alert means keep going.
+
+```yaml
+from: ./stages
+id_field: session_id
+
+lm:
+  reduce: openai/gpt-5.6-luna
+
+pipelines:
+  - name: doom_loop
+    pipeline:
+      - group:
+          expand: split_harbor_steps
+          pipeline:
+            - map: summarize_harbor_step
+          reduce: detect_doom_loop
+      - alert: flag_doom_loop
+```
+
+```python
+class DetectDoomLoop(dspy.Signature):
+    """Decide if these summaries show an agent stuck repeating itself."""
+
+    step_summary: list[str] = dspy.InputField()
+    doom_loop: bool = dspy.OutputField()
+    pattern: str = dspy.OutputField(desc="What it keeps repeating, or an empty string.")
+
+detect_doom_loop = dspy.Predict(DetectDoomLoop)
+
+
+def flag_doom_loop(record):
+    if not record.get("doom_loop"):
+        return None
+    return record.get("pattern") or "stuck repeating itself"
+```
+
+When `doom_loop` is true, the event is `{"name": "flag_doom_loop", "reason": "retrying the same pytest command", "session_id": "r1"}`. The alert step returns a reason or `None`. The copy in `cookbook/stages.py` asks Jev for the bool, then writes `pattern` only when that bool is true.
 
 In one terminal:
 
 ```bash
-trace-miner serve doom_loop.yaml --out output/doom_loop.jsonl
+trace-miner serve cookbook/doom_loop.yaml --out output/doom_loop.jsonl
 ```
 
 In another, from this directory:
 
 ```bash
-python doom_loop_demo.py
+python cookbook/doom_loop_demo.py
 ```
 
-`doom_loop_demo.py` posts the three bundled traces plus three more from
-`input/doom_loop_examples.jsonl`, none of them planted or fabricated:
+Use cases, and what each one should do, are in `cookbook/doom_loop/README.md`. The demo posts the three bundled traces plus three more from `input/doom_loop_examples.jsonl`. `coq-block-bound` should stop mid-trace. The two look-alikes should stay quiet.
 
-- `coq-block-bound` really is a doom loop. The agent edits a Coq proof file,
-  compiles, gets an error, edits again — 40+ compile attempts from step 10 to
-  step 217 of a 218-step trace, never once succeeding. It reliably aborts
-  mid-stream:
+The same check, without the demo:
 
-  ```text
-  doom loop in terminal-bench/coq-block-bound step 18: Repeatedly edited Main.v with search_replace, then recompiled it; Coq continued to fail with proof/tactic/unification errors, without achieving a successful proof or changing approach.
-  ```
+```python
+with client.watch_events(session_id="s1") as events:
+    client.post_step({"session_id": "s1", **step})
+    for alert in events.take():
+        if alert.name == "flag_doom_loop":
+            raise SystemExit(alert.reason)
+```
 
-  (the exact wording and step are the LM's, so both vary run to run — the
-  pattern starts around step 10 and never lets up, so it should catch on
-  early)
 
-- `cargo-flight-dispatch` and `takens-embedding-lean` only *look* like doom
-  loops from a one-line-per-step summary — the same commands recur, but each
-  run follows a real change or targets a different hypothesis, and both end
-  with the agent reporting an honest outcome (a fix it verified, or a proof it
-  couldn't find) rather than repeating itself. Both should finish with
-  `rollout complete (clean)`.
-
-All three came from screening 157 real failed trajectories with this same
-pipeline, then reading the raw steps by hand before trusting any verdict — the
-LM's own "doom_loop: true" is not proof by itself. An earlier, looser version
-of `detect_doom_loop`'s prompt flagged 23 of those 157 traces; most turned out
-to be traces like the two look-alikes here. Tightening the signature's
-criteria (see `AGENTS.md`) cut that to 1 false alarm out of 157.
-
-The three original bundled traces may stay quiet. A run of empty or no-op agent turns is idle, not a doom loop. The real doom-loop trace must fire `flag_doom_loop`. The two look-alikes must not.
-
-## What each file is
-
-- The YAML files are topology only. They name stages and how they connect.
-- `stages.py` is ordinary Python plus DSPy signatures. Changing a stage here
-  changes every pipeline that names it. `detect_pii_in_step` uses a Pydantic
-  output type (`list[PiiFinding]`) so the model returns structured spans.
-- `input/trajectories.jsonl` is three slim harbor records.
-- `input/doom_loop_examples.jsonl` is three real harbor records — one genuine
-  doom loop, two confirmed look-alikes — their largest fields clipped for
-  size. `doom_loop_demo.py` reads it.
-- `alerts.yaml` is served with `trace-miner serve`. `client_demo.py` posts steps
-  over HTTP. The inbox is `.trace-miner/inbox/alerts.jsonl`.
-- `doom_loop.yaml` is served the same way. `doom_loop_demo.py` posts one step at a time and stops on `flag_doom_loop`.
-- `AGENTS.md` is the working guide for coding agents: how to run, add a
-  pipeline, and write Python or LM stages.
 
 ## Change it
 
-Edit a signature in `stages.py`, or copy `pii.yaml` to start a new pipeline
-over the same traces. Prefer a Pydantic model when an LM output is an object
-or a list of objects.
+Edit a signature in `stages.py`, or copy a pipeline from `cookbook/` to start a new one over the same traces. `AGENTS.md` is the guide for adding a pipeline.

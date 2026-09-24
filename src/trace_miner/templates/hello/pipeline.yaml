@@ -1,0 +1,16 @@
+from: ./stages
+id_field: session_id
+
+lm:
+  default:
+    provider: openrouter
+    model: deepseek/deepseek-v4.1-flash
+
+pipelines:
+  - pipeline:
+      - group:
+          expand: split_steps
+          pipeline:
+            - map: summarize_step
+          reduce: label_trajectory
+      - map: compact

@@ -18,10 +18,10 @@ The GitHub repo is private, so that command needs credentials that can clone it.
 export OPENROUTER_API_KEY=...
 trace-miner init my-trace-pipelines
 cd my-trace-pipelines
-trace-miner run summarize.yaml --in input/trajectories.jsonl --out output/summaries.jsonl
+trace-miner run pipeline.yaml --in input/trajectories.jsonl --out output/hello.jsonl
 ```
 
-That writes `stages.py`, three example traces, and five demo pipelines: `summarize.yaml`, `pii.yaml`, `frustration.yaml`, `category.yaml`, and `alerts.yaml`. Open `output/summaries.jsonl` when it finishes.
+That writes `pipeline.yaml`, `stages.py`, and three example traces. Open `output/hello.jsonl` when it finishes. More pipelines, including alerts and a doom loop, are in `cookbook/`.
 
 ## Commands
 
@@ -101,10 +101,10 @@ Steps are `map`, `filter`, `stage`, `tee`, `alert`, and `group`. A group expands
 On the pipeline host:
 
 ```bash
-trace-miner serve alerts.yaml --out output/alerts.jsonl --host 0.0.0.0 --port 8765
+trace-miner serve cookbook/alerts.yaml --out output/alerts.jsonl --host 0.0.0.0 --port 8765
 ```
 
-`alerts.yaml` names the pipeline `alerts`. `flag_sensitive_step` returns a reason for a planted SSN, phone number, or "taking forever". With `--out`, the step is written to that JSONL. The alert is written under `.trace-miner/alerts/`.
+`cookbook/alerts.yaml` names the pipeline `alerts`. `flag_sensitive_step` returns a reason for a planted SSN, phone number, or "taking forever". With `--out`, the step is written to that JSONL. The alert is written under `cookbook/.trace-miner/alerts/`.
 
 On the eval host:
 
@@ -121,7 +121,7 @@ with client.watch_events(session_id="r1") as events:
 
 `take()` returns the alerts that have arrived since the last call. The eval machine does not read the files.
 
-`python client_demo.py` in the new project posts the bundled traces and stops on the planted SSN:
+`python cookbook/client_demo.py` in the new project posts the bundled traces and stops on the planted SSN:
 
 ```text
 aborted terminal-bench/atrx-vep-crispr step 2: ssn

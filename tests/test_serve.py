@@ -213,10 +213,10 @@ def doom_loop(record):
 def test_hello_client_demo_stops_on_the_planted_ssn(tmp_path: Path) -> None:
     dest = tmp_path / "demo"
     init_project(dest)
-    server = start_serve(dest / "alerts.yaml", port=0, poll_interval=30, progress=False)
+    server = start_serve(dest / "cookbook" / "alerts.yaml", port=0, poll_interval=30, progress=False)
     try:
         completed = subprocess.run(
-            [sys.executable, str(dest / "client_demo.py"), server.url],
+            [sys.executable, str(dest / "cookbook" / "client_demo.py"), server.url],
             cwd=dest,
             capture_output=True,
             text=True,
@@ -227,7 +227,7 @@ def test_hello_client_demo_stops_on_the_planted_ssn(tmp_path: Path) -> None:
         assert "aborted terminal-bench/atrx-vep-crispr step 2: ssn" in completed.stderr
         assert "post terminal-bench/atrx-vep-crispr step 1" in completed.stdout
         assert "photonic" not in completed.stdout
-        alerts = read_jsonl(dest / ".trace-miner" / "alerts" / "alerts.jsonl")
+        alerts = read_jsonl(dest / "cookbook" / ".trace-miner" / "alerts" / "alerts.jsonl")
         assert len(alerts) == 1
         assert alerts[0]["name"] == "flag_sensitive_step"
         assert alerts[0]["reason"] == "ssn"
