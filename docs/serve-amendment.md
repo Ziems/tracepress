@@ -86,7 +86,7 @@ with client.watch_events(rollout_id="r1") as events:
 
 The keyword is the field name. `rollout_id` is just the field in this example; `watch_events(session_id="s1")` matches `session_id` instead. `watch_events` opens the SSE connection before the loop starts, reconnects with `Last-Event-ID` if the connection drops, and joins the listener on exit. `take()` without a timeout returns whatever is already queued. `take(timeout=1)` waits up to that many seconds for the next alert. The posted record already carries the same id.
 
-Each POST is one step. The server keeps every step already accepted for that id and runs the pipeline on the session so far. The inbox line is the latest step plus `steps`, the list of submitted steps. Restarting the server forgets that list.
+Each POST is one step. The server keeps every step already accepted for that id and runs the pipeline on the session so far. The inbox line is the latest step plus `steps`, the list of submitted steps. Restarting the server forgets that list. `serve` refuses to start when `lm.cache` is false, because already-submitted steps are reused from that cache.
 
 HTTP remains the contract. Another language can POST and read `text/event-stream` without this helper. Omit `output` on `GET /v1/events` when the server has one pipeline.
 

@@ -15,7 +15,7 @@ from starlette.responses import PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from trace_miner.config import load_config
-from trace_miner.errors import PipelineExecutionError, TraceMinerError
+from trace_miner.errors import ConfigError, PipelineExecutionError, TraceMinerError
 from trace_miner.model import Config, RunResult
 from trace_miner.runtime import open_stream, published_outputs
 from trace_miner.telemetry import run_command_name
@@ -188,6 +188,8 @@ def start_serve(
     progress_stream: Any = None,
 ) -> RunningServe:
     config = load_config(config_or_path) if not isinstance(config_or_path, Config) else config_or_path
+    if not config.lm_cache:
+        raise ConfigError("`serve` requires `lm.cache`. Already-submitted steps are reused from the cache.")
     spool = inbox_path(config)
     spool.parent.mkdir(parents=True, exist_ok=True)
     spool.touch(exist_ok=True)

@@ -236,6 +236,26 @@ def test_hello_client_demo_stops_on_the_planted_ssn(tmp_path: Path) -> None:
         server.close()
 
 
+def test_serve_rejects_a_pipeline_with_caching_off(tmp_path: Path) -> None:
+    config = write_project(
+        tmp_path,
+        STAGES,
+        """
+from: ./stages
+lm:
+  cache: false
+id_field: rollout_id
+pipelines:
+  - name: alerts
+    pipeline:
+      - alert: doom_loop
+""",
+        {"input.jsonl": []},
+    )
+    with pytest.raises(ConfigError, match="lm.cache"):
+        start_serve(config, port=0, progress=False)
+
+
 def test_serve_rejects_multiple_root_inputs(tmp_path: Path) -> None:
     config = write_project(
         tmp_path,
