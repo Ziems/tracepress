@@ -17,7 +17,7 @@ from starlette.routing import Route
 from trace_miner.config import load_config
 from trace_miner.errors import PipelineExecutionError, TraceMinerError
 from trace_miner.model import Config, RunResult
-from trace_miner.runtime import published_outputs, run_stream_async
+from trace_miner.runtime import open_stream, published_outputs
 from trace_miner.telemetry import run_command_name
 
 
@@ -252,38 +252,39 @@ async def _serve_on_loop(
     running._stop = stop
     hub = _Hub(published_outputs(config))
     app = _build_app(hub, config, spool, wake)
-    server = uvicorn.Server(
-        uvicorn.Config(app, host=host, port=port, log_level="error", access_log=False, lifespan="off")
-    )
-    server_task = asyncio.create_task(server.serve())
+    token = run_command_name.set("serve")
     try:
-        await _wait_until_started(server, server_task)
-        bound_host, bound_port = _bound_address(server)
-        running.url = _display_url(bound_host, bound_port)
-        token = run_command_name.set("serve")
+        stream = open_stream(
+            config,
+            inputs=[spool],
+            output=output,
+            checkpoint_path=checkpoint_path,
+            from_start=from_start,
+            from_end=from_end,
+            reset_checkpoint=reset_checkpoint,
+            poll_interval=poll_interval,
+            progress=progress,
+            progress_stream=progress_stream,
+            wake_event=wake,
+            stop_event=stop,
+            on_write=hub.publish,
+            on_ready=running._ready.set,
+        )
+        server = uvicorn.Server(
+            uvicorn.Config(app, host=host, port=port, log_level="error", access_log=False, lifespan="off")
+        )
+        server_task = asyncio.create_task(server.serve())
         try:
-            return await run_stream_async(
-                config,
-                inputs=[spool],
-                output=output,
-                checkpoint_path=checkpoint_path,
-                from_start=from_start,
-                from_end=from_end,
-                reset_checkpoint=reset_checkpoint,
-                poll_interval=poll_interval,
-                progress=progress,
-                progress_stream=progress_stream,
-                wake_event=wake,
-                stop_event=stop,
-                on_write=hub.publish,
-                on_ready=running._ready.set,
-            )
+            await _wait_until_started(server, server_task)
+            bound_host, bound_port = _bound_address(server)
+            running.url = _display_url(bound_host, bound_port)
+            return await stream.run()
         finally:
-            run_command_name.reset(token)
+            hub.close()
+            server.should_exit = True
+            await server_task
     finally:
-        hub.close()
-        server.should_exit = True
-        await server_task
+        run_command_name.reset(token)
 
 
 def _build_app(

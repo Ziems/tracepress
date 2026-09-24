@@ -1360,6 +1360,45 @@ def run_config(
     raise PipelineExecutionError("`run_config` cannot be called from a running event loop; use `run_config_async`.")
 
 
+def open_stream(
+    config_or_path: Config | str | Path,
+    *,
+    inputs: Sequence[str | Path],
+    output: str | Path | None = None,
+    checkpoint_path: str | Path | None = None,
+    from_start: bool = False,
+    from_end: bool = False,
+    reset_checkpoint: bool = False,
+    poll_interval: float = 1.0,
+    progress: bool | None = None,
+    progress_stream: TextIO | None = None,
+    max_records: int | None = None,
+    stop_when_idle: bool = False,
+    wake_event: asyncio.Event | None = None,
+    stop_event: asyncio.Event | None = None,
+    on_write: Callable[[str, Path, Any, int], None] | None = None,
+    on_ready: Callable[[], None] | None = None,
+) -> _StreamRun:
+    config = _prepare_run(config_or_path, inputs, output, require_inputs=True)
+    checkpoint = Path(checkpoint_path).expanduser().resolve() if checkpoint_path is not None else None
+    return _StreamRun(
+        config,
+        checkpoint_path=checkpoint,
+        from_start=from_start,
+        from_end=from_end,
+        reset_checkpoint=reset_checkpoint,
+        poll_interval=poll_interval,
+        progress=progress,
+        progress_stream=progress_stream,
+        max_records=max_records,
+        stop_when_idle=stop_when_idle,
+        wake_event=wake_event,
+        stop_event=stop_event,
+        on_write=on_write,
+        on_ready=on_ready,
+    )
+
+
 async def run_stream_async(
     config_or_path: Config | str | Path,
     *,
@@ -1379,11 +1418,11 @@ async def run_stream_async(
     on_write: Callable[[str, Path, Any, int], None] | None = None,
     on_ready: Callable[[], None] | None = None,
 ) -> RunResult:
-    config = _prepare_run(config_or_path, inputs, output, require_inputs=True)
-    checkpoint = Path(checkpoint_path).expanduser().resolve() if checkpoint_path is not None else None
-    return await _StreamRun(
-        config,
-        checkpoint_path=checkpoint,
+    return await open_stream(
+        config_or_path,
+        inputs=inputs,
+        output=output,
+        checkpoint_path=checkpoint_path,
         from_start=from_start,
         from_end=from_end,
         reset_checkpoint=reset_checkpoint,
