@@ -47,7 +47,7 @@ from: ./stages                  # module where stage names are resolved
 id_field: session_id            # optional; names the record in errors and alerts
 
 lm:                             # optional LM defaults
-  max_concurrent: 64
+  max_concurrent: 256
   cache: true                   # LM cache under ~/.trace-miner/cache
   max_tokens: 4096               # optional cap on generated tokens per call
   default:

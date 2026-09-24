@@ -186,7 +186,7 @@ uses:
 
 ```yaml
 lm:
-  max_concurrent: 64
+  max_concurrent: 256
   cache: true
   default:
     provider: openrouter
@@ -202,7 +202,7 @@ an LM reduce uses OpenRouter `anthropic/claude-sonnet-5`.
 
 ```yaml
 lm:
-  max_concurrent: 64
+  max_concurrent: 256
   default:
     provider: openrouter
     model: deepseek/deepseek-v4.1-flash
@@ -249,7 +249,7 @@ Model ids are any non-empty string for that provider. The default model is
 which uses `anthropic/claude-sonnet-5` on OpenRouter. A string value such as
 `default: gpt-4o-mini` is the model id on the inherited provider.
 
-`lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 64 and must be a
+`lm.max_concurrent` bounds simultaneous LM provider calls. It defaults to 256 and must be a
 positive integer. It sizes two things, not just a semaphore: a dedicated thread pool for
 dispatching blocking LM calls (rather than `asyncio.to_thread`'s shared default pool, which
 caps at `min(32, cpu_count+4)` regardless of this setting), and LiteLLM's underlying HTTP

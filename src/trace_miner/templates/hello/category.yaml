@@ -2,7 +2,7 @@ from: ./stages
 id_field: session_id
 
 lm:
-  max_concurrent: 64
+  max_concurrent: 256
   default:
     provider: openrouter
     model: deepseek/deepseek-v4.1-flash

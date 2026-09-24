@@ -262,7 +262,7 @@ from: ./stages
 id_field: session_id
 
 lm:
-  max_concurrent: 64
+  max_concurrent: 256
   default:
     provider: openrouter
     model: deepseek/deepseek-v4.1-flash
@@ -294,7 +294,7 @@ Rules:
 - `lm.default`, `lm.map`, `lm.filter`, `lm.expand`, `lm.reduce`, and `lm.alert` each take `provider` and `model`. Providers are `openrouter`, `openai`, and `anthropic`.
 - A missing role uses `default`. A missing `provider` uses the default provider. When `default` is omitted, reduce uses OpenRouter `anthropic/claude-sonnet-5` and other LM steps use OpenRouter `deepseek/deepseek-v4.1-flash`.
 - A string such as `reduce: some-model` is still a model id on the inherited provider.
-- `lm.max_concurrent` caps simultaneous LM calls. Keep it at least 64
+- `lm.max_concurrent` caps simultaneous LM calls. Keep it at least 256
   unless the user asks otherwise.
 - `lm.cache` defaults to true and uses DSPy's request cache in
   `~/.trace-miner/cache`. Set `cache: false` to force a fresh call every time.
