@@ -24,7 +24,7 @@ Each install gets a random id, stored at `~/.tracepress/telemetry_id` (or `$TRAC
 
 `agent_run` — one event each time you call `ws.agent_run`, including when it fails or is interrupted.
 
-Both events include the TracePress version, how the package was installed, the Python version, operating system, architecture, whether the process looks like CI, and, when a known coding agent started the process, which one. They also include the model provider and model name, token and cost totals, and how long the call took. On failure, the exception type is included (the class name only).
+Both events include the TracePress version, how the package was installed, the Python version, operating system, architecture, whether the process looks like CI, and whether the call is running in normal Python, a notebook, or Colab (`runtime` is `python`, `notebook`, or `colab`). When a known coding agent started the process, they include which one. They also include the model provider and model name, token and cost totals, and how long the call took. On failure, the exception type is included (the class name only).
 
 `lm_op` adds the operator name, input and output row counts, and whether the call was inside a workspace or an agent run. Inside a workspace it adds whether that run is a pipeline, an agent run, or a save, plus how many artifacts and pipelines the workspace has. It does not add the pipeline's name.
 

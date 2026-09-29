@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,6 +42,7 @@ def _shared() -> dict:
         "os": "Darwin",
         "arch": "arm64",
         "ci": False,
+        "runtime": "python",
         "$process_person_profile": False,
         "$geoip_disable": True,
         "op": "map",
@@ -138,6 +140,7 @@ def test_lm_map_event_has_counts_and_no_content(make_lm, monkeypatch):
     assert props["calls"] == 2
     assert props["in_workspace"] is False
     assert props["in_agent"] is False
+    assert props["runtime"] == "python"
     assert props["schema"] == "lm_op.v1"
     assert "exception_type" not in props
     blob = json.dumps(events)
@@ -295,6 +298,31 @@ def test_failed_agent_run_is_reported_and_reraised(tmp_path, monkeypatch):
     blob = json.dumps(events)
     assert "secret boom message" not in blob
     assert "secret question" not in blob
+
+
+def test_runtime_distinguishes_python_notebook_and_colab(monkeypatch):
+    monkeypatch.delenv("COLAB_RELEASE_TAG", raising=False)
+    monkeypatch.delitem(sys.modules, "google.colab", raising=False)
+    monkeypatch.delitem(sys.modules, "IPython", raising=False)
+    assert telemetry._runtime() == "python"
+
+    monkeypatch.setenv("COLAB_RELEASE_TAG", "colab-release")
+    assert telemetry._runtime() == "colab"
+    monkeypatch.delenv("COLAB_RELEASE_TAG")
+
+    class ZMQInteractiveShell:
+        pass
+
+    class FakeIPython:
+        @staticmethod
+        def get_ipython():
+            return ZMQInteractiveShell()
+
+    monkeypatch.setitem(sys.modules, "IPython", FakeIPython)
+    assert telemetry._runtime() == "notebook"
+
+    monkeypatch.setitem(sys.modules, "google.colab", object())
+    assert telemetry._runtime() == "colab"
 
 
 def test_context_reads_presence_not_values(monkeypatch):

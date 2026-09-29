@@ -69,6 +69,7 @@ class _Event(BaseModel):
     os: str
     arch: str
     ci: bool
+    runtime: Literal["python", "notebook", "colab"]
     invoked_by: Literal["cursor", "claude-code", "codex", "gemini"] | None = None
     process_person_profile: Literal[False] = Field(False, alias="$process_person_profile")
     geoip_disable: Literal[True] = Field(True, alias="$geoip_disable")
@@ -223,6 +224,30 @@ def _invoked_by() -> str | None:
     return None
 
 
+def _ipython_shell() -> Any:
+    """The active IPython shell, if this process already has one. Does not import IPython."""
+    try:
+        ipython = sys.modules.get("IPython")
+        getter = getattr(ipython, "get_ipython", None) if ipython is not None else None
+        if getter is None:
+            getter = getattr(sys.modules.get("builtins"), "get_ipython", None)
+        if getter is None:
+            return None
+        return getter()
+    except Exception:
+        return None
+
+
+def _runtime() -> Literal["python", "notebook", "colab"]:
+    """``colab``, ``notebook`` (Jupyter, VS Code, Cursor), or ``python``."""
+    if os.environ.get("COLAB_RELEASE_TAG") or "google.colab" in sys.modules:
+        return "colab"
+    shell = _ipython_shell()
+    if shell is not None and any(cls.__name__ == "ZMQInteractiveShell" for cls in type(shell).__mro__):
+        return "notebook"
+    return "python"
+
+
 def _context(event: str) -> dict[str, Any]:
     props: dict[str, Any] = {
         "schema": f"{event}.v1",
@@ -232,6 +257,7 @@ def _context(event: str) -> dict[str, Any]:
         "os": platform.system(),
         "arch": platform.machine(),
         "ci": "CI" in os.environ,
+        "runtime": _runtime(),
         "$process_person_profile": False,
         "$geoip_disable": True,
     }
