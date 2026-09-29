@@ -75,7 +75,7 @@ def test_agent_answers_from_the_workspace(lm, tmp_path):
 
     complaints(REVIEWS)
     agent = tracepress.Model(AGENT_MODEL, max_tokens=4000, cache=False)
-    answer = ws.ask("Which product has more reviews that mention a defect, and what is it? Cite rows.", model=agent, max_steps=12, verbose=True)
+    answer = ws.agent_run("Which product has more reviews that mention a defect, and what is it? Cite rows.", model=agent, max_steps=12, verbose=True)
     print(answer.text)
     assert "kettle" in answer.text.lower() or "toaster" in answer.text.lower()
     assert answer.steps

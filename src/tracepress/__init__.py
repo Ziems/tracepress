@@ -10,7 +10,7 @@
     ws = tp.Workspace("ws")
     @ws.pipeline(description="...")
     def my_pipeline(df): ...
-    ws.ask("...")
+    ws.agent_run("...")
 """
 
 from . import ops  # registers the df.lm_* accessors

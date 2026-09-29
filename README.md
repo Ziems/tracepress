@@ -47,7 +47,7 @@ reasons = failure_reasons(steps)  # one row per step in, one row per run out
 Or hand those artifacts to an agent and let it dig:
 
 ```python
-ws.ask(
+ws.agent_run(
     "Explain how each failed run failed, then write the failure-mode report. "
     "For each run, explain in two or three sentences why it failed, naming the concrete "
     "error, number, or constraint. End with 'label: <label>' using exactly one of: "
@@ -123,13 +123,13 @@ Each `ws.run` (or call to a registered pipeline) writes `workspace/runs/<run_id>
 
 Pipelines are code, so re-run the cell that registers them in each new session. Their artifacts stay on disk.
 
-## Ask
+## Agent run
 
-`ws.ask(question, max_calls=, budget_usd=, max_steps=)` runs a tool loop on the agent model. It starts from an overview of the registered pipelines and artifacts, and has these tools:
+`ws.agent_run(question, max_calls=, budget_usd=, max_steps=)` runs a tool loop on the agent model. It starts from an overview of the registered pipelines and artifacts, and has these tools:
 
 - `list_pipelines`, `list_artifacts`, `describe_artifact`, `read_rows`: free reads
 - `python`: a persistent namespace where `load("name")` returns an artifact. Code runs in your process, with no sandbox.
 - `run_op`: one operator over an artifact or a subset of it, given a signature and an instruction. The result is saved as a new artifact.
 - `run_pipeline`: a registered pipeline on artifacts or subsets of them.
 
-The answer renders as markdown and cites artifacts and row ids. Transcripts are saved to `workspace/asks/`.
+The answer renders as markdown and cites artifacts and row ids. Transcripts are saved to `workspace/agent_runs/`.

@@ -3,7 +3,7 @@
 Every tool returns text. Reads are free; ``run_op`` and ``run_pipeline`` call models, and
 the active ``tracepress.model.budget`` refuses them before they start if they would overrun it.
 Anything they produce is saved to the workspace like any other artifact, under a run
-named ``ask`` (for ops) or under the pipeline's own run.
+named ``agent_run`` (for ops) or under the pipeline's own run.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ def _schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
 
 
 class Session:
-    """The state one ``ask`` works in: the workspace, a Python namespace, and its own run."""
+    """The state one ``agent_run`` works in: the workspace, a Python namespace, and its own run."""
 
     def __init__(self, workspace: Workspace, question: str):
         self.ws = workspace
@@ -88,7 +88,7 @@ class Session:
     def run(self) -> Run:
         """The run that ad-hoc outputs are saved under, created on first use."""
         if self._run is None:
-            self._run = Run(self.ws, "ask", {"question": self.question})
+            self._run = Run(self.ws, "agent_run", {"question": self.question})
         return self._run
 
     def close(self) -> None:

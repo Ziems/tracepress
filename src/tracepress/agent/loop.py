@@ -1,4 +1,4 @@
-"""``ask``: a tool-calling loop in which a strong model answers from a workspace.
+"""``agent_run``: a tool-calling loop in which a strong model answers from a workspace.
 
 The agent uses native tool calls: it sends lm15 requests through DSPy (``dspy.LM``
 accepts a ``Request`` and returns a ``Response``), and this module runs the loop. It sends
@@ -82,7 +82,7 @@ def _preview(arguments: dict[str, Any]) -> str:
     return text if len(text) <= 160 else text[:160] + "…"
 
 
-def ask(
+def agent_run(
     ws: Workspace,
     question: str,
     *,
@@ -167,9 +167,9 @@ def ask(
             cost_usd=cost,
             run_id=session._run.id if session._run else None,
         )
-        asks = ws.path / "asks"
-        asks.mkdir(exist_ok=True)
-        path = asks / f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json"
+        transcripts = ws.path / "agent_runs"
+        transcripts.mkdir(exist_ok=True)
+        path = transcripts / f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json"
         path.write_text(
             json.dumps(
                 {

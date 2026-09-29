@@ -9,7 +9,7 @@
 
     failure_modes(steps_df)          # runs it; every lm_* output is saved
     ws["task_modes"]                 # the latest artifact with that name
-    ws.ask("Which failure mode is most common?")
+    ws.agent_run("Which failure mode is most common?")
 
 On disk, each run is a folder: ``<ws>/runs/<run_id>/manifest.json`` plus one parquet file
 per artifact. The manifest records, for every artifact, the op and instruction that made
@@ -333,8 +333,8 @@ class Workspace:
 
     # --------------------------------------------------------------------- agent
 
-    def ask(self, question: str, **kwargs: Any):
-        """Answer a question from this workspace's artifacts and pipelines. See ``tracepress.agent.ask``."""
-        from .agent import ask
+    def agent_run(self, question: str, **kwargs: Any):
+        """Answer a question from this workspace's artifacts and pipelines. See ``tracepress.agent.agent_run``."""
+        from .agent import agent_run
 
-        return ask(self, question, **kwargs)
+        return agent_run(self, question, **kwargs)

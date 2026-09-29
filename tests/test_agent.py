@@ -41,7 +41,7 @@ def test_agent_reads_computes_and_runs_ops(ws):
             "t1 has 2 runs (`runs` rows 0, 1).",
         ]
     )
-    answer = ws.ask("How many runs does t1 have?", model=model, verbose=False)
+    answer = ws.agent_run("How many runs does t1 have?", model=model, verbose=False)
 
     assert answer.text.startswith("t1 has 2 runs")
     outputs = [s["output"] for s in answer.steps if s["type"] == "tool"]
@@ -51,9 +51,9 @@ def test_agent_reads_computes_and_runs_ops(ws):
     assert json.loads(outputs[3])["status"] == "ok"
     assert ws["per_task"]["task"].tolist() == ["t2"]
 
-    # The ad-hoc op was saved under the ask's own run, with lineage to its input.
+    # The ad-hoc op was saved under the agent run, with lineage to its input.
     sums = ws.resolve("sums")
-    assert sums["pipeline"] == "ask" and sums["parents"] == [ws.resolve("runs")["ref"]]
+    assert sums["pipeline"] == "agent_run" and sums["parents"] == [ws.resolve("runs")["ref"]]
     assert answer.op_calls == 3  # 2 groups for run_op + 1 for the pipeline
 
     # The agent saw the workspace overview up front, and each tool result went back.
@@ -71,7 +71,7 @@ def test_budget_refusals_go_back_to_the_agent(ws):
             "Could not run it.",
         ]
     )
-    answer = ws.ask("q", model=model, max_calls=1, verbose=False)
+    answer = ws.agent_run("q", model=model, max_calls=1, verbose=False)
     step = [s for s in answer.steps if s["type"] == "tool"][0]
     assert step["error"] and "Refused by the budget" in step["output"]
     assert ws.op_client.requests == []
@@ -79,14 +79,14 @@ def test_budget_refusals_go_back_to_the_agent(ws):
 
 def test_tool_errors_are_reported_not_raised(ws):
     model, _ = agent_model([tool_call("read_rows", name="nope"), tool_call("python", code="1/0"), "done"])
-    answer = ws.ask("q", model=model, verbose=False)
+    answer = ws.agent_run("q", model=model, verbose=False)
     outs = [s["output"] for s in answer.steps if s["type"] == "tool"]
     assert "no artifact 'nope'" in outs[0] and "ZeroDivisionError" in outs[1]
 
 
 def test_step_limit_forces_an_answer(ws):
     model, agent = agent_model([tool_call("list_artifacts"), "final"])
-    answer = ws.ask("q", model=model, max_steps=1, verbose=False)
+    answer = ws.agent_run("q", model=model, max_steps=1, verbose=False)
     assert answer.text == "final"
     last = agent.requests[-1]
     assert last.config.tool_choice.mode == "none"

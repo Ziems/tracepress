@@ -240,7 +240,7 @@ def test_agent_run_and_nested_op(tmp_path, make_lm, monkeypatch):
         cache=False,
         progress=False,
     )
-    answer = ws.ask("secret question text", model=agent, verbose=False)
+    answer = ws.agent_run("secret question text", model=agent, verbose=False)
     assert answer.text == "secret answer text"
     assert [event["event"] for event in events] == ["lm_op", "agent_run"]
 
@@ -248,7 +248,7 @@ def test_agent_run_and_nested_op(tmp_path, make_lm, monkeypatch):
     assert op["op"] == "map"
     assert op["in_agent"] is True
     assert op["in_workspace"] is True
-    assert op["run_kind"] == "ask"
+    assert op["run_kind"] == "agent_run"
     assert op["n_input_rows"] == 1
 
     run = events[1]["properties"]
@@ -275,7 +275,7 @@ def test_agent_run_and_nested_op(tmp_path, make_lm, monkeypatch):
     assert events[0]["properties"]["in_agent"] is False
 
 
-def test_failed_ask_is_reported_and_reraised(tmp_path, monkeypatch):
+def test_failed_agent_run_is_reported_and_reraised(tmp_path, monkeypatch):
     events = _collect(monkeypatch)
 
     class Boom:
@@ -285,7 +285,7 @@ def test_failed_ask_is_reported_and_reraised(tmp_path, monkeypatch):
     ws = tracepress.Workspace(tmp_path / "ws")
     agent = tracepress.Model("fake/agent", engine=Boom(), cache=False, progress=False)
     with pytest.raises(Exception, match="secret boom message") as raised:
-        ws.ask("secret question text", model=agent, verbose=False)
+        ws.agent_run("secret question text", model=agent, verbose=False)
     assert type(raised.value).__name__ == "LMUnexpectedError"
     assert [event["event"] for event in events] == ["agent_run"]
     props = events[0]["properties"]

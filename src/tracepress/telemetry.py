@@ -90,7 +90,7 @@ class LmOp(_Event):
     n_output_rows: int | None = None
     in_workspace: bool
     in_agent: bool
-    run_kind: Literal["pipeline", "ask", "save"] | None = None
+    run_kind: Literal["pipeline", "agent_run", "save"] | None = None
     n_artifacts: int | None = None
     n_pipelines: int | None = None
 
@@ -343,8 +343,8 @@ def _workspace_props() -> dict[str, Any]:
     if run is None:
         return props
     label = str(run.manifest.get("pipeline") or "")
-    if label == "ask":
-        kind = "ask"
+    if label == "agent_run":
+        kind = "agent_run"
     elif label.startswith("save-"):
         kind = "save"
     else:

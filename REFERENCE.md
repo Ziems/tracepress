@@ -11,9 +11,9 @@ import tracepress as tp
 | | Purpose |
 |---|---|
 | `tp.Model(model, ...)` | A language model to run operators or the agent with. Wraps a `dspy.LM` on the lm15 engine. It adds concurrent batches, a progress bar, token and cost totals (`model.usage`) and budget checks. `model` is `"provider:model"`, like `"openrouter:openai/gpt-6-luna"`. The model id may contain slashes. |
-| `tp.configure(lm=, agent_lm=)` | Sets the default models: `lm` for operators, `agent_lm` for `ws.ask`. Set this once at the top of a notebook. |
+| `tp.configure(lm=, agent_lm=)` | Sets the default models: `lm` for operators, `agent_lm` for `ws.agent_run`. Set this once at the top of a notebook. |
 | `tp.using(lm=, agent_lm=)` | Overrides the default models inside a `with` block, for example to use a bigger model for one step. |
-| `tp.budget(max_calls=, max_usd=)` | Caps the model calls made inside a `with` block. A batch that would go over the cap is refused before it starts, so it costs nothing. `ws.ask` sets one of these for the agent. |
+| `tp.budget(max_calls=, max_usd=)` | Caps the model calls made inside a `with` block. A batch that would go over the cap is refused before it starts, so it costs nothing. `ws.agent_run` sets one of these for the agent. |
 | `tp.BudgetExceeded` | The error raised when a budget refuses a batch. |
 | `tp.Usage` | Totals of calls, cached calls, input and output tokens, and cost in dollars. Found on `model.usage`, in artifact manifests, and on `answer.agent_usage`. |
 
@@ -55,12 +55,12 @@ A signature names the columns a call reads and, for `lm_map` and `lm_agg`, the c
 | `tp.Pipeline` | What `@ws.pipeline` returns. Call it to run it. |
 | `tp.Run` | One execution of a pipeline. `run.manifest` holds its artifacts and their details, and `run.output` holds what the function returned. |
 
-## Asking questions
+## Agent runs
 
 | | Purpose |
 |---|---|
-| `ws.ask(question, max_calls=, budget_usd=, max_steps=)` | Answers a question from the workspace using the agent model. It can read and compute over every artifact for free, and run operators or pipelines on subsets within the budget. It cites artifacts and row ids. |
-| `Answer` | What `ws.ask` returns. It renders as markdown in a notebook. It has `.text`, `.steps` (each tool call and its result), `.agent_usage`, `.op_calls`, `.cost_usd`, and `.transcript_path`. |
+| `ws.agent_run(question, max_calls=, budget_usd=, max_steps=)` | Answers a question from the workspace using the agent model. It can read and compute over every artifact for free, and run operators or pipelines on subsets within the budget. It cites artifacts and row ids. |
+| `Answer` | What `ws.agent_run` returns. It renders as markdown in a notebook. It has `.text`, `.steps` (each tool call and its result), `.agent_usage`, `.op_calls`, `.cost_usd`, and `.transcript_path`. |
 
 The agent's tools:
 
@@ -79,5 +79,5 @@ The agent's tools:
 |---|---|
 | `<workspace>/runs/<run_id>/manifest.json` | The run's status and parameters, plus each artifact's op, instruction, signature, output schema, model, parents, shape and usage. |
 | `<workspace>/runs/<run_id>/<name>.parquet` | One artifact. |
-| `<workspace>/asks/<timestamp>.json` | One `ws.ask` transcript: the question, every tool call, the answer, and the cost. |
+| `<workspace>/agent_runs/<timestamp>.json` | One `ws.agent_run` transcript: the question, every tool call, the answer, and the cost. |
 | `~/.tracepress/cache` | The response cache, so rerunning a cell doesn't pay twice. |
