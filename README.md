@@ -1,4 +1,9 @@
-![TracePress. Squeeze all the juice from your traces](assets/tracepress-wide-light.png)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/tracepress-wide-dark.png">
+    <img alt="TracePress. Squeeze all the juice from your traces" src="assets/tracepress-wide-light.png" width="55%">
+  </picture>
+</p>
 
 Find failures, PII, frustration, or misbehavior in agent traces.
 
