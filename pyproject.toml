@@ -3,6 +3,8 @@ name = "tracepress"
 version = "0.0.1"
 description = "LLM operators on DataFrames, registered pipelines, and an agent that answers questions over their artifacts."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "dspy>=3.4",

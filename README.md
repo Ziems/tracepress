@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/tracepress-wide-dark.png">
-    <img alt="TracePress. Squeeze all the juice from your traces" src="assets/tracepress-wide-light.png" width="55%">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Ziems/tracepress/main/assets/tracepress-wide-dark.png">
+    <img alt="TracePress. Squeeze all the juice from your traces" src="https://raw.githubusercontent.com/Ziems/tracepress/main/assets/tracepress-wide-light.png" width="55%">
   </picture>
 </p>
 
