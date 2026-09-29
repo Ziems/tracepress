@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+/data/
+
+# Secrets
+.env
+
+# Outputs from earlier experiments (kept locally, not versioned)
+before/
+
+# TracePress workspaces: pipeline runs, artifacts, and agent transcripts
+ws/
+workspace/
+
+# Third-party reference code
+vendor/
+
+# macOS
+.DS_Store
