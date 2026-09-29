@@ -25,3 +25,6 @@ vendor/
 
 # macOS
 .DS_Store
+
+# Editor
+.cursor/
