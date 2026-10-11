@@ -117,6 +117,25 @@ Inside a pipeline, `save_as="name"` names the artifact.
 
 `with tracepress.budget(max_calls=..., max_usd=...)` refuses a batch before it starts if it would go over the cap. For dollar caps, pass `price=(input, output)` in $/M tokens to get an estimate up front; without it, the cap is checked against what has actually been spent.
 
+### Portkey
+
+Route any model through a [Portkey](https://portkey.ai) workspace. Set `PORTKEY_API_KEY` and name the model `@provider-slug/model`, where the slug is a provider in your Model Catalog:
+
+```python
+tp.Model("portkey:@anthropic/claude-haiku-4-5", temperature=0, max_tokens=800,
+         top_p=0.9, metadata={"project": "demo"}, price=(1, 5))
+```
+
+Options:
+
+- **Generation settings:** `temperature`, `max_tokens`, `reasoning`, and any other keyword (`top_p`, `top_k`, `stop`, `seed`, `frequency_penalty`, ...) are passed to `dspy.LM`, which checks the ranges. Which ones apply depends on the model behind the slug. gpt-5 models need `temperature=1` and `max_tokens>=16000`.
+- **`metadata`:** optional. Tags the request in Portkey's logs, e.g. `{"project": "demo"}`. If your workspace requires keys such as `engagement_name`, set them here or attach them to the API key in Portkey. Values are sent as strings.
+- **`portkey_config`, `virtual_key`:** optional. A virtual key and `@slug/model` routing can conflict, so use one or the other.
+- **Headers:** `metadata`, `portkey_config` and `virtual_key` become `x-portkey-*` headers. `PORTKEY_METADATA` and `PORTKEY_CONFIG` set defaults, and `PORTKEY_BASE_URL` points at a self-hosted gateway.
+- **`price=(input, output)`:** DSPy can't price gateway models, so pass dollars per million tokens, e.g. `price=(1, 5)` for $1 per M input tokens and $5 per M output tokens. It gives you `cost_usd` and makes dollar budgets work. It applies to Portkey models only. Without it, cost is recorded as $0 and `tp.budget(max_usd=...)` can't stop a run.
+- **Response cache:** keep `metadata` stable within a run. It is part of the model's identity for the cache, so a tag that changes per row (a run id) misses the cache and re-bills identical prompts.
+- **Agent:** pass a `tp.Model`, as in `tp.configure(agent_lm=tp.Model("portkey:...", ...))`. A bare model string in `ws.agent_run` can't carry `metadata`, `price` or generation settings.
+
 ## Workspace
 
 Each `ws.run` (or call to a registered pipeline) writes `workspace/runs/<run_id>/`, which holds a `manifest.json` and one parquet file per artifact. Every `df.lm_*` call inside a run is saved automatically. The artifact's name comes from `save_as=`, or is `step{n}_{op}` when none is given. The manifest records the op, the instruction, the model, the parent artifacts, the shape, and the usage. A run that fails keeps the artifacts it finished.
