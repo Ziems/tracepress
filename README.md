@@ -138,3 +138,7 @@ Pipelines are code, so re-run the cell that registers them in each new session. 
 - `run_pipeline`: a registered pipeline on artifacts or subsets of them.
 
 The answer renders as markdown and cites artifacts and row ids. Transcripts are saved to `workspace/agent_runs/`.
+
+## Credit
+
+TracePress is a fork of [LOTUS](https://github.com/lotus-data/lotus) (LLMs Over Text, Unstructured and Structured data), from Liana Patel at UC Berkeley.
