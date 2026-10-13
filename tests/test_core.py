@@ -71,6 +71,52 @@ def test_predict_returns_typed_outputs_and_usage(make_lm):
     assert lm.usage.calls == 2 and lm.usage.output_tokens == 10
 
 
+def test_litellm_model_string_is_kept():
+    class Engine:
+        def complete(self, request):
+            raise AssertionError("not called")
+
+    lm = tracepress.Model("openai/gpt-5-nano", engine=Engine(), cache=False)
+    assert lm.model == "openai/gpt-5-nano"
+    assert lm.lm.model == "openai/gpt-5-nano"
+    kept = tracepress.Model("bedrock/anthropic.claude-v2:0", engine=Engine(), cache=False)
+    assert kept.lm.model == "bedrock/anthropic.claude-v2:0"
+
+
+def test_colon_is_not_a_substitute_for_the_litellm_slash():
+    with pytest.raises(ValueError, match="openai/gpt-5-nano"):
+        tracepress.Model("openai:gpt-5-nano", cache=False)
+
+
+@pytest.mark.parametrize("name", ["portkey:openai/gpt-5-nano", "portkey:@openai/gpt-5-nano"])
+def test_portkey_prices_the_litellm_id(monkeypatch, name):
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+    monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
+    monkeypatch.delenv("PORTKEY_BASE_URL", raising=False)
+    lm = tracepress.Model(name, cache=False)
+    assert lm.model == name
+    assert lm.lm.model == "openai/@openai/gpt-5-nano"
+    assert lm.lm.kwargs["api_key"] == "pk-test"
+    assert lm.lm.kwargs["api_base"] == "https://api.portkey.ai/v1"
+    assert lm.price == pytest.approx((0.05, 0.4))
+
+
+def test_portkey_warns_when_the_litellm_rate_is_missing(monkeypatch):
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+    monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
+    with pytest.warns(UserWarning, match="no LiteLLM price"):
+        lm = tracepress.Model("portkey:acme/not-a-model", cache=False)
+    assert lm.price is None
+
+
+def test_portkey_price_argument_is_kept(monkeypatch):
+    monkeypatch.setenv("PORTKEY_BASE_URL", "https://gateway.example/v1")
+    lm = tracepress.Model("portkey:openai/gpt-5-nano", api_key="pk-explicit", price=(1, 5), cache=False)
+    assert lm.price == (1, 5)
+    assert lm.lm.kwargs["api_key"] == "pk-explicit"
+    assert lm.lm.kwargs["api_base"] == "https://gateway.example/v1"
+
+
 def test_model_provider_is_separated_with_a_colon():
     class Engine:
         def complete(self, request):
