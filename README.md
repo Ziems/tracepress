@@ -125,7 +125,7 @@ Set `PORTKEY_API_KEY`. The string after `portkey:` is a LiteLLM id, and the call
 tp.configure(lm=tp.Model("portkey:openai/gpt-5-nano"))
 ```
 
-`portkey:@openai/gpt-5-nano` is the same call. Cost comes from the LiteLLM rate for `openai/gpt-5-nano`. A catalog slug LiteLLM does not know warns and records $0 until you pass a rate, in dollars per million tokens:
+`portkey:@openai/gpt-5-nano` is the same call. A gateway uses its own LiteLLM rate when that entry has one, and otherwise the rate for the id after the colon, so `openrouter:openai/gpt-6-luna` takes the OpenAI price. A catalog slug LiteLLM does not know warns and records $0 until you pass a rate, in dollars per million tokens:
 
 ```python
 tp.Model("portkey:@openai-prod/gpt-5-nano", price=(0.05, 0.40))
