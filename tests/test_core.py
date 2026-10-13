@@ -71,12 +71,112 @@ def test_predict_returns_typed_outputs_and_usage(make_lm):
     assert lm.usage.calls == 2 and lm.usage.output_tokens == 10
 
 
+def test_litellm_model_string_is_kept():
+    class Engine:
+        def complete(self, request):
+            raise AssertionError("not called")
+
+    lm = tracepress.Model("openai/gpt-5-nano", engine=Engine(), cache=False)
+    assert lm.model == "openai/gpt-5-nano"
+    assert lm.lm.model == "openai/gpt-5-nano"
+    kept = tracepress.Model("bedrock/anthropic.claude-v2:0", engine=Engine(), cache=False)
+    assert kept.lm.model == "bedrock/anthropic.claude-v2:0"
+
+
+def test_colon_is_not_a_substitute_for_the_litellm_slash():
+    with pytest.raises(ValueError, match="openai/gpt-5-nano"):
+        tracepress.Model("openai:gpt-5-nano", cache=False)
+
+
+@pytest.mark.parametrize("name", ["portkey:openai/gpt-5-nano", "portkey:@openai/gpt-5-nano"])
+def test_portkey_prices_the_litellm_id(monkeypatch, name):
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+    monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
+    monkeypatch.delenv("PORTKEY_BASE_URL", raising=False)
+    lm = tracepress.Model(name, cache=False)
+    assert lm.model == name
+    assert lm.lm.model == "openai/@openai/gpt-5-nano"
+    assert lm.lm.kwargs["api_key"] == "pk-test"
+    assert lm.lm.kwargs["api_base"] == "https://api.portkey.ai/v1"
+    assert lm.price == pytest.approx((0.05, 0.4))
+
+
+def test_portkey_warns_when_the_litellm_rate_is_missing(monkeypatch):
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+    monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
+    with pytest.warns(UserWarning, match="no LiteLLM price"):
+        lm = tracepress.Model("portkey:acme/not-a-model", cache=False)
+    assert lm.price is None
+
+
+def test_portkey_price_argument_is_kept(monkeypatch):
+    monkeypatch.setenv("PORTKEY_BASE_URL", "https://gateway.example/v1")
+    lm = tracepress.Model("portkey:openai/gpt-5-nano", api_key="pk-explicit", price=(1, 5), cache=False)
+    assert lm.price == (1, 5)
+    assert lm.lm.kwargs["api_key"] == "pk-explicit"
+    assert lm.lm.kwargs["api_base"] == "https://gateway.example/v1"
+
+
+def _price_table(table):
+    def info(provider, model, **kwargs):
+        return table.get((provider, model), {})
+
+    return info
+
+
+def test_gateway_price_falls_back_to_the_upstream_id(monkeypatch):
+    class Engine:
+        def complete(self, request):
+            raise AssertionError("not called")
+
+    monkeypatch.setattr(
+        "dspy.clients.model_metadata.model_info",
+        _price_table({("openai", "gpt-6-luna"): {"input_cost_per_token": 1e-07, "output_cost_per_token": 5e-07}}),
+    )
+    lm = tracepress.Model("openrouter:openai/gpt-6-luna", engine=Engine(), cache=False)
+    assert lm.price == pytest.approx((0.1, 0.5))
+    usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    filled = tracepress.model._usage_of([{"usage": usage, "cost": None}], lm._recorded_price())
+    assert filled.cost_usd == pytest.approx(0.6)
+    kept = tracepress.model._usage_of([{"usage": usage, "cost": 1.25}], lm._recorded_price())
+    assert kept.cost_usd == 1.25
+    direct = tracepress.Model("openai/gpt-6-luna", engine=Engine(), cache=False)
+    assert direct.price is None and direct._recorded_price() is None
+
+
+def test_gateway_entry_wins_over_the_upstream_rate(monkeypatch):
+    class Engine:
+        def complete(self, request):
+            raise AssertionError("not called")
+
+    monkeypatch.setattr(
+        "dspy.clients.model_metadata.model_info",
+        _price_table({
+            ("openrouter", "openai/gpt-6-luna"): {"input_cost_per_token": 3e-06, "output_cost_per_token": 9e-06},
+            ("openai", "gpt-6-luna"): {"input_cost_per_token": 1e-07, "output_cost_per_token": 5e-07},
+        }),
+    )
+    lm = tracepress.Model("openrouter:openai/gpt-6-luna", engine=Engine(), cache=False)
+    assert lm.price == pytest.approx((3, 9))
+
+
+def test_gateway_warns_when_neither_rate_exists(monkeypatch):
+    class Engine:
+        def complete(self, request):
+            raise AssertionError("not called")
+
+    monkeypatch.setattr("dspy.clients.model_metadata.model_info", lambda *args, **kwargs: {})
+    with pytest.warns(UserWarning, match="no LiteLLM price"):
+        lm = tracepress.Model("openrouter:openai/gpt-6-luna", engine=Engine(), cache=False)
+    assert lm.price is None
+
+
 def test_model_provider_is_separated_with_a_colon():
     class Engine:
         def complete(self, request):
             raise AssertionError("not called")
 
-    lm = tracepress.Model("openrouter:anthropic/claude-opus-5.5", engine=Engine(), reasoning="off", cache=False)
+    lm = tracepress.Model("openrouter:anthropic/claude-opus-5.5", engine=Engine(), reasoning="off", cache=False, price=(1, 5))
     assert lm.model == "openrouter:anthropic/claude-opus-5.5"
     assert lm.lm.model == "openrouter/anthropic/claude-opus-5.5"
     assert lm.lm.kwargs["reasoning"] == {"effort": "off"}

@@ -108,7 +108,7 @@ Inside a pipeline, `save_as="name"` names the artifact.
 
 ## Models
 
-`tracepress.Model("provider:model", ...)` wraps a `dspy.LM` running on the lm15 engine. The model id may contain slashes: `openrouter:openai/gpt-6-luna`, `anthropic:claude-opus-5-5`, `openai:gpt-6-luna`, `gemini:gemini-2.5-pro`. DSPy supplies prompt formatting (its JSON adapter, with native structured output), parsing, retries, the response cache (`~/.tracepress/cache`), and per-call cost. TracePress adds:
+`tracepress.Model(...)` wraps a `dspy.LM` running on the lm15 engine. A direct model is a LiteLLM id: `openai/gpt-5-nano`, `anthropic/claude-opus-5-5`. A gateway prefixes that id: `openrouter:openai/gpt-6-luna`, `portkey:openai/gpt-5-nano`. DSPy supplies prompt formatting (its JSON adapter, with native structured output), parsing, retries, the response cache (`~/.tracepress/cache`), and per-call cost. TracePress adds:
 
 - concurrent batches (`max_workers`) with a progress bar
 - token and cost totals on `lm.usage` and in every artifact's manifest
@@ -116,6 +116,20 @@ Inside a pipeline, `save_as="name"` names the artifact.
 - `engine=` for a custom lm15 engine (the tests use this); any other keyword goes to `dspy.LM`
 
 `with tracepress.budget(max_calls=..., max_usd=...)` refuses a batch before it starts if it would go over the cap. For dollar caps, pass `price=(input, output)` in $/M tokens to get an estimate up front; without it, the cap is checked against what has actually been spent.
+
+### Portkey
+
+Set `PORTKEY_API_KEY`. The string after `portkey:` is a LiteLLM id, and the call sends that id with a leading `@` to Portkey:
+
+```python
+tp.configure(lm=tp.Model("portkey:openai/gpt-5-nano"))
+```
+
+`portkey:@openai/gpt-5-nano` is the same call. A gateway uses its own LiteLLM rate when that entry has one, and otherwise the rate for the id after the colon, so `openrouter:openai/gpt-6-luna` takes the OpenAI price. A catalog slug LiteLLM does not know warns and records $0 until you pass a rate, in dollars per million tokens:
+
+```python
+tp.Model("portkey:@openai-prod/gpt-5-nano", price=(0.05, 0.40))
+```
 
 ## Workspace
 

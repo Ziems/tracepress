@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import threading
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -76,11 +77,12 @@ def total_usage(usages: Sequence[Usage]) -> Usage:
     return out
 
 
-def _usage_of(history: list[dict[str, Any]]) -> Usage:
+def _usage_of(history: list[dict[str, Any]], price: tuple[float, float] | None = None) -> Usage:
     """Usage from the history entries of one call (an LM copy's own history).
 
     DSPy records a cache hit with empty usage but keeps the original call's cost, so an
-    entry without usage counts as cached and costs nothing.
+    entry without usage counts as cached and costs nothing. ``price`` is ``(input, output)``
+    dollars per million tokens, used when a call reports tokens but no cost.
     """
     total = Usage()
     for entry in history:
@@ -88,12 +90,11 @@ def _usage_of(history: list[dict[str, Any]]) -> Usage:
         if not u:
             total = total + Usage(cached_calls=1)
             continue
-        total = total + Usage(
-            calls=1,
-            input_tokens=int(u.get("prompt_tokens") or 0),
-            output_tokens=int(u.get("completion_tokens") or 0),
-            cost_usd=float(entry.get("cost") or 0.0),
-        )
+        n_in, n_out = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
+        cost = entry.get("cost")
+        if cost is None and price is not None:
+            cost = (n_in * price[0] + n_out * price[1]) / 1_000_000
+        total = total + Usage(calls=1, input_tokens=n_in, output_tokens=n_out, cost_usd=float(cost or 0.0))
     return total
 
 
@@ -181,8 +182,12 @@ class Model:
     """A ``dspy.LM`` plus concurrency, accounting, and budgets.
 
     Args:
-        model: ``"provider:model"``. The model id may contain slashes, e.g.
-            ``"openrouter:openai/gpt-6-luna"`` or ``"anthropic:claude-opus-5-5"``.
+        model: a LiteLLM id, e.g. ``"openai/gpt-5-nano"`` or
+            ``"anthropic/claude-opus-5-5"``. A gateway is that id with a prefix:
+            ``"openrouter:openai/gpt-6-luna"``, ``"portkey:openai/gpt-5-nano"``.
+            ``portkey:`` reads ``PORTKEY_API_KEY``. ``PORTKEY_BASE_URL`` overrides
+            the gateway. A gateway is priced from its own LiteLLM entry when that
+            entry has a rate, and otherwise from the id after the colon.
         engine: a custom lm15 engine (anything with ``complete(Request) -> Response``),
             e.g. a test double. Defaults to DSPy's native lm15 engine.
         temperature, max_tokens: generation settings.
@@ -190,8 +195,12 @@ class Model:
         max_workers: concurrent requests per batch.
         num_retries: DSPy's retries on rate limits and transient errors.
         cache: DSPy's response cache (on disk, under ``~/.tracepress/cache``).
-        price: ``(input, output)`` dollars per million tokens, used only to estimate a
-            batch before it runs. Actual cost comes from DSPy.
+        price: ``(input, output)`` dollars per million tokens, used to estimate a
+            batch before it runs. Actual cost comes from DSPy. A gateway DSPy
+            cannot price uses this rate for the recorded cost; when omitted, the
+            LiteLLM rate is used, falling back from the gateway entry to the id
+            after the colon. ``portkey:`` ignores a leading ``@``. A missing rate
+            warns and the cost stays ``$0``.
         progress: show a tqdm bar for batches.
         lm_kwargs: anything else is passed to ``dspy.LM``.
     """
@@ -219,6 +228,18 @@ class Model:
         self.price = price
         self.progress = progress
         kwargs: dict[str, Any] = dict(lm_kwargs)
+        if model.startswith("portkey:"):
+            dspy_model = _portkey_target(model, kwargs)
+        else:
+            dspy_model = _for_dspy(model)
+        if self.price is None and _gateway_upstream(model) is not None:
+            self.price = _gateway_price(model)
+            if self.price is None:
+                warnings.warn(
+                    f"{model} has no LiteLLM price; its cost is recorded as $0. "
+                    "Pass price=(input, output) in dollars per million tokens.",
+                    stacklevel=2,
+                )
         if reasoning is not None:
             # lm15 reads each server's own spelling: OpenRouter takes a `reasoning` object.
             if _provider(model) == "openrouter":
@@ -226,7 +247,7 @@ class Model:
             else:
                 kwargs["reasoning_effort"] = reasoning
         self.lm = dspy.LM(
-            _for_dspy(model),
+            dspy_model,
             engine=engine if engine is not None else "lm15",
             temperature=temperature,
             max_tokens=max_tokens,
@@ -268,7 +289,7 @@ class Model:
             predictor.demos = examples
         with dspy.context(lm=lm, adapter=self.adapter):
             result = predictor(**inputs)
-        usage = _usage_of(lm.history)
+        usage = _usage_of(lm.history, self._recorded_price())
         self._account(usage)
         return Prediction({name: result[name] for name in signature.output_fields}, usage)
 
@@ -322,9 +343,85 @@ class Model:
         """Send one explicit lm15 request through DSPy (used by the agent's tool loop)."""
         lm = self.lm.copy()
         response = lm(request)
-        usage = _usage_of(lm.history)
+        usage = _usage_of(lm.history, self._recorded_price())
         self._account(usage)
         return response, usage
+
+    def _recorded_price(self) -> tuple[float, float] | None:
+        """Rate to record when DSPy reports tokens but no cost. Gateways only."""
+        if _gateway_upstream(self.model) is None:
+            return None
+        return self.price
+
+
+def _portkey_ids(model: str) -> tuple[str, str]:
+    """``(@catalog id, litellm id)`` for ``portkey:openai/gpt-5-nano`` or ``portkey:@openai/gpt-5-nano``.
+
+    A missing ``@`` is added. One that is already there is kept. The LiteLLM id
+    never includes it, so the price lookup is the same either way.
+    """
+    raw = model.split(":", 1)[1]
+    catalog = raw if raw.startswith("@") else f"@{raw}"
+    litellm_id = catalog[1:]
+    slug, sep, upstream = litellm_id.partition("/")
+    if not sep or not slug or not upstream:
+        raise ValueError(f"{model!r} must be 'portkey:provider/model', e.g. 'portkey:openai/gpt-5-nano'")
+    return catalog, litellm_id
+
+
+def _portkey_target(model: str, kwargs: dict[str, Any]) -> str:
+    """The DSPy model for a Portkey id. The wire model is ``openai/@provider/model``."""
+    catalog, _ = _portkey_ids(model)
+    if "api_key" not in kwargs:
+        key = os.environ.get("PORTKEY_API_KEY", "").strip()
+        if not key:
+            raise ValueError(f"{model!r} needs PORTKEY_API_KEY or api_key=")
+        kwargs["api_key"] = key
+    base = os.environ.get("PORTKEY_BASE_URL", "").strip()
+    kwargs.setdefault("api_base", base or "https://api.portkey.ai/v1")
+    return f"openai/{catalog}"
+
+
+def _gateway_upstream(model: str) -> str | None:
+    """The LiteLLM id after a gateway prefix, or ``None`` when ``model`` is already one.
+
+    ``portkey:@openai/gpt-5-nano`` drops the leading ``@``. A colon after the first
+    slash is part of the id (``bedrock/anthropic.claude-v2:0``), not a gateway.
+    """
+    colon, slash = model.find(":"), model.find("/")
+    if colon == -1 or slash == -1 or slash < colon:
+        return None
+    raw = model[colon + 1 :]
+    if model.startswith("portkey:") and raw.startswith("@"):
+        raw = raw[1:]
+    return raw or None
+
+
+def _gateway_price(model: str) -> tuple[float, float] | None:
+    """``(input, output)`` dollars per million tokens for a gateway id.
+
+    The gateway's own LiteLLM entry wins. When it has no rate, the id after the
+    colon is used, so ``openrouter:openai/gpt-6-luna`` can take the OpenAI price.
+    """
+    upstream = _gateway_upstream(model)
+    if upstream is None:
+        return None
+    provider = model.split(":", 1)[0]
+    return _litellm_price(f"{provider}/{upstream}") or _litellm_price(upstream)
+
+
+def _litellm_price(litellm_id: str) -> tuple[float, float] | None:
+    """Public ``(input, output)`` dollars per million tokens for a LiteLLM id."""
+    provider, _, upstream = litellm_id.partition("/")
+    if not provider or not upstream:
+        return None
+    from dspy.clients.model_metadata import model_info, rate
+
+    info = model_info(provider, upstream)
+    per_in, per_out = rate(info, "input_cost_per_token"), rate(info, "output_cost_per_token")
+    if per_in is None or per_out is None:
+        return None
+    return (per_in * 1_000_000, per_out * 1_000_000)
 
 
 def _provider(model: str) -> str:
@@ -336,10 +433,22 @@ def _provider(model: str) -> str:
 
 
 def _for_dspy(model: str) -> str:
-    """DSPy routes on ``provider/model``. A TracePress id uses one colon for the provider."""
-    if ":" not in model:
+    """DSPy routes on a LiteLLM id.
+
+    A string with no colon, or a colon after the first slash, is that id and is
+    kept (``openai/gpt-5-nano``, ``bedrock/anthropic.claude-v2:0``). A colon
+    before any slash is a gateway prefix (``openrouter:openai/gpt-6-luna``).
+    ``openai:gpt-5-nano`` is rejected.
+    """
+    colon, slash = model.find(":"), model.find("/")
+    if colon == -1 or (slash != -1 and slash < colon):
         return model
     provider, model_id = model.split(":", 1)
+    if "/" not in model_id:
+        raise ValueError(
+            f"{model!r} must be a LiteLLM id such as '{provider}/{model_id}'. "
+            "A colon is only a gateway prefix, as in 'openrouter:openai/gpt-6-luna'."
+        )
     return f"{provider}/{model_id}"
 
 
