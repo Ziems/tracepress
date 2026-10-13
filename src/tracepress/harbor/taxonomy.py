@@ -14,6 +14,7 @@ import pandas as pd
 
 from ..model import Model
 from ..run import ATTR, artifact_of, current_run, record
+from .load import HarborLoad
 
 TAT_CLASS = {
     "disobey_specification": "execution",
@@ -97,15 +98,20 @@ _TAT_COLUMNS = ["trial_key", "explanation", "modes", "n_rows", "classes"]
 _COMMAND_COLUMNS = ["subcategory", "failure_class", "explanation"]
 
 
-def terminal_agent_taxonomy(steps: pd.DataFrame, *, lm: Model | None = None) -> pd.DataFrame:
-    """Label each trial with every Terminal Agent Taxonomy mode the steps show.
+def harbor_agent_taxonomy(
+    loaded: HarborLoad | pd.DataFrame, *, lm: Model | None = None
+) -> pd.DataFrame:
+    """Label each Harbor trial with the Terminal Agent Taxonomy.
 
-    Keeps user and agent steps (system prompts are dropped), maps each one to a short
-    ``step_summary``, then aggregates those notes by ``trial_key``. The result is one
-    row per trial with ``explanation``, ``modes``, and ``classes``. A passing trial has
-    an empty ``modes`` list. Inside a pipeline the summaries are ``agent_step_summaries``
-    and the labels are ``agent_taxonomy_labels``.
+    ``loaded`` is the result of ``harbor_load``, or a steps DataFrame from one.
+    A path is not accepted: load the job first. User and agent steps are kept
+    (system prompts are dropped), each is mapped to a short ``step_summary``, then
+    those notes are aggregated by ``trial_key``. The result is one row per trial with
+    ``explanation``, ``modes``, and ``classes``. A passing trial has an empty ``modes``
+    list. Inside a pipeline the summaries are ``agent_step_summaries`` and the labels
+    are ``agent_taxonomy_labels``.
     """
+    steps = _as_steps(loaded)
     framed = steps.loc[steps["source"].isin(["user", "agent"])].copy()
     if framed.empty:
         return pd.DataFrame(columns=_TAT_COLUMNS)
@@ -131,16 +137,21 @@ def terminal_agent_taxonomy(steps: pd.DataFrame, *, lm: Model | None = None) -> 
     return _persist_derived(out)
 
 
-def command_taxonomy(steps: pd.DataFrame, *, lm: Model | None = None) -> pd.DataFrame:
-    """Label each failed command with one Terminal-Bench command subcategory.
+def harbor_command_taxonomy(
+    loaded: HarborLoad | pd.DataFrame, *, lm: Model | None = None
+) -> pd.DataFrame:
+    """Label failed commands in Harbor steps with the Terminal-Bench command taxonomy.
 
-    Agent steps are filtered to shell, REPL, or CLI commands that failed, then each
-    remaining row is mapped to one subcategory. The map also sees the trial
-    ``instruction`` and the step's ``reasoning``. ``failure_class`` is derived from
-    that subcategory. When nothing failed, the result has zero rows and still has
-    ``subcategory``, ``failure_class``, and ``explanation``. Inside a pipeline the
-    filter is saved as ``command_failures`` and the labels as ``command_taxonomy``.
+    ``loaded`` is the result of ``harbor_load``, or a steps DataFrame from one.
+    A path is not accepted: load the job first. Agent steps are filtered to shell,
+    REPL, or CLI commands that failed, then each remaining row is mapped to one
+    subcategory. The map also sees the trial ``instruction`` and the step's
+    ``reasoning``. ``failure_class`` is derived from that subcategory. When nothing
+    failed, the result has zero rows and still has ``subcategory``, ``failure_class``,
+    and ``explanation``. Inside a pipeline the filter is saved as ``command_failures``
+    and the labels as ``command_taxonomy``.
     """
+    steps = _as_steps(loaded)
     needed = steps.loc[steps["source"].isin(["user", "agent"])].copy()
     needed["instruction"] = _task_instruction(needed)
     agent = needed.loc[needed["source"].eq("agent")].copy()
@@ -164,24 +175,16 @@ def command_taxonomy(steps: pd.DataFrame, *, lm: Model | None = None) -> pd.Data
     return _persist_derived(out)
 
 
-def register(ws: Any) -> Any:
-    """Register both classifiers as pipelines on ``ws``. Returns ``ws``."""
-    ws.pipeline(
-        description=(
-            "Labels each Harbor trial with the Terminal Agent Taxonomy. "
-            "Input: steps from harbor.load, with trial_key, task_name, reward, failed_tests, and the step fields. "
-            "Output: agent_step_summaries, then agent_taxonomy_labels, one row per trial, "
-            "with explanation, modes, and classes."
-        )
-    )(terminal_agent_taxonomy)
-    ws.pipeline(
-        description=(
-            "Labels failed commands in Harbor steps with the Terminal-Bench command taxonomy. "
-            "Input: steps from harbor.load. "
-            "Output: command_taxonomy, one row per failed command, with subcategory and failure_class."
-        )
-    )(command_taxonomy)
-    return ws
+def _as_steps(loaded: HarborLoad | pd.DataFrame) -> pd.DataFrame:
+    """HarborLoad or a steps frame. Paths have to go through harbor_load first."""
+    if isinstance(loaded, HarborLoad):
+        return loaded.steps
+    if isinstance(loaded, pd.DataFrame):
+        return loaded
+    raise TypeError(
+        "Pass the result of harbor_load (or its .steps), not a path. "
+        "Load first: loaded = tracepress.harbor_load(path)"
+    )
 
 
 def _task_instruction(steps: pd.DataFrame) -> pd.Series:

@@ -228,6 +228,11 @@ class Workspace:
         """
 
         def register(f: Callable) -> Pipeline:
+            if getattr(f, "_tracepress_pipeline", True) is False:
+                raise TypeError(
+                    f"{f.__name__} reads files and is not a workspace pipeline. "
+                    "Call it yourself, then pass the loaded data into a pipeline."
+                )
             p = Pipeline(f, name or f.__name__, description or inspect.getdoc(f) or "", self)
             self.pipelines[p.name] = p
             return p

@@ -1,27 +1,25 @@
 """Load Harbor trajectories and classify them with the Terminal-Bench taxonomies.
 
-    loaded = tracepress.harbor.load("jobs/my-job")
-    labels = tracepress.harbor.terminal_agent_taxonomy(loaded.steps)
-    commands = tracepress.harbor.command_taxonomy(loaded.steps)
+    loaded = tracepress.harbor_load("jobs/my-job")
+    labels = tracepress.harbor_agent_taxonomy(loaded)
+    commands = tracepress.harbor_command_taxonomy(loaded)
 """
 
-from .load import HarborLoad, load
+from .load import HarborLoad, harbor_load
 from .taxonomy import (
     COMMAND_CLASS,
     COMMAND_SUBCATEGORIES,
     TAT_CLASS,
     TAT_MODES,
-    command_taxonomy,
-    register,
-    terminal_agent_taxonomy,
+    harbor_agent_taxonomy,
+    harbor_command_taxonomy,
 )
 
 __all__ = [
     "HarborLoad",
-    "load",
-    "terminal_agent_taxonomy",
-    "command_taxonomy",
-    "register",
+    "harbor_load",
+    "harbor_agent_taxonomy",
+    "harbor_command_taxonomy",
     "TAT_MODES",
     "TAT_CLASS",
     "COMMAND_SUBCATEGORIES",

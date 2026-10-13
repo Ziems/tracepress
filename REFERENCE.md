@@ -79,10 +79,9 @@ Load a Harbor job directory, a trial directory (`agent/trajectory.json` or `traj
 
 | | Purpose |
 |---|---|
-| `tp.harbor.load(path)` | Returns a `HarborLoad` with `.trials` (one row per trial, including reward, exception, and failed tests from `result.json` and `verifier/ctrf.json`) and `.steps` (one row per ATIF step, including embedded subagents). |
-| `tp.harbor.terminal_agent_taxonomy(steps)` | Summarizes each user and agent step, then labels the trial with the Terminal Agent Taxonomy: `modes` (any of the nine) and `classes` (`execution`, `coherence`, `verification`). System prompts are left out. Saved as `agent_step_summaries` and `agent_taxonomy_labels` inside a pipeline. |
-| `tp.harbor.command_taxonomy(steps)` | Keeps agent steps whose shell, REPL, or CLI command failed, then labels each with one subcategory and a `failure_class` (`invocation`, `repl`, `runtime`, `filesystem`, `other`). Saved as `command_failures` and `command_taxonomy`. |
-| `tp.harbor.register(ws)` | Registers both classifiers as pipelines the agent can run. |
+| `tp.harbor_load(path)` | Returns a `HarborLoad` with `.trials` (one row per trial, including reward, exception, and failed tests from `result.json` and `verifier/ctrf.json`) and `.steps` (one row per ATIF step, including embedded subagents). `path` is a job directory, a trial directory, an ATIF file, or a list of those. Not a workspace pipeline. |
+| `tp.harbor_agent_taxonomy(loaded, lm=)` | Takes a `HarborLoad` or a steps DataFrame, not a path. Summarizes each user and agent step, then labels the trial with the Terminal Agent Taxonomy: `modes` (any of the nine) and `classes` (`execution`, `coherence`, `verification`). System prompts are left out. Saved as `agent_step_summaries` and `agent_taxonomy_labels` inside a pipeline. Wrap with `@ws.pipeline` if the agent should run it. |
+| `tp.harbor_command_taxonomy(loaded, lm=)` | Takes a `HarborLoad` or a steps DataFrame, not a path. Keeps agent steps whose shell, REPL, or CLI command failed, then labels each with one subcategory and a `failure_class` (`invocation`, `repl`, `runtime`, `filesystem`, `other`). Saved as `command_failures` and `command_taxonomy`. Wrap with `@ws.pipeline` if the agent should run it. |
 
 ## On disk
 

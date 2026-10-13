@@ -1,6 +1,6 @@
 """Load Harbor jobs, trials, and ATIF trajectories into DataFrames.
 
-    loaded = tracepress.harbor.load("jobs/my-job")
+    loaded = tracepress.harbor_load("jobs/my-job")
     loaded.trials   # one row per trial
     loaded.steps    # one row per step, including embedded subagents
 """
@@ -61,8 +61,11 @@ class HarborLoad:
     steps: pd.DataFrame
 
 
-def load(path: str | Path | Iterable[str | Path]) -> HarborLoad:
+def harbor_load(path: str | Path | Iterable[str | Path]) -> HarborLoad:
     """Load a job directory, a trial directory, an ATIF file, or a list of those.
+
+    This reads files. It is not a workspace pipeline: call it yourself, then pass
+    the result to ``harbor_agent_taxonomy`` or ``harbor_command_taxonomy``.
 
     A directory is a trial when it contains ``agent/trajectory.json`` or
     ``trajectory.json``. A directory is a job when it is not a trial and has trial
@@ -85,6 +88,9 @@ def load(path: str | Path | Iterable[str | Path]) -> HarborLoad:
         trials=pd.DataFrame(trials, columns=TRIAL_COLUMNS),
         steps=pd.DataFrame(steps, columns=STEP_COLUMNS),
     )
+
+
+harbor_load._tracepress_pipeline = False
 
 
 def _paths(path: str | Path | Iterable[str | Path]) -> list[Path]:

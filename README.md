@@ -1,10 +1,4 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/tracepress-wide-dark.png">
-    <img alt="TracePress. Squeeze all the juice from your traces" src="assets/tracepress-wide-light.png" width="55%">
-  </picture>
-</p>
-
+![TracePress. Squeeze all the juice from your traces](assets/tracepress-wide-light.png)
 
 Find failures, PII, frustration, or misbehavior in agent traces.
 
@@ -155,16 +149,23 @@ The answer renders as markdown and cites artifacts and row ids. Transcripts are 
 
 ## Harbor
 
-`tp.harbor.load` reads a Harbor job directory, a trial directory, or an ATIF `trajectory.json` into one row per trial and one row per step.
+`tp.harbor_load` reads a Harbor job directory, a trial directory, or an ATIF `trajectory.json` into one row per trial and one row per step. The classifiers take that already-loaded result (or a steps DataFrame from it), not a path.
 
 ```python
-loaded = tp.harbor.load("jobs/my-job")
-labels = tp.harbor.terminal_agent_taxonomy(loaded.steps)  # summarize each step, then the nine TAT modes per trial
-commands = tp.harbor.command_taxonomy(loaded.steps)       # one row per failed command
-tp.harbor.register(ws)  # both become pipelines the agent can run
+loaded = tp.harbor_load("jobs/my-job")
+labels = tp.harbor_agent_taxonomy(loaded)      # summarize each step, then the nine agent trajectory taxonomy modes per trial
+commands = tp.harbor_command_taxonomy(loaded)  # one row per failed command
+
+@ws.pipeline
+def harbor_agent_taxonomy(steps):
+    return tp.harbor_agent_taxonomy(steps)
+
+@ws.pipeline
+def harbor_command_taxonomy(steps):
+    return tp.harbor_command_taxonomy(steps)
 ```
 
-`labels.modes` lists every mode the trial shows. `commands.subcategory` is one command-failure subcategory. Pass `lm=` to use a model other than the configured one.
+`labels.modes` lists every mode the trial shows. `commands.subcategory` is one command-failure subcategory. Pass `lm=` to use a model other than the configured one. `harbor_load` is not a pipeline: wrap the classifiers like any other function if the agent should run them.
 
 ## Credit
 

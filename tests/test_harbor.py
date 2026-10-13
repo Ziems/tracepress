@@ -128,7 +128,7 @@ def _bare(root: Path) -> Path:
 
 
 def test_load_job_trial_metadata_steps_and_ignores_job_result(tmp_path):
-    loaded = tracepress.harbor.load(_job(tmp_path))
+    loaded = tracepress.harbor_load(_job(tmp_path))
     assert list(loaded.trials["trial_key"]) == ["trial-a", "trial-b"]
     assert "JOB" not in set(loaded.trials["trial_name"])
     assert list(loaded.trials.columns) == TRIAL_COLUMNS
@@ -176,39 +176,39 @@ def test_load_job_trial_metadata_steps_and_ignores_job_result(tmp_path):
 def test_load_bare_file_uses_session_id_and_list_prefixes_keys(tmp_path):
     job = _job(tmp_path)
     bare = _bare(tmp_path)
-    alone = tracepress.harbor.load(bare)
+    alone = tracepress.harbor_load(bare)
     assert alone.trials["trial_key"].tolist() == ["sess-file"]
     assert alone.steps["message"].tolist() == ["hello"]
     assert alone.trials["task_name"].tolist() == [""]
 
-    both = tracepress.harbor.load([job, bare])
+    both = tracepress.harbor_load([job, bare])
     assert set(both.trials["trial_key"]) == {"job/trial-a", "job/trial-b", "one.json/sess-file"}
 
 
 def test_load_trial_directory_and_errors(tmp_path):
     job = _job(tmp_path)
-    trial = tracepress.harbor.load(job / "trial-b")
+    trial = tracepress.harbor_load(job / "trial-b")
     assert trial.trials["trial_key"].tolist() == ["trial-b"]
     assert len(trial.steps) == 2
 
     missing = tmp_path / "nope"
     with pytest.raises(FileNotFoundError, match="harbor job download"):
-        tracepress.harbor.load(missing)
+        tracepress.harbor_load(missing)
 
     empty = tmp_path / "empty"
     empty.mkdir()
     with pytest.raises(ValueError, match="not a Harbor"):
-        tracepress.harbor.load(empty)
+        tracepress.harbor_load(empty)
 
     broken = tmp_path / "broken.json"
     broken.write_text("{")
     with pytest.raises(ValueError, match="not valid JSON"):
-        tracepress.harbor.load(broken)
+        tracepress.harbor_load(broken)
 
     not_atif = tmp_path / "note.json"
     not_atif.write_text(json.dumps({"agent": {"name": "x", "version": "1"}}))
     with pytest.raises(ValueError, match="missing steps"):
-        tracepress.harbor.load(not_atif)
+        tracepress.harbor_load(not_atif)
 
 
 def _summarize(request):
@@ -225,10 +225,10 @@ def _tat(request):
     return {"explanation": "test_out expected 3", "modes": modes}
 
 
-def test_terminal_agent_taxonomy_labels_trials_and_skips_system_steps(make_lm, tmp_path):
+def test_harbor_agent_taxonomy_labels_trials_and_skips_system_steps(make_lm, tmp_path):
     lm, engine = make_lm(_route)
-    loaded = tracepress.harbor.load(_job(tmp_path))
-    out = tracepress.harbor.terminal_agent_taxonomy(loaded.steps, lm=lm)
+    loaded = tracepress.harbor_load(_job(tmp_path))
+    out = tracepress.harbor_agent_taxonomy(loaded.steps, lm=lm)
     assert out["trial_key"].tolist() == ["trial-a", "trial-b"]
     by_key = out.set_index("trial_key")
     assert by_key.loc["trial-a", "modes"] == ["premature_termination", "disobey_specification"]
@@ -273,8 +273,8 @@ def _route(request):
 
 def test_command_taxonomy_labels_failed_commands(make_lm, tmp_path):
     lm, engine = make_lm(_route)
-    loaded = tracepress.harbor.load(_job(tmp_path))
-    out = tracepress.harbor.command_taxonomy(loaded.steps, lm=lm)
+    loaded = tracepress.harbor_load(_job(tmp_path))
+    out = tracepress.harbor_command_taxonomy(loaded.steps, lm=lm)
     assert len(out) == 1
     assert out["subcategory"].item() == "command_not_found"
     assert out["failure_class"].item() == "invocation"
@@ -296,31 +296,53 @@ def test_command_taxonomy_empty_has_columns_and_skips_the_map(make_lm):
             "observation": ["exit code 0", ""],
         }
     )
-    out = tracepress.harbor.command_taxonomy(steps, lm=lm)
+    out = tracepress.harbor_command_taxonomy(steps, lm=lm)
     assert len(out) == 0
     assert {"subcategory", "failure_class", "explanation"} <= set(out.columns)
     assert len(engine.requests) == 1
 
     none, no_engine = make_lm(lambda request: {"keep": True})
-    empty = tracepress.harbor.command_taxonomy(steps.iloc[0:0], lm=none)
+    empty = tracepress.harbor_command_taxonomy(steps.iloc[0:0], lm=none)
     assert len(empty) == 0
     assert "subcategory" in empty.columns
     assert no_engine.requests == []
 
 
-def test_register_runs_both_pipelines(make_lm, tmp_path):
+def test_taxonomies_take_loaded_result_not_a_path(make_lm, tmp_path):
+    lm, _ = make_lm(_route)
+    job = _job(tmp_path)
+    loaded = tracepress.harbor_load(job)
+    out = tracepress.harbor_agent_taxonomy(loaded, lm=lm)
+    assert out["trial_key"].tolist() == ["trial-a", "trial-b"]
+    with pytest.raises(TypeError, match="harbor_load"):
+        tracepress.harbor_agent_taxonomy(job, lm=lm)
+    with pytest.raises(TypeError, match="harbor_load"):
+        tracepress.harbor_command_taxonomy(job, lm=lm)
+
+
+def test_workspace_pipelines_run_both_taxonomies(make_lm, tmp_path):
     lm, _ = make_lm(_route)
     ws = tracepress.Workspace(tmp_path / "ws")
-    tracepress.harbor.register(ws)
-    assert set(ws.pipelines) == {"terminal_agent_taxonomy", "command_taxonomy"}
 
-    steps = tracepress.harbor.load(_job(tmp_path)).steps
-    labels = ws.run("terminal_agent_taxonomy", steps, lm=lm)
+    @ws.pipeline
+    def harbor_agent_taxonomy(steps, *, lm=None):
+        return tracepress.harbor_agent_taxonomy(steps, lm=lm)
+
+    @ws.pipeline
+    def harbor_command_taxonomy(steps, *, lm=None):
+        return tracepress.harbor_command_taxonomy(steps, lm=lm)
+
+    assert set(ws.pipelines) == {"harbor_agent_taxonomy", "harbor_command_taxonomy"}
+    with pytest.raises(TypeError, match="not a workspace pipeline"):
+        ws.pipeline(tracepress.harbor_load)
+
+    steps = tracepress.harbor_load(_job(tmp_path)).steps
+    labels = ws.run("harbor_agent_taxonomy", steps, lm=lm)
     assert labels.manifest["status"] == "ok"
     saved = ws["agent_taxonomy_labels"]
     assert list(saved.set_index("trial_key").loc["trial-a", "classes"]) == ["verification", "execution"]
     assert "USER_TASK" in " ".join(ws["agent_step_summaries"]["step_summary"].astype(str))
 
-    commands = ws.run("command_taxonomy", steps, lm=lm)
+    commands = ws.run("harbor_command_taxonomy", steps, lm=lm)
     assert commands.manifest["status"] == "ok"
     assert ws["command_taxonomy"]["failure_class"].tolist() == ["invocation"]

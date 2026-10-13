@@ -14,6 +14,7 @@
 """
 
 from . import harbor, ops  # ops registers the df.lm_* accessors
+from .harbor import harbor_agent_taxonomy, harbor_command_taxonomy, harbor_load
 from .model import Budget, BudgetExceeded, Model, Usage, budget
 from .signature import In, Out, Signature
 from .settings import configure, using
@@ -33,5 +34,7 @@ __all__ = [
     "Signature",
     "In",
     "Out",
-    "harbor",
+    "harbor_load",
+    "harbor_agent_taxonomy",
+    "harbor_command_taxonomy",
 ]
