@@ -108,7 +108,7 @@ Inside a pipeline, `save_as="name"` names the artifact.
 
 ## Models
 
-`tracepress.Model("provider:model", ...)` wraps a `dspy.LM` running on the lm15 engine. The model id may contain slashes: `openrouter:openai/gpt-6-luna`, `anthropic:claude-opus-5-5`, `openai:gpt-6-luna`, `gemini:gemini-2.5-pro`. DSPy supplies prompt formatting (its JSON adapter, with native structured output), parsing, retries, the response cache (`~/.tracepress/cache`), and per-call cost. TracePress adds:
+`tracepress.Model(...)` wraps a `dspy.LM` running on the lm15 engine. A direct model is a LiteLLM id: `openai/gpt-5-nano`, `anthropic/claude-opus-5-5`. A gateway prefixes that id: `openrouter:openai/gpt-6-luna`, `portkey:openai/gpt-5-nano`. DSPy supplies prompt formatting (its JSON adapter, with native structured output), parsing, retries, the response cache (`~/.tracepress/cache`), and per-call cost. TracePress adds:
 
 - concurrent batches (`max_workers`) with a progress bar
 - token and cost totals on `lm.usage` and in every artifact's manifest
@@ -119,22 +119,17 @@ Inside a pipeline, `save_as="name"` names the artifact.
 
 ### Portkey
 
-Route any model through a [Portkey](https://portkey.ai) workspace. Set `PORTKEY_API_KEY` and name the model `@provider-slug/model`, where the slug is a provider in your Model Catalog:
+Set `PORTKEY_API_KEY`. The string after `portkey:` is a LiteLLM id, and the call sends that id with a leading `@` to Portkey:
 
 ```python
-tp.Model("portkey:@anthropic/claude-haiku-4-5", temperature=0, max_tokens=800,
-         top_p=0.9, metadata={"project": "demo"}, price=(1, 5))
+tp.configure(lm=tp.Model("portkey:openai/gpt-5-nano"))
 ```
 
-Options:
+`portkey:@openai/gpt-5-nano` is the same call. Cost comes from the LiteLLM rate for `openai/gpt-5-nano`. A catalog slug LiteLLM does not know warns and records $0 until you pass a rate, in dollars per million tokens:
 
-- **Generation settings:** `temperature`, `max_tokens`, `reasoning`, and any other keyword (`top_p`, `top_k`, `stop`, `seed`, `frequency_penalty`, ...) are passed to `dspy.LM`, which checks the ranges. Which ones apply depends on the model behind the slug. gpt-5 models need `temperature=1` and `max_tokens>=16000`.
-- **`metadata`:** optional. Tags the request in Portkey's logs, e.g. `{"project": "demo"}`. If your workspace requires keys such as `engagement_name`, set them here or attach them to the API key in Portkey. Values are sent as strings.
-- **`portkey_config`, `virtual_key`:** optional. A virtual key and `@slug/model` routing can conflict, so use one or the other.
-- **Headers:** `metadata`, `portkey_config` and `virtual_key` become `x-portkey-*` headers. `PORTKEY_METADATA` and `PORTKEY_CONFIG` set defaults, and `PORTKEY_BASE_URL` points at a self-hosted gateway.
-- **`price=(input, output)`:** DSPy can't price gateway models, so pass dollars per million tokens, e.g. `price=(1, 5)` for $1 per M input tokens and $5 per M output tokens. It gives you `cost_usd` and makes dollar budgets work. It applies to Portkey models only. Without it, cost is recorded as $0 and `tp.budget(max_usd=...)` can't stop a run.
-- **Response cache:** keep `metadata` stable within a run. It is part of the model's identity for the cache, so a tag that changes per row (a run id) misses the cache and re-bills identical prompts.
-- **Agent:** pass a `tp.Model`, as in `tp.configure(agent_lm=tp.Model("portkey:...", ...))`. A bare model string in `ws.agent_run` can't carry `metadata`, `price` or generation settings.
+```python
+tp.Model("portkey:@openai-prod/gpt-5-nano", price=(0.05, 0.40))
+```
 
 ## Workspace
 

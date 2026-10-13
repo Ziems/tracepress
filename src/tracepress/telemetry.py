@@ -26,8 +26,6 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .model import _split
-
 log = logging.getLogger(__name__)
 
 POSTHOG_PROJECT_API_KEY = "phc_oj47o0vexqRFGmRy1u5Bm2aSx0CvhiHDygSUU6bAuix"
@@ -282,8 +280,11 @@ def _status(exc: BaseException | None) -> str:
 def _provider(model: str | None) -> str | None:
     if not model:
         return None
-    provider, _ = _split(model)
-    return provider if provider != model else None
+    if ":" in model:
+        return model.split(":", 1)[0]
+    if "/" in model:
+        return model.split("/", 1)[0]
+    return None
 
 
 def _model_props(model: str | None) -> dict[str, Any]:

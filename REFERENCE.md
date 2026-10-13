@@ -10,7 +10,7 @@ import tracepress as tp
 
 | | Purpose |
 |---|---|
-| `tp.Model(model, ...)` | A language model to run operators or the agent with. Wraps a `dspy.LM` on the lm15 engine. It adds concurrent batches, a progress bar, token and cost totals (`model.usage`) and budget checks. `model` is `"provider:model"`, like `"openrouter:openai/gpt-6-luna"`. The model id may contain slashes. |
+| `tp.Model(model, ...)` | A language model to run operators or the agent with. Wraps a `dspy.LM` on the lm15 engine. It adds concurrent batches, a progress bar, token and cost totals (`model.usage`) and budget checks. A direct `model` is a LiteLLM id, like `"openai/gpt-5-nano"`. A gateway prefixes that id: `"openrouter:openai/gpt-6-luna"`, `"portkey:openai/gpt-5-nano"`. |
 | `tp.configure(lm=, agent_lm=)` | Sets the default models: `lm` for operators, `agent_lm` for `ws.agent_run`. Set this once at the top of a notebook. |
 | `tp.using(lm=, agent_lm=)` | Overrides the default models inside a `with` block, for example to use a bigger model for one step. |
 | `tp.budget(max_calls=, max_usd=)` | Caps the model calls made inside a `with` block. A batch that would go over the cap is refused before it starts, so it costs nothing. `ws.agent_run` sets one of these for the agent. |

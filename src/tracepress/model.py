@@ -81,7 +81,8 @@ def _usage_of(history: list[dict[str, Any]], price: tuple[float, float] | None =
     """Usage from the history entries of one call (an LM copy's own history).
 
     DSPy records a cache hit with empty usage but keeps the original call's cost, so an
-    entry without usage counts as cached and costs nothing.
+    entry without usage counts as cached and costs nothing. ``price`` is ``(input, output)``
+    dollars per million tokens, used when a call reports tokens but no cost.
     """
     total = Usage()
     for entry in history:
@@ -91,7 +92,7 @@ def _usage_of(history: list[dict[str, Any]], price: tuple[float, float] | None =
             continue
         n_in, n_out = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
         cost = entry.get("cost")
-        if cost is None and price:  # a gateway model DSPy can't price: use the caller's $/M tokens
+        if cost is None and price is not None:
             cost = (n_in * price[0] + n_out * price[1]) / 1_000_000
         total = total + Usage(calls=1, input_tokens=n_in, output_tokens=n_out, cost_usd=float(cost or 0.0))
     return total
@@ -181,8 +182,11 @@ class Model:
     """A ``dspy.LM`` plus concurrency, accounting, and budgets.
 
     Args:
-        model: ``"provider:model"``. The model id may contain slashes, e.g.
-            ``"openrouter:openai/gpt-6-luna"`` or ``"anthropic:claude-opus-5-5"``.
+        model: a LiteLLM id, e.g. ``"openai/gpt-5-nano"`` or
+            ``"anthropic/claude-opus-5-5"``. A gateway is that id with a prefix:
+            ``"openrouter:openai/gpt-6-luna"``, ``"portkey:openai/gpt-5-nano"``.
+            ``portkey:`` reads ``PORTKEY_API_KEY`` and prices the LiteLLM id
+            after the colon. ``PORTKEY_BASE_URL`` overrides the gateway.
         engine: a custom lm15 engine (anything with ``complete(Request) -> Response``),
             e.g. a test double. Defaults to DSPy's native lm15 engine.
         temperature, max_tokens: generation settings.
@@ -190,14 +194,12 @@ class Model:
         max_workers: concurrent requests per batch.
         num_retries: DSPy's retries on rate limits and transient errors.
         cache: DSPy's response cache (on disk, under ``~/.tracepress/cache``).
-        price: ``(input, output)`` dollars per million tokens. Estimates a batch before it runs,
-            and, for Portkey models only, prices calls DSPy reports no cost for. Cost DSPy does report is
-            kept, and a cache hit costs nothing.
+        price: ``(input, output)`` dollars per million tokens, used to estimate a
+            batch before it runs. Actual cost comes from DSPy. A Portkey model
+            DSPy cannot price uses this rate for the recorded cost; when omitted,
+            the LiteLLM rate for the id after ``portkey:`` is used. A missing
+            rate warns and the cost stays ``$0``.
         progress: show a tqdm bar for batches.
-        metadata, portkey_config, virtual_key: Portkey only (``"portkey:@slug/model"``). Sent as
-            ``x-portkey-metadata``, ``x-portkey-config`` and ``x-portkey-virtual-key``; unset ones
-            fall back to ``PORTKEY_METADATA`` and ``PORTKEY_CONFIG``. A virtual
-            key and ``@slug/model`` routing can conflict: use one or the other.
         lm_kwargs: anything else is passed to ``dspy.LM``.
     """
 
@@ -214,9 +216,6 @@ class Model:
         cache: bool = True,
         price: tuple[float, float] | None = None,
         progress: bool = True,
-        metadata: Mapping[str, Any] | None = None,
-        portkey_config: str | Mapping[str, Any] | None = None,
-        virtual_key: str | None = None,
         **lm_kwargs: Any,
     ):
         self.model = model
@@ -227,27 +226,24 @@ class Model:
         self.price = price
         self.progress = progress
         kwargs: dict[str, Any] = dict(lm_kwargs)
-        provider, model_id = _split(model)
-        # DSPy can't price gateway models, so only they get `price` as a cost; elsewhere a missing
-        # cost can mean "unknown" on purpose (subscription plans, tool fees) and stays 0.
-        self._cost_price = price if provider == "portkey" else None
+        if model.startswith("portkey:"):
+            dspy_model = _portkey_target(model, kwargs)
+            if self.price is None:
+                self.price = _litellm_price(_portkey_ids(model)[1])
+                if self.price is None:
+                    warnings.warn(
+                        f"{model} has no LiteLLM price; its cost is recorded as $0. "
+                        "Pass price=(input, output) in dollars per million tokens.",
+                        stacklevel=2,
+                    )
+        else:
+            dspy_model = _for_dspy(model)
         if reasoning is not None:
             # lm15 reads each server's own spelling: OpenRouter takes a `reasoning` object.
-            if provider == "openrouter":
+            if _provider(model) == "openrouter":
                 kwargs["reasoning"] = {"effort": reasoning}
             else:
                 kwargs["reasoning_effort"] = reasoning
-        if provider == "portkey":
-            from .providers import portkey_model
-
-            if not model_id:
-                raise ValueError(f"{model!r} has no model id; use 'portkey:@provider-slug/model'")
-
-            dspy_model = portkey_model(model_id, metadata=metadata, config=portkey_config, virtual_key=virtual_key)
-        elif metadata is not None or portkey_config is not None or virtual_key is not None:
-            raise ValueError("metadata, portkey_config and virtual_key only apply to portkey models")
-        else:
-            dspy_model = f"{provider}/{model_id}" if model.startswith(f"{provider}:") else model
         self.lm = dspy.LM(
             dspy_model,
             engine=engine if engine is not None else "lm15",
@@ -277,12 +273,6 @@ class Model:
         b = _budget.get()
         if b is None:
             return
-        if b.max_usd is not None and self._cost_price is None and _split(self.model)[0] == "portkey":
-            warnings.warn(
-                f"{self.model} has no price=(input, output), so its cost is recorded as $0 and "
-                "budget(max_usd=...) cannot stop it",
-                stacklevel=3,
-            )
         est = None
         if self.price:
             est = (prompt_chars / 4 * self.price[0] + n_calls * (self.max_tokens or 1024) * self.price[1]) / 1_000_000
@@ -297,7 +287,7 @@ class Model:
             predictor.demos = examples
         with dspy.context(lm=lm, adapter=self.adapter):
             result = predictor(**inputs)
-        usage = _usage_of(lm.history, self._cost_price)
+        usage = _usage_of(lm.history, self._recorded_price())
         self._account(usage)
         return Prediction({name: result[name] for name in signature.output_fields}, usage)
 
@@ -351,20 +341,85 @@ class Model:
         """Send one explicit lm15 request through DSPy (used by the agent's tool loop)."""
         lm = self.lm.copy()
         response = lm(request)
-        usage = _usage_of(lm.history, self._cost_price)
+        usage = _usage_of(lm.history, self._recorded_price())
         self._account(usage)
         return response, usage
 
+    def _recorded_price(self) -> tuple[float, float] | None:
+        """Rate to record when DSPy reports tokens but no cost. Portkey only."""
+        if not self.model.startswith("portkey:"):
+            return None
+        return self.price
 
-def _split(model: str) -> tuple[str, str]:
-    """``(provider, model_id)``. ``provider:id`` splits at the first colon, unless a ``/`` comes
-    first, so ids that contain colons (``portkey/@bedrock/claude-v2:0``) keep them."""
+
+def _portkey_ids(model: str) -> tuple[str, str]:
+    """``(@catalog id, litellm id)`` for ``portkey:openai/gpt-5-nano`` or ``portkey:@openai/gpt-5-nano``.
+
+    A missing ``@`` is added. One that is already there is kept. The LiteLLM id
+    never includes it, so the price lookup is the same either way.
+    """
+    raw = model.split(":", 1)[1]
+    catalog = raw if raw.startswith("@") else f"@{raw}"
+    litellm_id = catalog[1:]
+    slug, sep, upstream = litellm_id.partition("/")
+    if not sep or not slug or not upstream:
+        raise ValueError(f"{model!r} must be 'portkey:provider/model', e.g. 'portkey:openai/gpt-5-nano'")
+    return catalog, litellm_id
+
+
+def _portkey_target(model: str, kwargs: dict[str, Any]) -> str:
+    """The DSPy model for a Portkey id. The wire model is ``openai/@provider/model``."""
+    catalog, _ = _portkey_ids(model)
+    if "api_key" not in kwargs:
+        key = os.environ.get("PORTKEY_API_KEY", "").strip()
+        if not key:
+            raise ValueError(f"{model!r} needs PORTKEY_API_KEY or api_key=")
+        kwargs["api_key"] = key
+    base = os.environ.get("PORTKEY_BASE_URL", "").strip()
+    kwargs.setdefault("api_base", base or "https://api.portkey.ai/v1")
+    return f"openai/{catalog}"
+
+
+def _litellm_price(litellm_id: str) -> tuple[float, float] | None:
+    """Public ``(input, output)`` dollars per million tokens for a LiteLLM id."""
+    provider, _, upstream = litellm_id.partition("/")
+    if not provider or not upstream:
+        return None
+    from dspy.clients.model_metadata import model_info, rate
+
+    info = model_info(provider, upstream)
+    per_in, per_out = rate(info, "input_cost_per_token"), rate(info, "output_cost_per_token")
+    if per_in is None or per_out is None:
+        return None
+    return (per_in * 1_000_000, per_out * 1_000_000)
+
+
+def _provider(model: str) -> str:
+    """The routing provider: the text before ``:``, or before ``/`` when no colon is given."""
+    head, sep, _ = model.partition(":")
+    if sep:
+        return head
+    return model.split("/", 1)[0]
+
+
+def _for_dspy(model: str) -> str:
+    """DSPy routes on a LiteLLM id.
+
+    A string with no colon, or a colon after the first slash, is that id and is
+    kept (``openai/gpt-5-nano``, ``bedrock/anthropic.claude-v2:0``). A colon
+    before any slash is a gateway prefix (``openrouter:openai/gpt-6-luna``).
+    ``openai:gpt-5-nano`` is rejected.
+    """
     colon, slash = model.find(":"), model.find("/")
-    if colon != -1 and (slash == -1 or colon < slash):
-        return model[:colon], model[colon + 1 :]
-    if slash != -1:
-        return model[:slash], model[slash + 1 :]
-    return model, ""
+    if colon == -1 or (slash != -1 and slash < colon):
+        return model
+    provider, model_id = model.split(":", 1)
+    if "/" not in model_id:
+        raise ValueError(
+            f"{model!r} must be a LiteLLM id such as '{provider}/{model_id}'. "
+            "A colon is only a gateway prefix, as in 'openrouter:openai/gpt-6-luna'."
+        )
+    return f"{provider}/{model_id}"
 
 
 def _progress_bar(total: int, desc: str):
