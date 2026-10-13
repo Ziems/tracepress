@@ -19,6 +19,7 @@ before/
 # TracePress workspaces: pipeline runs, artifacts, and agent transcripts
 ws/
 workspace/
+jobs/
 
 # Third-party reference code
 vendor/

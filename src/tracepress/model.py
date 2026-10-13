@@ -1,7 +1,7 @@
 """The model layer: DSPy, running on its bundled lm15 engine, plus what operators need on top.
 
-DSPy supplies signatures, prompt formatting (its JSON adapter, which asks the provider
-for native structured output), parsing, retries, a response cache, and per-call cost.
+DSPy supplies signatures, prompt formatting (its XML adapter), parsing, retries, a
+response cache, and per-call cost.
 This module adds concurrent batches, a progress bar, token and cost totals, and a
 budget the agent can't exceed.
 
@@ -255,7 +255,7 @@ class Model:
             cache=cache,
             **kwargs,
         )
-        self.adapter = dspy.JSONAdapter()
+        self.adapter = dspy.XMLAdapter()
         self.usage = Usage()
         self._usage_lock = threading.Lock()
 

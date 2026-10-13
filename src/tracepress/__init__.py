@@ -13,7 +13,7 @@
     ws.agent_run("...")
 """
 
-from . import ops  # registers the df.lm_* accessors
+from . import harbor, ops  # ops registers the df.lm_* accessors
 from .model import Budget, BudgetExceeded, Model, Usage, budget
 from .signature import In, Out, Signature
 from .settings import configure, using
@@ -33,4 +33,5 @@ __all__ = [
     "Signature",
     "In",
     "Out",
+    "harbor",
 ]

@@ -19,7 +19,7 @@ def test_map_writes_outputs_as_columns(make_lm):
 
     request = engine.requests[0]
     assert "Shout it" in request.system
-    assert "[[ ## text ## ]]" in prompt_of(request) and "other" not in prompt_of(request)
+    assert "<text>" in prompt_of(request) and "other" not in prompt_of(request)
 
 
 def test_map_typed_outputs(make_lm):

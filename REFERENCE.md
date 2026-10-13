@@ -73,6 +73,17 @@ The agent's tools:
 | `run_op` | Runs one operator on an artifact or a subset of it. Costs model calls. |
 | `run_pipeline` | Runs a registered pipeline on artifacts or subsets of them. Costs model calls. |
 
+## Harbor
+
+Load a Harbor job directory, a trial directory (`agent/trajectory.json` or `trajectory.json`), an ATIF file, or a list of those. No Harbor install is required. `trial_key` identifies each trial; a list of paths is prefixed so two jobs do not collide.
+
+| | Purpose |
+|---|---|
+| `tp.harbor.load(path)` | Returns a `HarborLoad` with `.trials` (one row per trial, including reward, exception, and failed tests from `result.json` and `verifier/ctrf.json`) and `.steps` (one row per ATIF step, including embedded subagents). |
+| `tp.harbor.terminal_agent_taxonomy(steps)` | Summarizes each user and agent step, then labels the trial with the Terminal Agent Taxonomy: `modes` (any of the nine) and `classes` (`execution`, `coherence`, `verification`). System prompts are left out. Saved as `agent_step_summaries` and `agent_taxonomy_labels` inside a pipeline. |
+| `tp.harbor.command_taxonomy(steps)` | Keeps agent steps whose shell, REPL, or CLI command failed, then labels each with one subcategory and a `failure_class` (`invocation`, `repl`, `runtime`, `filesystem`, `other`). Saved as `command_failures` and `command_taxonomy`. |
+| `tp.harbor.register(ws)` | Registers both classifiers as pipelines the agent can run. |
+
 ## On disk
 
 | Path | Contents |

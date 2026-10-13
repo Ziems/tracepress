@@ -108,7 +108,7 @@ Inside a pipeline, `save_as="name"` names the artifact.
 
 ## Models
 
-`tracepress.Model(...)` wraps a `dspy.LM` running on the lm15 engine. A direct model is a LiteLLM id: `openai/gpt-5-nano`, `anthropic/claude-opus-5-5`. A gateway prefixes that id: `openrouter:openai/gpt-6-luna`, `portkey:openai/gpt-5-nano`. DSPy supplies prompt formatting (its JSON adapter, with native structured output), parsing, retries, the response cache (`~/.tracepress/cache`), and per-call cost. TracePress adds:
+`tracepress.Model(...)` wraps a `dspy.LM` running on the lm15 engine. A direct model is a LiteLLM id: `openai/gpt-5-nano`, `anthropic/claude-opus-5-5`. A gateway prefixes that id: `openrouter:openai/gpt-6-luna`, `portkey:openai/gpt-5-nano`. DSPy supplies prompt formatting (its XML adapter), parsing, retries, the response cache (`~/.tracepress/cache`), and per-call cost. TracePress adds:
 
 - concurrent batches (`max_workers`) with a progress bar
 - token and cost totals on `lm.usage` and in every artifact's manifest
@@ -152,6 +152,19 @@ Pipelines are code, so re-run the cell that registers them in each new session. 
 - `run_pipeline`: a registered pipeline on artifacts or subsets of them.
 
 The answer renders as markdown and cites artifacts and row ids. Transcripts are saved to `workspace/agent_runs/`.
+
+## Harbor
+
+`tp.harbor.load` reads a Harbor job directory, a trial directory, or an ATIF `trajectory.json` into one row per trial and one row per step.
+
+```python
+loaded = tp.harbor.load("jobs/my-job")
+labels = tp.harbor.terminal_agent_taxonomy(loaded.steps)  # summarize each step, then the nine TAT modes per trial
+commands = tp.harbor.command_taxonomy(loaded.steps)       # one row per failed command
+tp.harbor.register(ws)  # both become pipelines the agent can run
+```
+
+`labels.modes` lists every mode the trial shows. `commands.subcategory` is one command-failure subcategory. Pass `lm=` to use a model other than the configured one.
 
 ## Credit
 
