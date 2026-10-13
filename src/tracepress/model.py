@@ -185,8 +185,9 @@ class Model:
         model: a LiteLLM id, e.g. ``"openai/gpt-5-nano"`` or
             ``"anthropic/claude-opus-5-5"``. A gateway is that id with a prefix:
             ``"openrouter:openai/gpt-6-luna"``, ``"portkey:openai/gpt-5-nano"``.
-            ``portkey:`` reads ``PORTKEY_API_KEY`` and prices the LiteLLM id
-            after the colon. ``PORTKEY_BASE_URL`` overrides the gateway.
+            ``portkey:`` reads ``PORTKEY_API_KEY``. ``PORTKEY_BASE_URL`` overrides
+            the gateway. A gateway is priced from its own LiteLLM entry when that
+            entry has a rate, and otherwise from the id after the colon.
         engine: a custom lm15 engine (anything with ``complete(Request) -> Response``),
             e.g. a test double. Defaults to DSPy's native lm15 engine.
         temperature, max_tokens: generation settings.
@@ -195,10 +196,11 @@ class Model:
         num_retries: DSPy's retries on rate limits and transient errors.
         cache: DSPy's response cache (on disk, under ``~/.tracepress/cache``).
         price: ``(input, output)`` dollars per million tokens, used to estimate a
-            batch before it runs. Actual cost comes from DSPy. A Portkey model
-            DSPy cannot price uses this rate for the recorded cost; when omitted,
-            the LiteLLM rate for the id after ``portkey:`` is used. A missing
-            rate warns and the cost stays ``$0``.
+            batch before it runs. Actual cost comes from DSPy. A gateway DSPy
+            cannot price uses this rate for the recorded cost; when omitted, the
+            LiteLLM rate is used, falling back from the gateway entry to the id
+            after the colon. ``portkey:`` ignores a leading ``@``. A missing rate
+            warns and the cost stays ``$0``.
         progress: show a tqdm bar for batches.
         lm_kwargs: anything else is passed to ``dspy.LM``.
     """
@@ -228,16 +230,16 @@ class Model:
         kwargs: dict[str, Any] = dict(lm_kwargs)
         if model.startswith("portkey:"):
             dspy_model = _portkey_target(model, kwargs)
-            if self.price is None:
-                self.price = _litellm_price(_portkey_ids(model)[1])
-                if self.price is None:
-                    warnings.warn(
-                        f"{model} has no LiteLLM price; its cost is recorded as $0. "
-                        "Pass price=(input, output) in dollars per million tokens.",
-                        stacklevel=2,
-                    )
         else:
             dspy_model = _for_dspy(model)
+        if self.price is None and _gateway_upstream(model) is not None:
+            self.price = _gateway_price(model)
+            if self.price is None:
+                warnings.warn(
+                    f"{model} has no LiteLLM price; its cost is recorded as $0. "
+                    "Pass price=(input, output) in dollars per million tokens.",
+                    stacklevel=2,
+                )
         if reasoning is not None:
             # lm15 reads each server's own spelling: OpenRouter takes a `reasoning` object.
             if _provider(model) == "openrouter":
@@ -346,8 +348,8 @@ class Model:
         return response, usage
 
     def _recorded_price(self) -> tuple[float, float] | None:
-        """Rate to record when DSPy reports tokens but no cost. Portkey only."""
-        if not self.model.startswith("portkey:"):
+        """Rate to record when DSPy reports tokens but no cost. Gateways only."""
+        if _gateway_upstream(self.model) is None:
             return None
         return self.price
 
@@ -378,6 +380,34 @@ def _portkey_target(model: str, kwargs: dict[str, Any]) -> str:
     base = os.environ.get("PORTKEY_BASE_URL", "").strip()
     kwargs.setdefault("api_base", base or "https://api.portkey.ai/v1")
     return f"openai/{catalog}"
+
+
+def _gateway_upstream(model: str) -> str | None:
+    """The LiteLLM id after a gateway prefix, or ``None`` when ``model`` is already one.
+
+    ``portkey:@openai/gpt-5-nano`` drops the leading ``@``. A colon after the first
+    slash is part of the id (``bedrock/anthropic.claude-v2:0``), not a gateway.
+    """
+    colon, slash = model.find(":"), model.find("/")
+    if colon == -1 or slash == -1 or slash < colon:
+        return None
+    raw = model[colon + 1 :]
+    if model.startswith("portkey:") and raw.startswith("@"):
+        raw = raw[1:]
+    return raw or None
+
+
+def _gateway_price(model: str) -> tuple[float, float] | None:
+    """``(input, output)`` dollars per million tokens for a gateway id.
+
+    The gateway's own LiteLLM entry wins. When it has no rate, the id after the
+    colon is used, so ``openrouter:openai/gpt-6-luna`` can take the OpenAI price.
+    """
+    upstream = _gateway_upstream(model)
+    if upstream is None:
+        return None
+    provider = model.split(":", 1)[0]
+    return _litellm_price(f"{provider}/{upstream}") or _litellm_price(upstream)
 
 
 def _litellm_price(litellm_id: str) -> tuple[float, float] | None:
