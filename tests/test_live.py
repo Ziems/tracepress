@@ -27,7 +27,6 @@ pytestmark = [
 ]
 
 OPS_MODEL = os.environ.get("TRACEPRESS_LIVE_MODEL", "openrouter:openai/gpt-6-luna")
-AGENT_MODEL = os.environ.get("TRACEPRESS_LIVE_AGENT", "openrouter:anthropic/claude-opus-5.5")
 
 REVIEWS = pd.DataFrame(
     {
@@ -63,19 +62,3 @@ def test_map_filter_agg(lm):
     per_product = REVIEWS.lm_agg("review -> complaint", "The most common complaint, in one sentence", by="product", lm=lm)
     assert list(per_product["product"]) == ["kettle", "toaster"]
     assert "lid" in per_product["complaint"].iloc[0].lower()
-
-
-def test_agent_answers_from_the_workspace(lm, tmp_path):
-    tracepress.configure(lm=lm)
-    ws = tracepress.Workspace(tmp_path / "ws")
-
-    @ws.pipeline(description="Most common complaint per product")
-    def complaints(reviews):
-        return reviews.lm_agg("review -> complaint", "Most common complaint, one sentence", by="product", save_as="complaints")
-
-    complaints(REVIEWS)
-    agent = tracepress.Model(AGENT_MODEL, max_tokens=4000, cache=False)
-    answer = ws.agent_run("Which product has more reviews that mention a defect, and what is it? Cite rows.", model=agent, max_steps=12, verbose=True)
-    print(answer.text)
-    assert "kettle" in answer.text.lower() or "toaster" in answer.text.lower()
-    assert answer.steps

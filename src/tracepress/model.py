@@ -3,7 +3,7 @@
 DSPy supplies signatures, prompt formatting (its XML adapter), parsing, retries, a
 response cache, and per-call cost.
 This module adds concurrent batches, a progress bar, token and cost totals, and a
-budget the agent can't exceed.
+budget that refuses batches before they overrun it.
 
     lm = Model("openrouter:openai/gpt-6-luna", temperature=0, max_tokens=600)
     lm.predict(dspy.Signature("review -> gist"), [{"review": "..."}])
@@ -14,6 +14,7 @@ DSPy is always run with ``engine="lm15"``, so litellm is never imported.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 import dspy
-from dspy.lm15 import Config, Reasoning, Request, Response
+from dspy.utils.exceptions import AdapterParseError
 
 
 def cache_dir() -> Path:
@@ -143,14 +144,6 @@ class Budget:
         with self._lock:
             self.cost_usd += usage.cost_usd
 
-    def remaining(self) -> str:
-        """What's left, in words (shown to the agent each turn)."""
-        parts = []
-        if self.max_calls is not None:
-            parts.append(f"{self.max_calls - self.calls} model calls")
-        if self.max_usd is not None:
-            parts.append(f"${self.max_usd - self.cost_usd:.2f}")
-        return " and ".join(parts) or "unlimited"
 
 
 _budget: ContextVar[Budget | None] = ContextVar("tracepress_budget", default=None)
@@ -168,6 +161,34 @@ def budget(max_calls: int | None = None, max_usd: float | None = None) -> Iterat
 
 
 # --------------------------------------------------------------------------- model
+
+_BARE_AMPERSAND = re.compile(r"&(?![A-Za-z]+;|#\d+;|#x[0-9A-Fa-f]+;)")
+
+
+class _XMLAdapter(dspy.XMLAdapter):
+    """DSPy's XML adapter, tolerant of a bare ``&`` or ``<`` inside a field.
+
+    Answers about shell traces quote ``2>&1``, ``&&``, and ``n < 4``, which are not
+    well-formed XML, so DSPy's strict parse fails and falls back to JSON. When the
+    strict parse fails, those characters are escaped and the answer is parsed again.
+    Only the output field tags (and ``item``, for lists) are kept as markup.
+    """
+
+    def parse(self, signature: type[dspy.Signature], completion: str) -> dict[str, Any]:
+        try:
+            return super().parse(signature, completion)
+        except AdapterParseError:
+            repaired = _escape_xml_text(completion, [*signature.output_fields, "item"])
+            if repaired == completion:
+                raise
+            return super().parse(signature, repaired)
+
+
+def _escape_xml_text(text: str, tags: Sequence[str]) -> str:
+    """Escape ``&`` that is not an entity, and ``<`` that does not open or close one of ``tags``."""
+    known = "|".join(re.escape(tag) for tag in tags)
+    text = _BARE_AMPERSAND.sub("&amp;", text)
+    return re.sub(rf"<(?!/?(?:{known})>)", "&lt;", text)
 
 
 @dataclass
@@ -194,6 +215,10 @@ class Model:
         reasoning: an effort word (``"off"``, ``"low"``, ... ``"max"``).
         max_workers: concurrent requests per batch.
         num_retries: DSPy's retries on rate limits and transient errors.
+        parse_retries: fresh calls for a row whose response cannot be parsed, even
+            after DSPy's JSON fallback. Each retry has its own cache entry, so a
+            rerun replays the retry instead of the bad response. Retries are not
+            counted against a ``budget``'s ``max_calls``.
         cache: DSPy's response cache (on disk, under ``~/.tracepress/cache``).
         price: ``(input, output)`` dollars per million tokens, used to estimate a
             batch before it runs. Actual cost comes from DSPy. A gateway DSPy
@@ -215,6 +240,7 @@ class Model:
         reasoning: str | None = None,
         max_workers: int = 8,
         num_retries: int = 3,
+        parse_retries: int = 2,
         cache: bool = True,
         price: tuple[float, float] | None = None,
         progress: bool = True,
@@ -227,6 +253,7 @@ class Model:
         self.max_workers = max_workers
         self.price = price
         self.progress = progress
+        self.parse_retries = parse_retries
         kwargs: dict[str, Any] = dict(lm_kwargs)
         if model.startswith("portkey:"):
             dspy_model = _portkey_target(model, kwargs)
@@ -255,7 +282,7 @@ class Model:
             cache=cache,
             **kwargs,
         )
-        self.adapter = dspy.XMLAdapter()
+        self.adapter = _XMLAdapter()
         self.usage = Usage()
         self._usage_lock = threading.Lock()
 
@@ -283,15 +310,40 @@ class Model:
     # ------------------------------------------------------------------ predict
 
     def _predict_one(self, signature: type[dspy.Signature], inputs: Mapping[str, Any], examples: list | None) -> Prediction:
-        lm = self.lm.copy()  # its own history, so this call's usage and cost can be read back
         predictor = dspy.Predict(signature)
         if examples:
             predictor.demos = examples
-        with dspy.context(lm=lm, adapter=self.adapter):
-            result = predictor(**inputs)
-        usage = _usage_of(lm.history, self._recorded_price())
-        self._account(usage)
+        usage = Usage()
+        for attempt in range(self.parse_retries + 1):
+            lm = self._attempt_lm(attempt)
+            try:
+                with dspy.context(lm=lm, adapter=self.adapter):
+                    result = predictor(**inputs)
+                break
+            except AdapterParseError:
+                if attempt == self.parse_retries:
+                    raise
+            finally:
+                spent = _usage_of(lm.history, self._recorded_price())
+                self._account(spent)
+                usage = usage + spent
         return Prediction({name: result[name] for name in signature.output_fields}, usage)
+
+    def _attempt_lm(self, attempt: int) -> dspy.LM:
+        """A copy with its own history, so each attempt's usage and cost can be read back.
+
+        DSPy caches a response before parsing it, so an unparseable one is replayed on
+        every rerun. A retry asks under its own ``rollout_id``, which is part of the
+        cache key: a fresh call, cached on its own. Attempt 0 is the plain request, so
+        rows that parse keep their cache entries.
+        """
+        if attempt == 0:
+            return self.lm.copy()
+        lm = self.lm.copy(rollout_id=attempt)
+        # DSPy warns that rollout_id does nothing at temperature 0. It still changes
+        # the cache key, which is all a retry needs.
+        lm._warned_zero_temp_rollout = True
+        return lm
 
     def predict(
         self,
@@ -325,27 +377,6 @@ class Model:
         finally:
             if bar is not None:
                 bar.close()
-
-    # --------------------------------------------------------- raw lm15 requests
-
-    def config(self) -> Config:
-        """This model's settings as an lm15 ``Config``, for explicit requests (the agent loop)."""
-        kwargs: dict[str, Any] = {}
-        if self.temperature is not None:
-            kwargs["temperature"] = self.temperature
-        if self.max_tokens is not None:
-            kwargs["max_tokens"] = self.max_tokens
-        if self.reasoning is not None:
-            kwargs["reasoning"] = Reasoning(effort=self.reasoning)
-        return Config(**kwargs)
-
-    def send(self, request: Request) -> tuple[Response, Usage]:
-        """Send one explicit lm15 request through DSPy (used by the agent's tool loop)."""
-        lm = self.lm.copy()
-        response = lm(request)
-        usage = _usage_of(lm.history, self._recorded_price())
-        self._account(usage)
-        return response, usage
 
     def _recorded_price(self) -> tuple[float, float] | None:
         """Rate to record when DSPy reports tokens but no cost. Gateways only."""

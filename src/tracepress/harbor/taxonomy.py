@@ -88,12 +88,6 @@ other_filesystem: permissions, ENOTDIR, an empty glob, or a dangling symlink.
 other: none of the above.\
 """
 
-# Rendered step text stays small enough that a long message cannot push the observation
-# out of the aggregate's per-record budget. The stored columns are unchanged.
-_MESSAGE_HEAD = 8000
-_REASONING_HEAD = 2000
-_TOOLS_HEAD = 4000
-
 _TAT_COLUMNS = ["trial_key", "explanation", "modes", "n_rows", "classes"]
 _COMMAND_COLUMNS = ["subcategory", "failure_class", "explanation"]
 
@@ -163,7 +157,7 @@ def harbor_command_taxonomy(
     if failed.empty:
         return _empty_commands(failed)
     failed = failed.copy()
-    failed["reasoning"] = [_head(_cell(value), _REASONING_HEAD) for value in failed["reasoning"]]
+    failed["reasoning"] = [_cell(value) for value in failed["reasoning"]]
     out = failed.lm_map(
         "instruction, reasoning, message, tool_calls, observation -> "
         f"subcategory: {_literal(COMMAND_SUBCATEGORIES)}, explanation",
@@ -191,14 +185,13 @@ def _task_instruction(steps: pd.DataFrame) -> pd.Series:
     """The first user message of each trial, copied onto every row of that trial."""
     if "trial_key" not in steps.columns:
         user = steps.loc[steps["source"].eq("user"), "message"].map(_cell)
-        text = _head(user.iloc[0], _MESSAGE_HEAD) if len(user) else ""
+        text = user.iloc[0] if len(user) else ""
         return pd.Series(text, index=steps.index)
     by_key = (
         steps.loc[steps["source"].eq("user")]
         .groupby("trial_key", sort=False)["message"]
         .first()
         .map(_cell)
-        .map(lambda text: _head(text, _MESSAGE_HEAD))
     )
     return steps["trial_key"].map(by_key).fillna("")
 
@@ -209,13 +202,13 @@ def _render_step(row: dict[str, Any]) -> str:
         parts.append("[subagent]")
     if row.get("is_copied_context"):
         parts.append("[copied]")
-    message = _head(_cell(row.get("message")), _MESSAGE_HEAD)
+    message = _cell(row.get("message"))
     if message:
         parts.append(message)
-    reasoning = _head(_cell(row.get("reasoning")), _REASONING_HEAD)
+    reasoning = _cell(row.get("reasoning"))
     if reasoning:
         parts.append("reasoning: " + reasoning)
-    tools = _head(_cell(row.get("tool_calls")), _TOOLS_HEAD)
+    tools = _cell(row.get("tool_calls"))
     if tools:
         parts.append("tools: " + tools)
     observation = _cell(row.get("observation"))
@@ -293,8 +286,3 @@ def _cell(value: Any) -> str:
         pass
     return str(value).strip()
 
-
-def _head(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "\n…[truncated]"

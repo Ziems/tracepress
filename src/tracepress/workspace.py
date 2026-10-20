@@ -9,7 +9,6 @@
 
     failure_modes(steps_df)          # runs it; every lm_* output is saved
     ws["task_modes"]                 # the latest artifact with that name
-    ws.agent_run("Which failure mode is most common?")
 
 On disk, each run is a folder: ``<ws>/runs/<run_id>/manifest.json`` plus one parquet file
 per artifact. The manifest records, for every artifact, the op and instruction that made
@@ -78,7 +77,7 @@ class Pipeline:
         return f"{self.name}{inspect.signature(self.fn)}"
 
     def info(self) -> dict[str, Any]:
-        """Name, signature, description, and docstring: what the agent sees in list_pipelines."""
+        """Name, signature, description, and docstring."""
         return {
             "name": self.name,
             "signature": self.signature,
@@ -224,7 +223,7 @@ class Workspace:
         """Register a function as a pipeline. Use as ``@ws.pipeline`` or ``@ws.pipeline(description=...)``.
 
         The function takes DataFrames (and any other parameters) and runs ``df.lm_*`` operators.
-        The description is what the agent reads to decide when the pipeline is useful.
+        The description says what the pipeline is for, to whoever reads the workspace later.
         """
 
         def register(f: Callable) -> Pipeline:
@@ -335,11 +334,3 @@ class Workspace:
             out.append({k: rec.get(k) for k in ("ref", "op", "instruction", "model", "n_rows", "parents")})
             queue.extend(rec["parents"])
         return out
-
-    # --------------------------------------------------------------------- agent
-
-    def agent_run(self, question: str, **kwargs: Any):
-        """Answer a question from this workspace's artifacts and pipelines. See ``tracepress.agent.agent_run``."""
-        from .agent import agent_run
-
-        return agent_run(self, question, **kwargs)

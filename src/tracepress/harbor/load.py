@@ -14,9 +14,6 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
-# Observations keep the tail: the error is usually at the end of stderr.
-_OBSERVATION_TAIL = 4000
-
 TRIAL_COLUMNS = [
     "trial_key",
     "trial_name",
@@ -304,16 +301,16 @@ def _observation_text(observation: Any) -> str:
     if observation is None:
         return ""
     if isinstance(observation, str):
-        return _tail(observation)
+        return observation
     if isinstance(observation, list):
-        return _tail(_results_text(observation))
+        return _results_text(observation)
     if isinstance(observation, dict):
         if "results" in observation:
-            return _tail(_results_text(observation.get("results")))
+            return _results_text(observation.get("results"))
         if "content" in observation:
-            return _tail(_content_text(observation.get("content")))
-        return _tail(_content_text(observation))
-    return _tail(_text(observation))
+            return _content_text(observation.get("content"))
+        return _content_text(observation)
+    return _text(observation)
 
 
 def _results_text(results: Any) -> str:
@@ -398,12 +395,6 @@ def _text(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, default=str)
-
-
-def _tail(text: str, limit: int = _OBSERVATION_TAIL) -> str:
-    if len(text) <= limit:
-        return text
-    return "…[truncated]\n" + text[-limit:]
 
 
 def _optional_int(value: Any) -> int | None:

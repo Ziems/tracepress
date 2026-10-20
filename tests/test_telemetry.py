@@ -15,8 +15,6 @@ import tracepress
 from tracepress import telemetry
 from tracepress.workspace import Run
 
-from .conftest import ScriptedEngine, tool_call
-
 
 @pytest.fixture
 def fresh_id():
@@ -49,7 +47,6 @@ def _shared() -> dict:
         "status": "completed",
         "duration_seconds": 0.1,
         "in_workspace": False,
-        "in_agent": False,
     }
 
 
@@ -139,7 +136,6 @@ def test_lm_map_event_has_counts_and_no_content(make_lm, monkeypatch):
     assert props["n_output_rows"] == 2
     assert props["calls"] == 2
     assert props["in_workspace"] is False
-    assert props["in_agent"] is False
     assert props["runtime"] == "python"
     assert props["schema"] == "lm_op.v1"
     assert "exception_type" not in props
@@ -201,7 +197,6 @@ def test_workspace_context_omits_names(tmp_path, make_lm, monkeypatch):
     named_secret_pipeline(pd.DataFrame({"text": ["cell-value"]}))
     props = events[0]["properties"]
     assert props["in_workspace"] is True
-    assert props["in_agent"] is False
     assert props["run_kind"] == "pipeline"
     assert props["n_pipelines"] == 1
     assert props["n_artifacts"] == 2
@@ -223,81 +218,6 @@ def test_workspace_context_omits_names(tmp_path, make_lm, monkeypatch):
     assert events[0]["properties"]["run_kind"] == "save"
     assert "secret-name" not in json.dumps(events)
     assert "other-cell" not in json.dumps(events)
-
-
-def test_agent_run_and_nested_op(tmp_path, make_lm, monkeypatch):
-    events = _collect(monkeypatch)
-    lm, _ = make_lm(lambda r: {"loud": "A"})
-    tracepress.configure(lm=lm)
-    ws = tracepress.Workspace(tmp_path / "ws")
-    ws.save("rows", pd.DataFrame({"text": ["hidden cell"]}))
-    agent = tracepress.Model(
-        "fake/agent",
-        engine=ScriptedEngine(
-            [
-                tool_call("list_artifacts"),
-                tool_call("run_op", op="map", artifact="rows", signature="text -> loud", instruction="secret instruction"),
-                "secret answer text",
-            ]
-        ),
-        cache=False,
-        progress=False,
-    )
-    answer = ws.agent_run("secret question text", model=agent, verbose=False)
-    assert answer.text == "secret answer text"
-    assert [event["event"] for event in events] == ["lm_op", "agent_run"]
-
-    op = events[0]["properties"]
-    assert op["op"] == "map"
-    assert op["in_agent"] is True
-    assert op["in_workspace"] is True
-    assert op["run_kind"] == "agent_run"
-    assert op["n_input_rows"] == 1
-
-    run = events[1]["properties"]
-    assert run["status"] == "completed"
-    assert run["model"] == "fake/agent"
-    assert run["provider"] == "fake"
-    assert run["n_turns"] == 3
-    assert run["n_tool_calls"] == 2
-    assert run["n_list_artifacts"] == 1
-    assert run["n_run_op"] == 1
-    assert run["n_list_pipelines"] == 0
-    assert run["n_python"] == 0
-    assert run["hit_step_limit"] is False
-    assert run["op_calls"] == 1
-    assert run["n_pipelines"] == 0
-    assert run["n_artifacts"] == 2
-    assert run["schema"] == "agent_run.v1"
-    blob = json.dumps(events)
-    for leaked in ("secret question", "secret answer", "secret instruction", "hidden cell"):
-        assert leaked not in blob
-
-    events.clear()
-    pd.DataFrame({"text": ["z"]}).lm_map("text -> loud", "after the ask", lm=lm)
-    assert events[0]["properties"]["in_agent"] is False
-
-
-def test_failed_agent_run_is_reported_and_reraised(tmp_path, monkeypatch):
-    events = _collect(monkeypatch)
-
-    class Boom:
-        def complete(self, request):
-            raise RuntimeError("secret boom message")
-
-    ws = tracepress.Workspace(tmp_path / "ws")
-    agent = tracepress.Model("fake/agent", engine=Boom(), cache=False, progress=False)
-    with pytest.raises(Exception, match="secret boom message") as raised:
-        ws.agent_run("secret question text", model=agent, verbose=False)
-    assert type(raised.value).__name__ == "LMUnexpectedError"
-    assert [event["event"] for event in events] == ["agent_run"]
-    props = events[0]["properties"]
-    assert props["status"] == "errored"
-    assert props["exception_type"] == "LMUnexpectedError"
-    assert props["n_turns"] == 1
-    blob = json.dumps(events)
-    assert "secret boom message" not in blob
-    assert "secret question" not in blob
 
 
 def test_runtime_distinguishes_python_notebook_and_colab(monkeypatch):

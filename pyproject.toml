@@ -1,7 +1,7 @@
 [project]
 name = "tracepress"
 version = "0.0.2"
-description = "LLM operators on DataFrames, registered pipelines, and an agent that answers questions over their artifacts."
+description = "Industrial grade trace analysis and observability. Find failures, PII, user frustration, or misbehavior in agent traces."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

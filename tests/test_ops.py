@@ -177,7 +177,7 @@ def test_join_is_a_todo():
         pd.DataFrame().lm_join(pd.DataFrame(), "a", "x")
 
 
-def test_signature_is_recorded_for_the_agent(make_lm, tmp_path):
+def test_signature_is_recorded_in_the_manifest(make_lm, tmp_path):
     lm, _ = make_lm(lambda r: {"label": "a"})
     ws = tracepress.Workspace(tmp_path / "ws")
 

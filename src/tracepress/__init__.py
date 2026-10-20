@@ -1,4 +1,4 @@
-"""TracePress: LLM operators on DataFrames, registered pipelines, and an agent over their artifacts.
+"""TracePress: LLM operators on DataFrames, and registered pipelines that save every artifact.
 
     import tracepress as tp
     tp.configure(lm=tp.Model("openrouter:openai/gpt-6-luna", temperature=0))
@@ -10,7 +10,7 @@
     ws = tp.Workspace("ws")
     @ws.pipeline(description="...")
     def my_pipeline(df): ...
-    ws.agent_run("...")
+    ws["name"]  # load an artifact
 """
 
 from . import harbor, ops  # ops registers the df.lm_* accessors
