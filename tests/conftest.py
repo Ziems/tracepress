@@ -5,14 +5,14 @@ import os
 import re
 import tempfile
 import threading
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping
 
 # Opt out before the package is imported, and keep the install id off this machine.
 os.environ["TRACEPRESS_TELEMETRY"] = "off"
 os.environ["TRACEPRESS_HOME"] = tempfile.mkdtemp(prefix="tracepress-test-home-")
 
 import pytest
-from dspy.lm15 import Message, Request, Response, TextPart, ToolCallPart, Usage
+from dspy.lm15 import Message, Request, Response, TextPart, Usage
 
 import tracepress
 
@@ -53,16 +53,6 @@ def response(text: str) -> Response:
     )
 
 
-def tool_call(tool: str, **arguments: Any) -> Response:
-    return Response(
-        id="fake",
-        model="fake",
-        message=Message.assistant([ToolCallPart(id=f"call_{tool}", name=tool, input=arguments)]),
-        finish_reason="tool_call",
-        usage=Usage(input_tokens=100, output_tokens=20),
-    )
-
-
 def _xml_field(name: str, value: Any) -> str:
     """One XMLAdapter output field."""
     if isinstance(value, bool):
@@ -98,20 +88,6 @@ class RuleEngine:
         if isinstance(out, str):
             return response(out)
         return response(_xml_body(out))
-
-
-class ScriptedEngine:
-    """Answers requests in order from a script of Responses or strings (for the agent loop)."""
-
-    def __init__(self, script: Sequence[Response | str]):
-        self.script = list(script)
-        self.requests: list[Request] = []
-
-    def complete(self, request: Request) -> Response:
-        self.requests.append(request)
-        assert self.script, f"ScriptedEngine ran out after {len(self.requests) - 1} requests"
-        item = self.script.pop(0)
-        return item if isinstance(item, Response) else response(item)
 
 
 def numbers(text: str) -> list[int]:

@@ -3,7 +3,7 @@
 DSPy supplies signatures, prompt formatting (its XML adapter), parsing, retries, a
 response cache, and per-call cost.
 This module adds concurrent batches, a progress bar, token and cost totals, and a
-budget the agent can't exceed.
+budget that refuses batches before they overrun it.
 
     lm = Model("openrouter:openai/gpt-6-luna", temperature=0, max_tokens=600)
     lm.predict(dspy.Signature("review -> gist"), [{"review": "..."}])
@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 import dspy
-from dspy.lm15 import Config, Reasoning, Request, Response
 
 
 def cache_dir() -> Path:
@@ -143,14 +142,6 @@ class Budget:
         with self._lock:
             self.cost_usd += usage.cost_usd
 
-    def remaining(self) -> str:
-        """What's left, in words (shown to the agent each turn)."""
-        parts = []
-        if self.max_calls is not None:
-            parts.append(f"{self.max_calls - self.calls} model calls")
-        if self.max_usd is not None:
-            parts.append(f"${self.max_usd - self.cost_usd:.2f}")
-        return " and ".join(parts) or "unlimited"
 
 
 _budget: ContextVar[Budget | None] = ContextVar("tracepress_budget", default=None)
@@ -325,27 +316,6 @@ class Model:
         finally:
             if bar is not None:
                 bar.close()
-
-    # --------------------------------------------------------- raw lm15 requests
-
-    def config(self) -> Config:
-        """This model's settings as an lm15 ``Config``, for explicit requests (the agent loop)."""
-        kwargs: dict[str, Any] = {}
-        if self.temperature is not None:
-            kwargs["temperature"] = self.temperature
-        if self.max_tokens is not None:
-            kwargs["max_tokens"] = self.max_tokens
-        if self.reasoning is not None:
-            kwargs["reasoning"] = Reasoning(effort=self.reasoning)
-        return Config(**kwargs)
-
-    def send(self, request: Request) -> tuple[Response, Usage]:
-        """Send one explicit lm15 request through DSPy (used by the agent's tool loop)."""
-        lm = self.lm.copy()
-        response = lm(request)
-        usage = _usage_of(lm.history, self._recorded_price())
-        self._account(usage)
-        return response, usage
 
     def _recorded_price(self) -> tuple[float, float] | None:
         """Rate to record when DSPy reports tokens but no cost. Gateways only."""

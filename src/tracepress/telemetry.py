@@ -1,4 +1,4 @@
-"""Anonymous usage stats for operator calls and agent runs.
+"""Anonymous usage stats for operator calls.
 
 On by default. Opt out with ``TRACEPRESS_TELEMETRY=off`` (also ``0``, ``false``, ``no``,
 ``disabled``). Nothing here includes prompts, completions, paths, row contents, questions,
@@ -38,20 +38,10 @@ _INVOKED_BY = (
     ("CODEX_SANDBOX", "codex"),
     ("GEMINI_CLI", "gemini"),
 )
-_AGENT_TOOLS = (
-    "list_pipelines",
-    "list_artifacts",
-    "describe_artifact",
-    "read_rows",
-    "python",
-    "run_op",
-    "run_pipeline",
-)
 
 _cached_install_id: str | None = None
 _tracking: ContextVar[bool] = ContextVar("tracepress_telemetry_tracking", default=False)
 _note: ContextVar[dict[str, Any] | None] = ContextVar("tracepress_telemetry_note", default=None)
-in_agent: ContextVar[bool] = ContextVar("tracepress_telemetry_in_agent", default=False)
 
 
 # --------------------------------------------------------------------- events
@@ -90,39 +80,12 @@ class LmOp(_Event):
     n_input_rows: int | None = None
     n_output_rows: int | None = None
     in_workspace: bool
-    in_agent: bool
-    run_kind: Literal["pipeline", "agent_run", "save"] | None = None
+    run_kind: Literal["pipeline", "save"] | None = None
     n_artifacts: int | None = None
     n_pipelines: int | None = None
 
 
-class AgentRun(_Event):
-    status: Literal["completed", "errored", "interrupted"]
-    duration_seconds: float
-    exception_type: str | None = None
-    provider: str | None = None
-    model: str | None = None
-    calls: int | None = None
-    cached_calls: int | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    cost_usd: float | None = None
-    op_calls: int | None = None
-    n_turns: int | None = None
-    n_tool_calls: int | None = None
-    n_list_pipelines: int | None = None
-    n_list_artifacts: int | None = None
-    n_describe_artifact: int | None = None
-    n_read_rows: int | None = None
-    n_python: int | None = None
-    n_run_op: int | None = None
-    n_run_pipeline: int | None = None
-    hit_step_limit: bool | None = None
-    n_artifacts: int | None = None
-    n_pipelines: int | None = None
-
-
-_EVENTS: dict[str, type[_Event]] = {"lm_op": LmOp, "agent_run": AgentRun}
+_EVENTS: dict[str, type[_Event]] = {"lm_op": LmOp}
 
 
 def _allowlist(model: type[BaseModel]) -> frozenset[str]:
@@ -364,17 +327,12 @@ def _emit(event: str, props: dict[str, Any]) -> None:
 def _workspace_props() -> dict[str, Any]:
     from .run import current_run
 
-    props: dict[str, Any] = {"in_workspace": False, "in_agent": in_agent.get()}
+    props: dict[str, Any] = {"in_workspace": False}
     run = current_run()
     if run is None:
         return props
     label = str(run.manifest.get("pipeline") or "")
-    if label == "agent_run":
-        kind = "agent_run"
-    elif label.startswith("save-"):
-        kind = "save"
-    else:
-        kind = "pipeline"
+    kind = "save" if label.startswith("save-") else "pipeline"
     props.update(
         {
             "in_workspace": True,
@@ -407,52 +365,6 @@ def capture_lm_op(op: str, duration: float, exc: BaseException | None, note: dic
             if provider:
                 props["provider"] = provider
         _emit("lm_op", props)
-    except Exception:
-        log.debug("telemetry capture failed", exc_info=True)
-
-
-def capture_agent_run(
-    ws: Any,
-    duration: float,
-    exc: BaseException | None,
-    *,
-    model: str | None,
-    usage: Any,
-    op_calls: int,
-    n_turns: int,
-    steps: list[dict[str, Any]] | None,
-    hit_step_limit: bool,
-) -> None:
-    """Send one ``agent_run`` event. Never raises."""
-    try:
-        if not _enabled():
-            return
-        counts = {name: 0 for name in _AGENT_TOOLS}
-        n_tool_calls = 0
-        for step in steps or []:
-            if step.get("type") != "tool":
-                continue
-            n_tool_calls += 1
-            name = step.get("name")
-            if isinstance(name, str) and name in counts:
-                counts[name] += 1
-        props: dict[str, Any] = {
-            **_context("agent_run"),
-            "status": _status(exc),
-            "duration_seconds": round(duration, 3),
-            **_model_props(model),
-            **_usage_props(usage),
-            "op_calls": op_calls,
-            "n_turns": n_turns,
-            "n_tool_calls": n_tool_calls,
-            "hit_step_limit": hit_step_limit,
-            "n_artifacts": len(ws.artifact_records()),
-            "n_pipelines": len(ws.pipelines),
-            **{f"n_{name}": count for name, count in counts.items()},
-        }
-        if exc is not None:
-            props["exception_type"] = type(exc).__name__
-        _emit("agent_run", props)
     except Exception:
         log.debug("telemetry capture failed", exc_info=True)
 
