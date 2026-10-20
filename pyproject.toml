@@ -1,6 +1,6 @@
 [project]
 name = "tracepress"
-version = "0.0.2"
+version = "0.0.3"
 description = "Squeeze all the juice form your traces. Trace analysis and observability. Find failures, PII, user frustration, or misbehavior in agent traces."
 readme = "README.md"
 license = "Apache-2.0"
@@ -27,6 +27,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tracepress"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["examples/data"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
