@@ -5,6 +5,7 @@ from typing import Literal
 
 import dspy
 import pytest
+from dspy.utils.exceptions import AdapterParseError
 
 import tracepress
 from tracepress.signature import check, describe, has_instruction, output_schema, to_signature
@@ -201,6 +202,65 @@ def test_cache_hits_are_counted_as_cached(make_lm):
     again = lm.predict(sig, [{"text": "cache-test-unique"}])[0]
     assert len(engine.requests) == 1
     assert again.usage.cached_calls == 1 and again.usage.calls == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["ran `coqc Main.v 2>&1 | head`", "make && make test", "checked n < 4 and a<b", "kept &amp; and &#38;"],
+)
+def test_bare_ampersand_and_angle_bracket_parse_in_one_call(make_lm, value):
+    lm, engine = make_lm(lambda r: f"<out>\n{value}\n</out>")
+    pred = lm.predict(dspy.Signature("text -> out", "Copy"), [{"text": "a"}])[0]
+    expected = value.replace("&amp;", "&").replace("&#38;", "&")
+    assert pred.outputs == {"out": expected}
+    assert len(engine.requests) == 1
+
+
+def test_list_items_keep_their_markup_when_text_is_escaped(make_lm):
+    lm, engine = make_lm(lambda r: "<cmds><item>a && b</item><item>x < y</item></cmds>")
+    pred = lm.predict(dspy.Signature("text -> cmds: list[str]", "List"), [{"text": "a"}])[0]
+    assert pred.outputs == {"cmds": ["a && b", "x < y"]}
+    assert len(engine.requests) == 1
+
+
+def _prose_then(n_bad: int):
+    """Answer the first ``n_bad`` requests with untagged prose, then with XML."""
+    seen = []
+
+    def fn(request):
+        seen.append(request)
+        return "Just a sentence, no tags." if len(seen) <= n_bad else {"out": "ok"}
+
+    return fn
+
+
+def test_unparseable_response_is_retried(make_lm):
+    # XML and DSPy's JSON fallback both fail on attempt 0; attempt 1 parses.
+    lm, engine = make_lm(_prose_then(2))
+    pred = lm.predict(dspy.Signature("text -> out", "Copy"), [{"text": "a"}])[0]
+    assert pred.outputs == {"out": "ok"}
+    assert len(engine.requests) == 3
+    assert pred.usage.calls == 3 and lm.usage.calls == 3
+
+
+def test_parse_retry_is_replayed_from_the_cache(make_lm):
+    dspy.configure_cache(enable_disk_cache=False, enable_memory_cache=True)
+    lm, engine = make_lm(_prose_then(2), cache=True)
+    sig = dspy.Signature("text -> out", "Copy")
+    lm.predict(sig, [{"text": "parse-retry-cache-unique"}])
+    again = lm.predict(sig, [{"text": "parse-retry-cache-unique"}])[0]
+    assert again.outputs == {"out": "ok"}
+    assert len(engine.requests) == 3
+    assert again.usage.calls == 0
+
+
+@pytest.mark.parametrize("parse_retries", [0, 2])
+def test_parse_error_is_raised_after_the_last_retry(make_lm, parse_retries):
+    lm, engine = make_lm(_prose_then(100), parse_retries=parse_retries)
+    with pytest.raises(AdapterParseError):
+        lm.predict(dspy.Signature("text -> out", "Copy"), [{"text": "a"}])
+    assert len(engine.requests) == 2 * (parse_retries + 1)
+    assert lm.usage.calls == 2 * (parse_retries + 1)
 
 
 def test_budget_refuses_before_calling(make_lm):
