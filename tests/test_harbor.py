@@ -155,9 +155,7 @@ def test_load_job_trial_metadata_steps_and_ignores_job_result(tmp_path):
     assert steps["message"].iloc[3] == "look\n[image]"
     assert bool(steps["is_copied_context"].iloc[3]) is True
     assert steps["tool_calls"].iloc[2] == 'bash({"command":"rg foo"})'
-    assert steps["observation"].iloc[2].endswith("TAIL_MARKER")
-    assert steps["observation"].iloc[2].startswith("…[truncated]\n")
-    assert "START" not in steps["observation"].iloc[2]
+    assert steps["observation"].iloc[2] == "START" + ("x" * 6000) + "TAIL_MARKER"
     assert steps["step_model"].iloc[2] == "gpt-step"
     assert steps["prompt_tokens"].iloc[2] == 8
     assert steps["message"].iloc[4] == "SUB_STEP"
