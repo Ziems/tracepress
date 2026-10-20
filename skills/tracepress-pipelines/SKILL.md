@@ -27,7 +27,7 @@ Models are LiteLLM ids, optionally behind a gateway: `openai/gpt-5-nano`, `anthr
 import pandas as pd
 import tracepress as tp
 
-lm = tp.Model("openai/gpt-5-nano", temperature=0, max_tokens=800, progress=False)
+lm = tp.Model("openai/gpt-5-nano", temperature=0, max_tokens=800, max_workers=64, progress=False)
 tp.configure(lm=lm)
 ws = tp.Workspace("tracepress_ws")
 
@@ -59,7 +59,7 @@ if __name__ == "__main__":
     print(lm.usage)
 ```
 
-`progress=False` turns off the tqdm bar, which floods non-interactive output; leave it on in notebooks. Run it with `uv run python tracepress_pipelines.py --sample` first, then without the flag. Responses are cached under `~/.tracepress/cache`, so rerunning an unchanged step is free.
+Set `max_workers` high (32–64): it is how many calls run at once, the default of 8 is slow, and concurrency is the biggest speedup for row-scale operators. Drop it only if the provider starts returning rate-limit errors. `progress=False` turns off the tqdm bar, which floods non-interactive output; leave it on in notebooks. Run it with `uv run python tracepress_pipelines.py --sample` first, then without the flag. Responses are cached under `~/.tracepress/cache`, so rerunning an unchanged step is free.
 
 Name a workspace once and reuse it; it is just a folder (`<ws>/runs/<run_id>/manifest.json` plus one parquet per artifact). Use `ws.save("name", df)` to store raw input as an artifact without running anything.
 

@@ -40,7 +40,7 @@ Only then spend model calls. Tell the user what you are about to run and roughly
 - **One more operator on a subset.** Operators only save artifacts inside a run, so wrap ad-hoc steps in `tp.Run`:
 
 ```python
-tp.configure(lm=tp.Model("openai/gpt-5-nano", temperature=0, progress=False))
+tp.configure(lm=tp.Model("openai/gpt-5-nano", temperature=0, max_workers=64, progress=False))
 subset = ws["step_summaries"].query("task_name == 'flight-plan'").head(50)
 with tp.budget(max_calls=100), tp.Run(ws, "adhoc-flight-plan") as run:
     subset.lm_filter("step_summary", "The agent skipped verifying its answer", explain=True, save_as="unverified_steps")
