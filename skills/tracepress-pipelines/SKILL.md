@@ -13,7 +13,7 @@ TracePress adds LLM operators to pandas DataFrames. A **pipeline** is a Python f
 uv add tracepress   # or: pip install tracepress
 ```
 
-Models are LiteLLM ids, optionally behind a gateway: `openai/gpt-5-nano`, `anthropic/claude-haiku-4-5`, `openrouter:openai/gpt-6-luna`, `portkey:openai/gpt-5-nano`. The matching key must be in the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `PORTKEY_API_KEY`). Check which keys exist before picking a model; if none does, ask the user. Operators make one call per row, so use a cheap, fast model unless the user names one.
+Models are LiteLLM ids, optionally behind a gateway: `openai/gpt-5-nano`, `anthropic/claude-haiku-4-5`, `openrouter:openai/gpt-6-luna`, `portkey:openai/gpt-5-nano`. The matching key must be in the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `PORTKEY_API_KEY`). Check which keys exist before picking a model, including in a `.env` file (load it with `set -a; . ./.env; set +a` before running, or `python-dotenv` in the script); if none does, ask the user. Never print key values. Operators make one call per row, so use a cheap, fast model unless the user names one.
 
 ## Workflow
 
@@ -27,7 +27,7 @@ Models are LiteLLM ids, optionally behind a gateway: `openai/gpt-5-nano`, `anthr
 import pandas as pd
 import tracepress as tp
 
-lm = tp.Model("openai/gpt-5-nano", temperature=0, max_tokens=800)
+lm = tp.Model("openai/gpt-5-nano", temperature=0, max_tokens=800, progress=False)
 tp.configure(lm=lm)
 ws = tp.Workspace("tracepress_ws")
 
@@ -59,7 +59,7 @@ if __name__ == "__main__":
     print(lm.usage)
 ```
 
-Run it with `uv run python tracepress_pipelines.py --sample` first, then without the flag. Responses are cached under `~/.tracepress/cache`, so rerunning an unchanged step is free.
+`progress=False` turns off the tqdm bar, which floods non-interactive output; leave it on in notebooks. Run it with `uv run python tracepress_pipelines.py --sample` first, then without the flag. Responses are cached under `~/.tracepress/cache`, so rerunning an unchanged step is free.
 
 Name a workspace once and reuse it; it is just a folder (`<ws>/runs/<run_id>/manifest.json` plus one parquet per artifact). Use `ws.save("name", df)` to store raw input as an artifact without running anything.
 
@@ -112,7 +112,7 @@ loaded.trials   # one row per trial: task_name, agent_name, model_name, reward, 
 loaded.steps    # one row per step: trial columns plus step_id, source, message, reasoning, tool_calls, observation, is_subagent
 ```
 
-`harbor_load` reads files, so call it outside the pipeline and pass the DataFrame in. Two ready-made classifiers take the loaded result (or `loaded.steps`):
+`harbor_load` reads files, so call it outside the pipeline and pass the DataFrame in. It does not read JSONL: if you have one ATIF object per line, write each to its own `<id>/trajectory.json` and pass the list of directories. Bare trajectory files carry no `result.json`, so `task_name`, `reward`, and `failed_tests` come out empty; join them in from wherever the data keeps them. Two ready-made classifiers take the loaded result (or `loaded.steps`):
 
 ```python
 @ws.pipeline(description="Labels each trial with the nine Terminal Agent Taxonomy modes.")

@@ -24,7 +24,7 @@ df = ws["failure_reasons"]             # latest artifact with that name
 old = ws["20261020-101500-failure_reasons/failure_reasons"]  # a specific run's version
 ```
 
-`ws.resolve(name)` returns an artifact's full manifest record (instruction, signature, output schema, usage). A run with status `errored` still has the artifacts it finished.
+`ws.resolve(name)` returns an artifact's full manifest record (instruction, signature, output schema, usage). A run with status `error` still has the artifacts it finished.
 
 ## Answer exactly
 
@@ -40,7 +40,7 @@ Only then spend model calls. Tell the user what you are about to run and roughly
 - **One more operator on a subset.** Operators only save artifacts inside a run, so wrap ad-hoc steps in `tp.Run`:
 
 ```python
-tp.configure(lm=tp.Model("openai/gpt-5-nano", temperature=0))
+tp.configure(lm=tp.Model("openai/gpt-5-nano", temperature=0, progress=False))
 subset = ws["step_summaries"].query("task_name == 'flight-plan'").head(50)
 with tp.budget(max_calls=100), tp.Run(ws, "adhoc-flight-plan") as run:
     subset.lm_filter("step_summary", "The agent skipped verifying its answer", explain=True, save_as="unverified_steps")
