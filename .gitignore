@@ -29,3 +29,6 @@ vendor/
 
 # Editor
 .cursor/
+.agents/
+.claude/
+skills-lock.json
