@@ -98,7 +98,71 @@ Adapters convert source formats into the canonical trace schema and emit events.
   complete (e.g. a Harbor adapter knows the expected trial count from the job config).
   A dedicated Harbor adapter should make loading traces easy and emit closures correctly.
 - **OPEN:** fallback for traces that die without finishing (idle timeout?).
-- **OPEN:** exact Harbor / agent-trace formats — waiting on example traces.
+
+### Adapter interface
+
+Every adapter implements the same small interface, so the engine never special-cases a format:
+
+```python
+class Adapter(Protocol):
+    levels: list[str]                       # hierarchy, e.g. ["dataset", "task", "trial", "step"]
+    def tables(self) -> dict[str, Schema]: ...       # named tables and their schemas
+    def events(self, table: str) -> AsyncIterator[Event]: ...  # RowAdded / Closed
+    bounded: bool                           # True = finite (batch), False = live
+```
+
+Readers live under `tp.read.*` (bounded) and `tp.watch.*` (live).
+
+### Planned adapters
+
+Placeholders exist so no single format shapes the design. Unimplemented adapters raise
+`NotImplementedError` naming the format.
+
+| Adapter | Source | Likely hierarchy | Status |
+|---|---|---|---|
+| `tp.read.atif` | ATIF trajectories | trajectory > step | v1 |
+| `tp.read.harbor` | Harbor job / trials dir | dataset > task > trial > step | v1 |
+| `tp.read.dspy` | DSPy program traces | run > module call (nested) > LM call | placeholder |
+| `tp.read.otel` | OpenTelemetry / OpenInference spans | trace > span (variable-depth tree via `parent_id`) | placeholder |
+| `tp.read.claude_code` | Claude Code / Agent SDK session `.jsonl` | session > message (+ subagent sidechains) | placeholder |
+| `tp.read.chatgpt` | ChatGPT conversation exports | conversation > message (branching tree) | placeholder |
+
+OpenTelemetry and ChatGPT exports are trees of variable depth, not fixed levels. They are
+the test case for keeping hierarchy adapter-defined; how variable-depth trees map onto
+keys is **OPEN**.
+
+### ATIF and Harbor adapters
+
+Based on the example job in `example_harbor_jobs/trials/` (gitignored).
+
+- `tp.read.atif(path)` reads any ATIF trajectory (the generic "agent traces" format).
+- `tp.read.harbor(dir)` builds on it: steps from `agent/trajectory.json` (ATIF), trial
+  metadata from `result.json` / `config.json`, tests from `verifier/ctrf.json`.
+
+**Hierarchy:** `dataset > task > trial > step`. `job_id`, `agent` and `model` are columns,
+not levels, so `group_by("task")` can compare approaches across jobs.
+
+| Table | Grain | Columns |
+|---|---|---|
+| `trials` | trial | task, dataset, job_id, agent, model, agent_kwargs, reward, exception_type, cost_usd, tokens, started/finished/duration, n_steps |
+| `steps` | step | step_id, source, message, tool_calls, observations (paired with their calls), metrics, timestamp, is_sidechain |
+| `tool_calls` | step > call | function_name, arguments, result |
+| `tests` | trial > test | per-test pass/fail from `ctrf.json` |
+
+Handling:
+
+- **Images** in tool results are dropped and replaced with `[image omitted]`.
+- **Trials with no trajectory** (agent crashed) still produce a `trials` row with zero
+  steps and the exception recorded.
+- **Rewards** are normalized to float.
+- **Subagents:** `is_sidechain` is exposed as a column; nesting is untested (none in the sample).
+
+Streaming:
+
+- **OPEN:** group closure for Harbor jobs (the sample has no job-level expected trial count).
+  v1 is batch only for Harbor.
+- `trajectory.json` appears to be written once, when the agent finishes, so live step-level
+  streaming would need per-agent log tailing (e.g. Claude Code session `.jsonl`). Later.
 
 ### Adapters define the tables
 
@@ -113,6 +177,26 @@ and closures. Each adapter declares:
 Adapters should follow a small set of optional column-name conventions (`role`, `content`,
 `tool_calls`, `error`, `timestamp`, `reward`, ...) so pipelines port between sources where
 the data allows, but nothing in the engine depends on them.
+
+### Simulated streams (replay)
+
+`tp.replay(source, ...)` turns any bounded source into a live one, for testing streaming
+without a live system:
+
+```python
+live = tp.replay(tp.read.harbor("example_harbor_jobs/trials"), speed=100, seed=0)
+```
+
+- **Timing:** rows are emitted in timestamp order (ATIF step timestamps, trial
+  `started_at`), so trials overlap the way they actually ran. `speed=100` is 100× real
+  time; `speed=None` is as fast as possible but keeps the interleaving.
+- **Closures:** a trial closes after its last step (its row, with reward, is emitted at
+  close); a task closes after all its trials; the dataset closes at the end.
+- **Fault injection** for testing edge cases: `drop_closes=0.05` (traces that never
+  finish), `shuffle_within=2` (out-of-order steps), `duplicates=0.01`.
+- **Equivalence check:** with the LLM cache warm, a pipeline run on `tp.replay(src)` must
+  produce the same final rows as the same pipeline on `src`. This is the main
+  correctness test for the streaming engine.
 
 ## Engine architecture
 
@@ -170,6 +254,7 @@ batch reduces see whole groups (tree-reduce, `emit` ignored); streaming reduces 
 ## Open questions
 
 - **OPEN:** idle-timeout fallback for traces that never close.
-- **OPEN:** Harbor / agent-trace formats (waiting on example traces).
+- **OPEN:** streaming group closure for Harbor jobs.
+- **OPEN:** mapping variable-depth span trees (OpenTelemetry, ChatGPT branches) onto keys.
 - **OPEN:** fold drift vs. batch reduce quality; whether the final pass on close is enough.
 - `requires-python` must be raised to >=3.10 for DSPy.
