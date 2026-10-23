@@ -23,4 +23,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # DummyLM (DSPy's own test LM) still uses the old BaseLM.forward interface.
-filterwarnings = ["ignore:Implementing custom LMs through BaseLM:DeprecationWarning"]
+filterwarnings = [
+    "ignore:Implementing custom LMs through BaseLM:DeprecationWarning",
+    # Raised by litellm's response types, which the fake LM in tests/fakes.py builds.
+    "ignore:Item .* is using the `ReadOnly` qualifier:UserWarning",
+]
