@@ -10,6 +10,15 @@ IMAGE = json.dumps({"type": "image", "source": {"type": "base64", "data": "AAAA"
 
 
 @pytest.fixture(autouse=True)
+def no_telemetry():
+    """Never send usage events from tests (pytest already disables it; this makes sure)."""
+    previous = tp.configure().telemetry
+    tp.configure(telemetry=False)
+    yield
+    tp.configure(telemetry=previous)
+
+
+@pytest.fixture(autouse=True)
 def chat_adapter():
     """DSPy's DummyLM answers in the chat (text marker) format, not JSON."""
     previous = tp.configure().adapter

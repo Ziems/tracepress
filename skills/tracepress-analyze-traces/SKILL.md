@@ -160,6 +160,9 @@ commands = harbor.step_taxonomy(src)               # one row per failed tool cal
 
 ## Pitfalls
 
+- **Telemetry:** TracePress sends one anonymous usage event per run (counts, versions, model
+  and operator names, never data or prompts). If the user asks to turn it off, set
+  `TRACEPRESS_TELEMETRY=0` or call `tp.configure(telemetry=False)`.
 - **Pass plain Python values into pipelines, not numpy or pandas values.** `np.float64(1.0)` renders
   differently in prompts than `1.0`, which changes the prompt and misses the cache. Build lookups
   from `Row`s, not DataFrame columns.

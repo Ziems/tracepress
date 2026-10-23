@@ -95,6 +95,9 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 
 ## Pitfalls
 
+- **Telemetry:** TracePress sends one anonymous usage event per run (counts, versions, model
+  and operator names, never data or prompts). If the user asks to turn it off, set
+  `TRACEPRESS_TELEMETRY=0` or call `tp.configure(telemetry=False)`.
 - **Provisional rows cascade.** Any `lm_*` operator downstream of an `emit="update"` operator runs
   on every provisional row. Put `.filter(lambda r: r.final)` in between unless you want that.
 - **No retractions.** If a provisional row is exploded (`explode` / `lm_extract`) into more children

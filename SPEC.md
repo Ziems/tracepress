@@ -179,6 +179,11 @@ Decisions made while building:
   `provider:model` (`openrouter:openai/gpt-6-luna`, the suggested one, or
   `portkey:<provider slug>/<model>`). A string without a provider prefix is passed to
   litellm as is. Keys are read from the environment or `.env`.
+- **Telemetry:** one anonymous PostHog event per run (`telemetry.py`), on by default. It's
+  built from an allowlist of counts, versions, gateway and model names, operator labels,
+  source kinds and built-in pipeline names, and never includes data, prompt text or names
+  from the plan. Off with `TRACEPRESS_TELEMETRY=0`, `DO_NOT_TRACK=1` or
+  `tp.configure(telemetry=False)`, and automatically in CI and under pytest.
 - **Output format:** DSPy's `JSONAdapter` by default; if a response can't be parsed, the
   call is retried with `XMLAdapter`. Without that fallback, a cached unparseable response
   fails the same call on every rerun.

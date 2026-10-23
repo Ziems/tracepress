@@ -66,6 +66,12 @@ def _failed(reward: float | None) -> bool:
     return reward is None or reward < 1
 
 
+def _tagged(table: Table, pipeline: str) -> Table:
+    """Mark a pipeline's output node, so usage telemetry can count built-in pipelines."""
+    table._node.pipeline = pipeline
+    return table
+
+
 def _rewards(src: Adapter) -> dict[str, float | None]:
     """Trial name -> reward, read from the trials' result.json without running a plan.
 
@@ -260,8 +266,8 @@ def trajectory_taxonomy(src: Adapter, *, failed_only: bool = True, lm=None,
         .map(lambda r: _mode_columns(modes[r.mode], r.mode),
              columns={"failure_mode": str, "mode_class": str, "rubric": str})
     )
-    return judged.lm_map("rubric, transcript -> matched: bool, rationale: str",
-                         instructions=JUDGE_INSTRUCTIONS, lm=lm)
+    return _tagged(judged.lm_map("rubric, transcript -> matched: bool, rationale: str",
+                                 instructions=JUDGE_INSTRUCTIONS, lm=lm), "harbor.trajectory_taxonomy")
 
 
 def _mode_columns(mode: Mode, mode_id: str) -> dict[str, Any]:
@@ -462,8 +468,9 @@ def step_taxonomy(src: Adapter, *, failed_only: bool = False, lm=None,
         .map(lambda r: {"command_text": render_command(r)}, columns={"command_text": str})
         .lm_filter("command_text -> is_failure_present: bool", instructions=DETECT_INSTRUCTIONS, lm=lm)
     )
-    return (
+    return _tagged(
         failures
         .lm_map(classify_signature(taxonomy), lm=lm)
-        .map(lambda r: _snap(taxonomy, r), columns={"error_subcategory": str})
+        .map(lambda r: _snap(taxonomy, r), columns={"error_subcategory": str}),
+        "harbor.step_taxonomy",
     )

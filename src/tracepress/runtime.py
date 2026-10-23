@@ -10,6 +10,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
+from . import telemetry
 from .lm import Executor, RunStats
 from .operators import END, Operator, supersedes
 from .rows import Event, Row, RowAdded, RowUpdated, sort_key
@@ -77,6 +78,7 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
             return op, op.live
         op = node.make()
         op.executor = executor
+        op.label = node.label
         ops[id(node)] = op
         if node.parent is None:
             op.live = not op.adapter.bounded
@@ -96,15 +98,20 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
         coros.append(sink.consume(queue))
 
     tasks = [asyncio.ensure_future(c) for c in coros]
+    error: BaseException | None = None
     try:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
         for task in done:
             task.result()  # re-raise the first failure
+    except BaseException as e:
+        error = e
+        raise
     finally:
         for task in tasks:
             task.cancel()
         executor.stats.finished = time.monotonic()
         last_run = executor.stats
+        telemetry.report(executor.stats, nodes, ops, error)
     return [sink.result() for sink in sinks]
 
 
