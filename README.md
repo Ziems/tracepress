@@ -32,7 +32,7 @@ import tracepress as tp
 tp.configure(lm="openrouter:openai/gpt-6-luna")
 ```
 
-You can also use Portkey or any litellm model; see [docs/models.md](docs/models.md).
+You can also use Portkey or any litellm model; see [docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md).
 
 ### Use it from your coding agent
 
@@ -115,7 +115,7 @@ Here's the result on 9 failed trials from the sample job:
 | Interpreters & REPLs / module or library not found at runtime | 2 |
 
 Each label comes with the judge's rationale, citing step numbers. See
-[docs/pipelines.md](docs/pipelines.md).
+[docs/pipelines.md](https://github.com/Ziems/tracepress/blob/main/docs/pipelines.md).
 
 ## Watch runs live
 
@@ -131,7 +131,7 @@ async for event in monitor.events():
     print(event)
 ```
 
-Here's how one trial's note grew, from [examples/live_monitor.py](examples/live_monitor.py):
+Here's how one trial's note grew, from [examples/live_monitor.py](https://github.com/Ziems/tracepress/blob/main/examples/live_monitor.py):
 
 ```
 [v1] The agent began exploring the Python codebase and listed the application modules and their line counts.
@@ -145,14 +145,14 @@ Here's how one trial's note grew, from [examples/live_monitor.py](examples/live_
 
 - **Traces:** [Harbor](https://github.com/laude-institute/harbor) jobs, and ATIF trajectory
 files. OpenTelemetry, Claude Code and DSPy traces are planned.
-- **Models:** OpenRouter, Portkey, or any litellm model ([docs/models.md](docs/models.md)).
+- **Models:** OpenRouter, Portkey, or any litellm model ([docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md)).
 - **Output:** plain rows, or pandas with `.to_pandas()`.
 
 ## Learn more
 
-- [examples/explore_results.ipynb](examples/explore_results.ipynb) walks through a whole
+- [examples/explore_results.ipynb](https://github.com/Ziems/tracepress/blob/main/examples/explore_results.ipynb) walks through a whole
 analysis. It's saved with its outputs, so you can read it without running anything.
-- [examples/](examples/) has runnable scripts. Clone the repo; it includes a sample Harbor job.
+- [examples/](https://github.com/Ziems/tracepress/tree/main/examples) has runnable scripts. Clone the repo; it includes a sample Harbor job.
 
 
 ## Development
