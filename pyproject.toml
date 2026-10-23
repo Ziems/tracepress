@@ -4,11 +4,23 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
-
-[project.scripts]
-tracepress = "tracepress:main"
+dependencies = [
+    "dspy>=3.4.1",
+    "pandas>=2.3.3",
+    "python-dotenv>=1.2.4",
+]
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# DummyLM (DSPy's own test LM) still uses the old BaseLM.forward interface.
+filterwarnings = ["ignore:Implementing custom LMs through BaseLM:DeprecationWarning"]

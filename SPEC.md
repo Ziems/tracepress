@@ -58,7 +58,8 @@ Same by-name binding as `lm_map`, with one change inside a reduce:
 - An input naming a **child column** receives a **list** of that column's values.
 - An input naming a **group key** receives the **scalar** key value.
 - A reserved name (e.g. `rows`) receives whole child records.
-- A name that matches both a key and a column is an error.
+- A name that is part of the group key always binds to the key (it is constant within the
+  group). This lets `group_by("trial", "reward")` pass `reward` as a scalar.
 
 ```python
 per_trial.group_by("task").lm_reduce(
@@ -85,7 +86,30 @@ results are combined with the merge signature.
 ### Deferred
 
 - **Joins** (`join` on keys, `lm_join` semantic predicate). Needed for two-pass patterns
-  such as "build a failure taxonomy, then label each trial against it".
+  such as "build a failure taxonomy, then label each trial against it". The first real
+  pipeline already wanted one: attaching each trial's reward to its steps currently takes
+  a Python dict lookup inside `map`.
+
+## Implementation status (batch milestone)
+
+Built and tested: the plan/runtime/event engine; `map`, `filter`, `select`, `explode`,
+`group_by(...).reduce` (Python), `lm_map`, `lm_filter`, `lm_extract`, `lm_reduce` (with
+tree merge); `collect` / `acollect` / `to_pandas` / `tp.collect(*tables)` /
+`from_rows` / `from_pandas`; ATIF and Harbor adapters; placeholder adapters.
+
+Not yet: `lm_fold`, `emit="update"` (raise `NotImplementedError`), replay, sinks / `.start()`,
+user overrides for merge/fold signatures, backpressure (queues are unbounded).
+
+Decisions made while building:
+
+- **Default LM** is `openrouter/openai/gpt-6-luna` (override with `tp.configure(lm=...)`, a
+  per-operator `lm=`, or `TRACEPRESS_LM`). The OpenRouter key is read from `.env`.
+- **Output format:** DSPy's `JSONAdapter` by default; if a response can't be parsed, the
+  call is retried with `XMLAdapter`. Without that fallback, a cached unparseable response
+  fails the same call on every rerun.
+- **Caching** uses DSPy's request cache; a fully cached rerun is byte-identical.
+- **Errors:** LM operators default to `on_error="skip"` (logged and counted in
+  `tp.last_run()`); `on_error="raise"` fails the run.
 
 ## Sources / adapters
 
