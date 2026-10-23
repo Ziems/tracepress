@@ -3,7 +3,7 @@
 from . import read
 from .adapters import Adapter, from_pandas, from_rows, replay
 from .lm import configure
-from .plan import GroupedTable, Table, collect, every, rows_to_pandas
+from .plan import GroupedTable, Table, acollect, collect, every, rows_to_pandas
 from .rows import Closed, Row, RowAdded, RowUpdated
 from .schema import Schema
 
@@ -24,6 +24,7 @@ __all__ = [
     "RowUpdated",
     "Schema",
     "Table",
+    "acollect",
     "collect",
     "configure",
     "every",

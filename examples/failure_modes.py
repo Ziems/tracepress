@@ -26,34 +26,20 @@ def render_step(row) -> str:
     return "\n".join(parts) or "(empty step)"
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("path")
-    parser.add_argument("--tasks", nargs="*")
-    parser.add_argument("--limit", type=int)
-    parser.add_argument("--out", default="out/failure_modes.json")
-    parser.add_argument("--replay", action="store_true", help="feed the steps in as a simulated stream")
-    parser.add_argument("--speed", type=float, help="replay speed multiplier (default: as fast as possible)")
-    parser.add_argument("--faults", action="store_true", help="replay with shuffled, duplicated rows and dropped closes")
-    args = parser.parse_args()
+def build(src, rewards: dict[str, float]):
+    """The analysis as lazy tables: (step notes, per trial, per task, overall).
 
-    src = tp.read.harbor(args.path, tasks=args.tasks, limit=args.limit)
-
-    # No joins yet, so attach each trial's reward to its steps with a lookup.
-    rewards = {row.trial: row.reward for row in src.table("trials").collect()}
-
-    if args.replay:
-        faults = {"shuffle_within": 8, "duplicates": 0.05, "drop_closes": 0.2} if args.faults else {}
-        src = tp.replay(src, speed=args.speed, **faults)
-
+    `rewards` maps trial name to reward. There are no joins yet, so each step gets its
+    trial's reward through this lookup.
+    """
     steps = (
         src.table("steps")
         .filter(lambda r: r.source == "agent")
-        .map(lambda r: {"step": render_step(r), "reward": rewards.get(r.trial)}, columns={"step": str, "reward": float})
+        .map(lambda r: {"step_text": render_step(r), "reward": rewards.get(r.trial)}, columns={"step_text": str, "reward": float})
     )
 
     notes = steps.lm_map(
-        "step -> what_happened, is_mistake: bool",
+        "step_text -> what_happened, is_mistake: bool",
         instructions="Summarize what the coding agent did in this step in one sentence, and say whether it was a mistake.",
     )
 
@@ -76,7 +62,28 @@ def main() -> None:
         "task, common_failures -> top_failure_modes: list[str]",
         instructions="Across all tasks, list the most common failure modes for this agent, most frequent first.",
     )
+    return notes, per_trial, per_task, overall
 
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path")
+    parser.add_argument("--tasks", nargs="*")
+    parser.add_argument("--limit", type=int)
+    parser.add_argument("--out", default="out/failure_modes.json")
+    parser.add_argument("--replay", action="store_true", help="feed the steps in as a simulated stream")
+    parser.add_argument("--speed", type=float, help="replay speed multiplier (default: as fast as possible)")
+    parser.add_argument("--faults", action="store_true", help="replay with shuffled, duplicated rows and dropped closes")
+    args = parser.parse_args()
+
+    src = tp.read.harbor(args.path, tasks=args.tasks, limit=args.limit)
+    rewards = {row.trial: row.reward for row in src.table("trials").collect()}
+
+    if args.replay:
+        faults = {"shuffle_within": 8, "duplicates": 0.05, "drop_closes": 0.2} if args.faults else {}
+        src = tp.replay(src, speed=args.speed, **faults)
+
+    _, per_trial, per_task, overall = build(src, rewards)
     trial_rows, task_rows, overall_rows = tp.collect(per_trial, per_task, overall)
     stats = tp.last_run()
 
