@@ -26,6 +26,15 @@ uv run python examples/failure_modes.py example_harbor_jobs/trials --tasks wal-r
 Add `--replay` to feed the steps in as a simulated stream (`--faults` also shuffles and
 duplicates rows and drops closes). With a warm cache the output matches the batch run exactly.
 
+For Harbor jobs there are built-in versions of the Terminal-Bench 2.0 failure taxonomies
+([arXiv:2601.11868](https://arxiv.org/abs/2601.11868)). `tp.pipelines.harbor.trajectory_taxonomy(src)`
+judges each failed trial against 9 failure modes, and `tp.pipelines.harbor.step_taxonomy(src)`
+classifies each failed command:
+
+```bash
+uv run python examples/harbor_taxonomy.py example_harbor_jobs/trials --tasks wal-recovery-ordering
+```
+
 To watch trials as a live stream, with a running progress note per trial updated each step
 (`lm_fold` with `emit="update"`):
 
