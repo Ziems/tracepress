@@ -26,6 +26,7 @@ class Node:
     parent: Node | None
     schema: Schema
     label: str
+    pipeline: str | None = None  # set on the output nodes of built-in pipelines, for telemetry
 
 
 class Table:

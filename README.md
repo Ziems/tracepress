@@ -62,3 +62,28 @@ uv run --with jupyterlab jupyter lab examples/explore_results.ipynb
 ```
 
 Run the tests with `uv run pytest`.
+
+## Telemetry
+
+TracePress sends one anonymous usage event per run to PostHog, which helps us see which
+models, operators and pipelines people use and what runs cost. It prints a one-time notice the
+first time it sends.
+
+**What is sent:**
+- TracePress, DSPy and Python versions, and the OS name.
+- Whether the run succeeded. On failure, the exception class name, but only for built-in,
+  TracePress, DSPy or litellm exceptions. Anything else is sent as `"other"`.
+- Duration, and counts of LM calls, cache hits, errors, retries, tokens and estimated cost.
+- For each model, the gateway and model name, e.g. `openrouter` + `openai/gpt-6-luna`.
+  Portkey provider slugs, endpoints and fine-tune ids are stripped.
+- How many of each operator the plan has (`lm_map`, `filter`, …), the source kinds
+  (`harbor`, `atif`, …), and which built-in pipelines ran.
+- A random install id kept in `~/.config/tracepress/telemetry.json`. It isn't derived from
+  your machine; delete the file to reset it.
+
+**Never sent:** your data, prompts, signatures, instructions, column or task names, file paths,
+hostnames, API keys or error messages.
+
+**Turning it off:** set `TRACEPRESS_TELEMETRY=0` or `DO_NOT_TRACK=1`, or call
+`tp.configure(telemetry=False)`. It's also off in CI and under pytest. To see exactly what would
+be sent without sending it, set `TRACEPRESS_TELEMETRY=debug`.

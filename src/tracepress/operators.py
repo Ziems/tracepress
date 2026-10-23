@@ -43,6 +43,7 @@ class Operator:
         self.outputs: list[asyncio.Queue] = []
         self.executor: Executor | None = None
         self.live = False  # set by the runtime: whether any upstream source is live
+        self.label = type(self).__name__  # set by the runtime to the plan node's label, e.g. "lm_map"
 
     def emit(self, event: Event | object) -> None:
         for queue in self.outputs:
@@ -209,7 +210,7 @@ class LMRowOp(AsyncOperator):
 
     async def _run(self, row: Row, updated: bool) -> None:
         inputs = {name: row.get(name) for name in self.inputs}
-        pred = await self.guarded(f"row {row.key}", self.executor.call(self.module, self.lm, inputs))
+        pred = await self.guarded(f"row {row.key}", self.executor.call(self.module, self.lm, inputs, op=self.label))
         if pred is not None:
             self.handle(row, pred, updated)
 
@@ -441,7 +442,7 @@ class LMReduceOp(GroupOp):
         return partials[0]
 
     async def _call(self, module, keys, extra, timeout: float | None = None) -> dict[str, Any]:
-        pred = await self.executor.call(module, self.lm, {**keys, **extra}, timeout)
+        pred = await self.executor.call(module, self.lm, {**keys, **extra}, timeout, op=self.label)
         return {name: pred[name] for name in self.outputs_names}
 
 
@@ -491,7 +492,7 @@ class FoldOp(GroupOp):
                 inputs[name] = dict(gkey)[name]
             else:
                 inputs[name] = row.get(name)
-        pred = await self.executor.call(self.module, self.lm, inputs)
+        pred = await self.executor.call(self.module, self.lm, inputs, op=self.label)
         return {name: pred[name] for name in self.spec.outputs}
 
     async def finalize(self, gkey, rows, states):
