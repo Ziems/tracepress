@@ -1,5 +1,6 @@
 """A fake LM whose answers are computed from the prompt's input fields."""
 
+import asyncio
 import re
 
 import dspy
@@ -32,4 +33,19 @@ class FuncLM(dspy.BaseLM):
         )
 
     async def aforward(self, prompt=None, messages=None, **kwargs):
+        return self.forward(prompt=prompt, messages=messages, **kwargs)
+
+
+class HangingLM(FuncLM):
+    """Like FuncLM, but the first `hangs` requests never answer, like a stuck connection."""
+
+    def __init__(self, fn, hangs: int):
+        super().__init__(fn)
+        self.hangs = hangs
+        self.attempts = 0
+
+    async def aforward(self, prompt=None, messages=None, **kwargs):
+        self.attempts += 1
+        if self.attempts <= self.hangs:
+            await asyncio.sleep(3600)
         return self.forward(prompt=prompt, messages=messages, **kwargs)
