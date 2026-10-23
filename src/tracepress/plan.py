@@ -110,10 +110,14 @@ class Table:
             schema, "lm_extract",
         )
 
-    def lm_fold(self, *args, **kwargs) -> Table:
-        raise NotImplementedError("lm_fold is planned for the streaming milestone")
-
     # --- Running ------------------------------------------------------------------------
+
+    def events(self, max_concurrency: int | None = None):
+        """Async iterator over every output event, provisional rows and closes included.
+
+        `async for event in table.events(): ...`
+        """
+        return runtime.stream_events(self._node, max_concurrency)
 
     def collect(self, max_concurrency: int | None = None) -> list[Row]:
         """Run the plan to completion and return the final rows, sorted by key."""
@@ -146,22 +150,29 @@ class GroupedTable:
         hier, extra = self._hier, self._extra
         return self._then(lambda: ops.PyReduceOp(fn, hier, extra, on_error=on_error), columns, "reduce")
 
-    def lm_reduce(self, sig: SigLike, *, emit: str = "close", instructions: str | None = None, lm=None,
+    def _key_inputs(self, names) -> dict[str, Any]:
+        child = self._table.schema
+        return {
+            n: str if n in child.levels else (child.columns or {}).get(n, str)
+            for n in names if n in self._key_names
+        }
+
+    def lm_reduce(self, sig: SigLike, *, emit: str | every = "close", instructions: str | None = None, lm=None,
                   module: type[dspy.Module] = dspy.Predict, chunk_chars: int | None = None,
                   on_error: str = "skip") -> Table:
         """One LM call per group (a tree of calls for groups too big for one prompt).
 
         Inputs naming a group key get that key's value; inputs naming child columns get
         the group's values as one aligned record per child; `rows` gets whole records.
+
+        `emit="update"` (or `tp.every(n)`) also emits provisional rows on live streams,
+        updated as each child (or batch of n) arrives. The final row is the same full
+        reduce either way. In batch mode `emit` changes nothing.
         """
-        if emit != "close":
-            raise NotImplementedError("emit='update' and tp.every(...) are planned for the streaming milestone")
+        emit_every = _emit_every(emit)
         parsed = sigs.parse(sig, instructions)
         child = self._table.schema
-        key_inputs = {
-            n: str if n in child.levels else (child.columns or {}).get(n, str)
-            for n in sigs.inputs(parsed) if n in self._key_names
-        }
+        key_inputs = self._key_inputs(sigs.inputs(parsed))
         child_inputs = [n for n in sigs.inputs(parsed) if n not in self._key_names]
         if sigs.ROWS in child_inputs:
             if child_inputs != [sigs.ROWS]:
@@ -178,9 +189,68 @@ class GroupedTable:
         chunk = chunk_chars or lm_config.config().reduce_chunk_chars
         return self._then(
             lambda: ops.LMReduceOp(parsed, key_inputs, child_columns, children_name, hier, extra,
-                                   lm=lm, module=module, chunk_chars=chunk, on_error=on_error),
+                                   lm=lm, module=module, chunk_chars=chunk, on_error=on_error,
+                                   emit_every=emit_every),
             sigs.outputs(parsed), "lm_reduce",
         )
+
+    def lm_fold(self, sig: str, *, init: dict[str, Any] | None = None, emit: str | every = "close",
+                instructions: str | None = None, lm=None, module: type[dspy.Module] = dspy.Predict,
+                on_error: str = "skip") -> Table:
+        """Carry state through each group's children, one LM call per child, in key order.
+
+        Fields on both sides of the arrow are state: `"progress, step -> progress, stuck: bool"`
+        reads the previous `progress` and the newest child's `step`, and writes the new
+        `progress` (plus `stuck`). The output row holds the state after the last child.
+
+        `init` sets initial state (default: "", [], 0 or False by type). `emit="update"`
+        or `tp.every(n)` also emits the state so far on live streams. Children arriving
+        out of order are handled by recomputing from the earliest one affected.
+        """
+        emit_every = _emit_every(emit)
+        spec = sigs.parse_fold(sig, instructions)
+        child = self._table.schema
+        key_inputs = self._key_inputs(n for n in spec.inputs if n not in spec.state)
+        child_names = [n for n in spec.inputs if n not in spec.state and n not in key_inputs]
+        child.require(child_names, "lm_fold")
+        known = child.columns or {}
+        child_inputs = {n: known.get(n, str) if n not in child.levels else str for n in child_names}
+        init = dict(init or {})
+        unknown = set(init) - set(spec.state)
+        if unknown:
+            raise ValueError(f"lm_fold: init has non-state field(s) {sorted(unknown)}; state is {spec.state}")
+        init = {name: init.get(name, sigs.default_value(spec.outputs[name])) for name in spec.state}
+        child_name = child.levels[-1] if child.levels else "row"
+        hier, extra = self._hier, self._extra
+        return self._then(
+            lambda: ops.FoldOp(spec, init, key_inputs, child_inputs, child_name, hier, extra,
+                               lm=lm, module=module, on_error=on_error, emit_every=emit_every),
+            dict(spec.outputs), "lm_fold",
+        )
+
+
+class every:
+    """Emit provisional results every `n` children: `emit=tp.every(5)`."""
+
+    def __init__(self, n: int | str):
+        if isinstance(n, str):
+            raise NotImplementedError("time-based every('30s') isn't supported yet; pass a number of children")
+        if n < 1:
+            raise ValueError("every(n) needs n >= 1")
+        self.n = n
+
+    def __repr__(self) -> str:
+        return f"every({self.n})"
+
+
+def _emit_every(emit: str | every) -> int | None:
+    if emit == "close":
+        return None
+    if emit == "update":
+        return 1
+    if isinstance(emit, every):
+        return emit.n
+    raise ValueError(f"emit must be 'close', 'update' or tp.every(n), not {emit!r}")
 
 
 def collect(*tables: Table, max_concurrency: int | None = None) -> list[list[Row]]:

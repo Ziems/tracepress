@@ -79,13 +79,6 @@ def test_lm_reduce_unknown_column():
         rows_table().group_by("task").lm_reduce("nope -> x")
 
 
-def test_streaming_only_features_raise():
-    with pytest.raises(NotImplementedError):
-        rows_table().group_by("task").lm_reduce("summary -> x", emit="update")
-    with pytest.raises(NotImplementedError):
-        rows_table().lm_fold("state, summary -> state")
-
-
 # --- LM operators (DummyLM) --------------------------------------------------------------
 
 

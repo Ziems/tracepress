@@ -33,6 +33,9 @@ class Config:
     # different cache entry, so a cached bad response can't fail the same call forever.
     fallback_adapters: list[dspy.Adapter] = field(default_factory=lambda: [dspy.XMLAdapter()])
     max_concurrency: int = 32
+    # Seconds before an LM request is abandoned and retried. litellm's default is 10
+    # minutes, and one hung request stalls a whole fold.
+    request_timeout: float = 60.0
     # Rendered size budget for one reduce call before it is split into a tree reduce.
     reduce_chunk_chars: int = 120_000
 
@@ -72,7 +75,7 @@ def resolve_lm(lm: str | dspy.LM | None) -> dspy.LM:
         return lm
     if lm not in _lm_cache:
         _load_env()
-        _lm_cache[lm] = dspy.LM(lm)
+        _lm_cache[lm] = dspy.LM(lm, timeout=_config.request_timeout)
     return _lm_cache[lm]
 
 
