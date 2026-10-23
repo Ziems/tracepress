@@ -1,7 +1,7 @@
 # TracePress
 
 LLM-powered map/reduce over agent traces, built on DSPy. The same pipeline code is meant
-to run on static datasets and, later, live streams. See [SPEC.md](SPEC.md) for the design.
+to run on static datasets and, later, live streams. See [docs/SPEC.md](docs/SPEC.md) for the design.
 
 ```python
 import tracepress as tp
