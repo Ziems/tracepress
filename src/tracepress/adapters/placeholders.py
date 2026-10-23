@@ -10,7 +10,7 @@ def _planned(name: str, hierarchy: str):
     def reader(*args, **kwargs):
         raise NotImplementedError(
             f"The {name} adapter isn't implemented yet (planned hierarchy: {hierarchy}). "
-            "See SPEC.md, 'Planned adapters'."
+            "See docs/SPEC.md, 'Planned adapters'."
         )
 
     reader.__name__ = name
