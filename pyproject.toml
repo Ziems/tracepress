@@ -1,14 +1,29 @@
 [project]
 name = "tracepress"
 version = "0.1.0"
-description = "Add your description here"
+description = "LLM-powered map/reduce over agent traces: find failures, summarize runs, and watch agents live."
 readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["agents", "traces", "llm", "dspy", "evaluation", "observability", "harbor", "terminal-bench"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
     "dspy>=3.4.1",
     "pandas>=2.3.3",
     "python-dotenv>=1.2.4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Ziems/tracepress"
+Repository = "https://github.com/Ziems/tracepress"
+Issues = "https://github.com/Ziems/tracepress/issues"
+Documentation = "https://github.com/Ziems/tracepress/tree/main/docs"
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14.0"]
