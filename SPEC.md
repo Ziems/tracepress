@@ -174,8 +174,11 @@ Measured on GPT-6 Luna via OpenRouter, uncached, about 950 calls:
 
 Decisions made while building:
 
-- **Default LM** is `openrouter/openai/gpt-6-luna` (override with `tp.configure(lm=...)`, a
-  per-operator `lm=`, or `TRACEPRESS_LM`). The OpenRouter key is read from `.env`.
+- **No default LM:** the user always picks one with `tp.configure(lm=...)`, a per-operator
+  `lm=`, or `TRACEPRESS_LM`, and a run without one fails before any call. Model strings are
+  `provider:model` (`openrouter:openai/gpt-6-luna`, the suggested one, or
+  `portkey:<provider slug>/<model>`). A string without a provider prefix is passed to
+  litellm as is. Keys are read from the environment or `.env`.
 - **Output format:** DSPy's `JSONAdapter` by default; if a response can't be parsed, the
   call is retried with `XMLAdapter`. Without that fallback, a cached unparseable response
   fails the same call on every rerun.
