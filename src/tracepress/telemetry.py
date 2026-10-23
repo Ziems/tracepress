@@ -39,7 +39,7 @@ POSTHOG_HOST = "https://us.i.posthog.com"
 EVENT = "run_completed"
 TIMEOUT = 2.0
 
-DOCS = "https://github.com/Ziems/tracepress#telemetry"
+DOCS = "https://github.com/Ziems/tracepress/blob/main/docs/telemetry.md"
 NOTICE = (
     "TracePress collects anonymous usage stats (versions, call/token/cost counts, model and "
     "operator names; never your data, prompts or paths). Turn it off with TRACEPRESS_TELEMETRY=0. "
