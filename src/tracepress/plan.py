@@ -47,6 +47,9 @@ class Table:
 
     def map(self, fn: Callable[[Row], dict[str, Any]], columns: dict[str, Any] | None = None) -> Table:
         """Add or replace columns with `fn(row) -> dict`. Pass `columns` to keep schema checks."""
+        clash = [c for c in columns or () if c in self.schema.levels]
+        if clash:
+            raise ValueError(f"map: column(s) {clash} would shadow key level(s) of the same name")
         schema = Schema(self.schema.levels, None)
         if columns is not None and not self.schema.open:
             schema = Schema(self.schema.levels, {**self.schema.columns, **columns})
@@ -256,6 +259,11 @@ def _emit_every(emit: str | every) -> int | None:
 def collect(*tables: Table, max_concurrency: int | None = None) -> list[list[Row]]:
     """Run several tables in one pass; shared upstream work runs once."""
     return runtime.run([t._node for t in tables], max_concurrency)
+
+
+async def acollect(*tables: Table, max_concurrency: int | None = None) -> list[list[Row]]:
+    """`collect` for code already inside an event loop, e.g. Jupyter: `await tp.acollect(a, b)`."""
+    return await runtime.run_async([t._node for t in tables], max_concurrency)
 
 
 def rows_to_pandas(rows: list[Row]):

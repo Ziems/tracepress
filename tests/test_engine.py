@@ -190,3 +190,8 @@ def test_call_log_records_latency():
     stats = tp.last_run()
     assert len(stats.call_log) == 6 and all(ok for *_, ok in stats.call_log)
     assert set(stats.latency()) == {"p50", "p90", "p99", "max"}
+
+
+def test_map_rejects_columns_shadowing_key_levels():
+    with pytest.raises(ValueError, match="shadow"):
+        rows_table().map(lambda r: {"trial": "x"}, columns={"trial": str})

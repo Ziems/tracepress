@@ -33,4 +33,13 @@ To watch trials as a live stream, with a running progress note per trial updated
 uv run python examples/live_monitor.py example_harbor_jobs/trials --tasks wal-recovery-ordering --limit 2 --speed 60
 ```
 
+To dig through results interactively, open [examples/explore_results.ipynb](examples/explore_results.ipynb)
+(it's saved with outputs). It covers the job overview, failure modes at each level, drill-down from a
+trial to the steps flagged as mistakes, new questions over existing results, and a live fold.
+Open it in VS Code with the project's `.venv` kernel, or:
+
+```bash
+uv run --with jupyterlab jupyter lab examples/explore_results.ipynb
+```
+
 Run the tests with `uv run pytest`.
