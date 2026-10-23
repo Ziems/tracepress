@@ -20,12 +20,17 @@ from dspy.utils.exceptions import AdapterParseError
 
 log = logging.getLogger("tracepress")
 
-DEFAULT_LM = "openrouter/openai/gpt-6-luna"
+# The model the examples and docs suggest. There is no default: the user always picks one.
+SUGGESTED_LM = "openrouter:openai/gpt-6-luna"
+
+PORTKEY_BASE_URL = "https://api.portkey.ai/v1"
 
 
 @dataclass
 class Config:
-    lm: str | dspy.LM = field(default_factory=lambda: os.environ.get("TRACEPRESS_LM", DEFAULT_LM))
+    # A `provider:model` string (see `resolve_lm`), a plain litellm model string, or a
+    # dspy.LM. None means "read TRACEPRESS_LM", and fail if that isn't set either.
+    lm: str | dspy.LM | None = None
     # How prompts and structured outputs are formatted. JSON parses more reliably than
     # DSPy's default text markers with the models we use.
     adapter: dspy.Adapter = field(default_factory=dspy.JSONAdapter)
@@ -48,7 +53,7 @@ _config = Config()
 
 
 def configure(**kwargs: Any) -> Config:
-    """Set global defaults, e.g. `tp.configure(lm="openrouter/openai/gpt-6-sol", max_concurrency=64)`."""
+    """Set global defaults, e.g. `tp.configure(lm="openrouter:openai/gpt-6-luna", max_concurrency=64)`."""
     for name, value in kwargs.items():
         if not hasattr(_config, name):
             raise TypeError(f"unknown setting {name!r}")
@@ -60,9 +65,15 @@ def config() -> Config:
     return _config
 
 
+_env_loaded = False
+
+
 def _load_env() -> None:
-    if os.environ.get("OPENROUTER_API_KEY"):
+    """Read `.env` in the working directory once. Variables already set win."""
+    global _env_loaded
+    if _env_loaded:
         return
+    _env_loaded = True
     env = Path.cwd() / ".env"
     if env.exists():
         from dotenv import load_dotenv
@@ -70,16 +81,74 @@ def _load_env() -> None:
         load_dotenv(env)
 
 
+def _require_env(name: str, spec: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"{spec!r} needs {name}; set it in the environment or in .env")
+    return value
+
+
+def _openrouter(model: str, spec: str) -> dspy.LM:
+    _require_env("OPENROUTER_API_KEY", spec)
+    return dspy.LM(f"openrouter/{model}")
+
+
+def _portkey(model: str, spec: str) -> dspy.LM:
+    # Portkey's Model Catalog addresses models as `@<provider slug>/<model>`, sent to its
+    # OpenAI-compatible gateway with the Portkey key. `portkey:openai-prod/gpt-5` and
+    # `portkey:@openai-prod/gpt-5` are the same model.
+    if "/" not in model:
+        raise ValueError(f"{spec!r}: Portkey models look like 'portkey:<provider slug>/<model>'")
+    slug_model = model if model.startswith("@") else f"@{model}"
+    key = _require_env("PORTKEY_API_KEY", spec)
+    return dspy.LM(
+        f"openai/{slug_model}",
+        api_base=os.environ.get("PORTKEY_BASE_URL", PORTKEY_BASE_URL),
+        api_key=key,
+        extra_headers={"x-portkey-api-key": key},
+    )
+
+
+PROVIDERS = {"openrouter": _openrouter, "portkey": _portkey}
+
+
+def make_lm(spec: str) -> dspy.LM:
+    """Build an LM from a model string.
+
+    `provider:model` routes through a known gateway: `openrouter:openai/gpt-6-luna` or
+    `portkey:<provider slug>/<model>`. Anything else is a plain litellm model string,
+    passed through as is (`anthropic/claude-...`, `ollama_chat/llama3:8b`).
+    """
+    _load_env()
+    prefix, sep, model = spec.partition(":")
+    if sep and "/" not in prefix:
+        if prefix not in PROVIDERS:
+            raise ValueError(f"unknown LM provider {prefix!r} in {spec!r}; known: {', '.join(PROVIDERS)}. "
+                             "Plain litellm model strings (no 'provider:') also work.")
+        if not model:
+            raise ValueError(f"{spec!r} names no model")
+        return PROVIDERS[prefix](model, spec)
+    return dspy.LM(spec)
+
+
 _lm_cache: dict[str, dspy.LM] = {}
 
 
 def resolve_lm(lm: str | dspy.LM | None) -> dspy.LM:
-    lm = lm if lm is not None else _config.lm
+    if lm is None:
+        lm = _config.lm
+    if lm is None:
+        _load_env()
+        lm = os.environ.get("TRACEPRESS_LM")
+    if lm is None:
+        raise RuntimeError(
+            "No LM configured. Pick one with tp.configure(lm=...), an operator's lm=, or the "
+            f'TRACEPRESS_LM environment variable, e.g. tp.configure(lm="{SUGGESTED_LM}").'
+        )
     if isinstance(lm, dspy.BaseLM):
         return lm
     if lm not in _lm_cache:
-        _load_env()
-        _lm_cache[lm] = dspy.LM(lm)
+        _lm_cache[lm] = make_lm(lm)
     return _lm_cache[lm]
 
 

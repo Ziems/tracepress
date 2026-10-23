@@ -53,6 +53,8 @@ def build(src, rewards: dict[str, float]):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("path")
+    parser.add_argument("--lm", default="openrouter:openai/gpt-6-luna",
+                        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a litellm model string")
     parser.add_argument("--tasks", nargs="*")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--out", default="out/failure_modes.json")
@@ -60,6 +62,7 @@ def main() -> None:
     parser.add_argument("--speed", type=float, help="replay speed multiplier (default: as fast as possible)")
     parser.add_argument("--faults", action="store_true", help="replay with shuffled, duplicated rows and dropped closes")
     args = parser.parse_args()
+    tp.configure(lm=args.lm)
 
     src = tp.read.harbor(args.path, tasks=args.tasks, limit=args.limit)
     rewards = {row.trial: row.reward for row in src.table("trials").collect()}

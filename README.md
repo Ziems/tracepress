@@ -6,6 +6,7 @@ to run on static datasets and, later, live streams. See [SPEC.md](SPEC.md) for t
 ```python
 import tracepress as tp
 
+tp.configure(lm="openrouter:openai/gpt-6-luna")   # you always pick the model; this is the suggested one
 src = tp.read.harbor("example_harbor_jobs/trials", tasks=["wal-recovery-ordering"])
 
 notes = src.table("steps").lm_map("message, tool_calls -> what_happened, is_mistake: bool")
@@ -15,7 +16,16 @@ per_task = per_trial.group_by("task").lm_reduce("task, summary, failure_mode -> 
 per_task.to_pandas()
 ```
 
-The default model is `openrouter/openai/gpt-6-luna`; put `OPENROUTER_API_KEY` in `.env`.
+There's no default model. Set one with `tp.configure(lm=...)`, an operator's `lm=`, or the
+`TRACEPRESS_LM` environment variable. Model strings take the form `provider:model`:
+
+- `openrouter:openai/gpt-6-luna` (suggested) needs `OPENROUTER_API_KEY`.
+- `portkey:<provider slug>/<model>`, e.g. `portkey:openai-prod/gpt-5`, sends requests through
+  Portkey's gateway to a model in its Model Catalog. It needs `PORTKEY_API_KEY`, and
+  `PORTKEY_BASE_URL` points it at a self-hosted gateway.
+- Anything without a `provider:` prefix is a plain litellm model string, passed through as is.
+
+Keys are read from the environment or from `.env`. The example scripts take `--lm`.
 
 A fuller example, steps → trials → tasks → benchmark:
 

@@ -21,10 +21,17 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 ## Setup
 
 - In the TracePress repo: `uv sync`; run code with `uv run python ...`.
-- The default model is `openrouter/openai/gpt-6-luna` (about $0.10 per million input tokens and
-  $0.50 per million output tokens). It needs `OPENROUTER_API_KEY`, which is loaded from `.env`
-  in the working directory.
-- Change the model globally with `tp.configure(lm="openrouter/...")`, or per operator with `lm=`.
+- **There is no default model.** Configure one before running anything:
+  `tp.configure(lm="openrouter:openai/gpt-6-luna")`. That's the suggested model, at about $0.10
+  per million input tokens and $0.50 per million output tokens. Without one, a run fails with
+  "No LM configured". Use the model the user names if they name one.
+- Model strings are `provider:model`:
+  - `openrouter:<model>` needs `OPENROUTER_API_KEY`.
+  - `portkey:<provider slug>/<model>` (Portkey Model Catalog) needs `PORTKEY_API_KEY`.
+  - A plain litellm string, with no `provider:` prefix, also works.
+
+  Keys are loaded from `.env` in the working directory. Override the model per operator with
+  `lm=`, or set `TRACEPRESS_LM`.
 
 ## Steps
 
@@ -33,6 +40,7 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    ```python
    import tracepress as tp
 
+   tp.configure(lm="openrouter:openai/gpt-6-luna")         # required; suggested model, or the user's choice
    src = tp.read.harbor("path/to/job_or_trials_dir")      # or tasks=[...], limit=N
    trials = src.table("trials").to_pandas()
    trials.groupby("task").reward.mean().sort_values()
