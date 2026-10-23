@@ -38,18 +38,42 @@ A static source emits every row, then every close. The engine can't tell the dif
 | `.steps()`, `explode` | 1 → N | Finer grain |
 | `lm_extract` | 1 → N | Produces new entities (e.g. failures); rows inherit parent key |
 | `group_by(...).lm_reduce(...)` | N → 1 | Coarser grain; output has group keys + reduce outputs |
-| `lm_fold` | running | Incremental per-group state |
+| `group_by(...).lm_fold(...)` | N → 1 (running) | Carries state through each group's children in key order |
 
 `group_by` accepts any field (e.g. `agent`, `model`), not just hierarchy levels.
 
+### Folds
+
+```python
+steps.group_by("trial").lm_fold("progress, step_text -> progress, stuck: bool", emit="update")
+```
+
+- Fields on both sides of the arrow are **state**. The LM sees them as `previous_<name>`,
+  because DSPy forbids the same name as both input and output. Other inputs bind to the
+  newest child's columns or to group keys.
+- `init={...}` sets initial state (default `""`, `[]`, `0` or `False` by type).
+- One LM call per child, sequential within a group; groups run concurrently.
+- The output row is the state after the last child.
+- **Out-of-order children rewind.** Each group keeps its children sorted by key plus the
+  state after each child. A child that lands before already-processed ones recomputes
+  from its position, so the final state never depends on arrival order.
+
 ### Reduce emission
 
-`lm_reduce(..., emit="close")` is the default: one final result per group.
-`emit="update"` / `emit=tp.every(n | "30s")` emits provisional results.
+`emit="close"` is the default: one final result per group.
+`emit="update"` / `emit=tp.every(n)` also emits provisional rows (`final=False`) on live
+streams. Both `lm_reduce` and `lm_fold` accept it.
 
-- In batch mode the flag is a no-op (everything is already closed).
-- Provisional emission is implemented internally as a fold, then a final pass on close.
-- Rows carry `final: bool` so downstream operators can consume only final rows.
+- In batch mode the flag is a no-op (everything is already closed), and costs nothing.
+- For `lm_reduce`, provisional results come from a derived "running" signature
+  (`current, new_<children> -> outputs`) fed each batch of n new children. **The final row
+  always comes from a full reduce at close**, so it equals the batch result exactly.
+- For `lm_fold`, provisional rows are the state so far; `every(n)` only thins out emission.
+- Versions increase with each emitted row for a key, and the final row has the highest. Every
+  consumer keeps the newest version, so a slow provisional update can't overwrite a final row.
+- Time-based `tp.every("30s")` is not built yet.
+- `table.events()` streams every output event (provisional rows and closes included);
+  `collect()` returns only final rows.
 
 ### Reduce input binding
 
@@ -90,26 +114,33 @@ results are combined with the merge signature.
   pipeline already wanted one: attaching each trial's reward to its steps currently takes
   a Python dict lookup inside `map`.
 
-## Implementation status (batch milestone)
+## Implementation status
 
 Built and tested: the plan/runtime/event engine; `map`, `filter`, `select`, `explode`,
 `group_by(...).reduce` (Python), `lm_map`, `lm_filter`, `lm_extract`, `lm_reduce` (with
-tree merge); `collect` / `acollect` / `to_pandas` / `tp.collect(*tables)` /
-`from_rows` / `from_pandas`; ATIF and Harbor adapters; placeholder adapters.
+tree merge and `emit="update"` / `tp.every(n)`), `lm_fold`; `collect` / `acollect` /
+`to_pandas` / `tp.collect(*tables)` / `table.events()` / `from_rows` / `from_pandas`;
+ATIF and Harbor adapters; placeholder adapters; `tp.replay`.
 
-Replay (`tp.replay`) is built, with timing, interleaving and fault injection. Batch-vs-replay
-equivalence holds in the tests under every fault setting, and on the real Harbor sample
-(6 tasks, 546 LM calls) the replayed output is byte-identical to the batch output.
+Batch-vs-replay equivalence (same keys and values) holds in the tests for reduces, folds
+and provisional reduces under every fault setting. On the real Harbor sample (6 tasks,
+546 LM calls) the replayed output is byte-identical to the batch output.
 
-Not yet: `lm_fold`, `emit="update"` (raise `NotImplementedError`), sinks / `.start()`,
-user overrides for merge/fold signatures, backpressure (queues are unbounded).
+Not yet: sinks / `.start()`, time-based `tp.every("30s")`, user overrides for merge/fold
+signatures, backpressure (queues are unbounded), retractions.
 
-Replay findings:
+Streaming findings:
 
-- **Duplicate rows cost repeat LM calls.** Results stay correct (rows are keyed, so the
-  duplicate replaces the original), and the cache makes replay free, but a real stream
-  would pay for each duplicate. **OPEN:** dedupe by key and version in row-level LM
-  operators.
+- **Duplicates are free.** Row-level LM operators skip a row already seen with the same
+  key, version and values; groups do the same. Seen keys are forgotten when their prefix
+  closes, so memory stays bounded by open groups.
+- **No retractions.** If a provisional row explodes (`explode` / `lm_extract`) into more
+  children than its final version, the extra children stay downstream. Explode only closes
+  a row's children once the row is final.
+- **Downstream LM operators run on every provisional row** they receive. That's the
+  cascade cost noted in the design; `.filter(lambda r: r.final)` stops it.
+- **One hung LM request stalls a whole fold**, because fold steps are sequential. Requests
+  now time out after `request_timeout` seconds (default 60) and are retried.
 - A close with no rows under it (e.g. the steps of a crashed trial) keeps its position
   relative to the source's preceding row, since there's no timestamp to place it by.
 - `collect()` on a replay runs until the replay ends; on a truly live source it would never
@@ -295,5 +326,5 @@ batch reduces see whole groups (tree-reduce, `emit` ignored); streaming reduces 
 - **OPEN:** idle-timeout fallback for traces that never close.
 - **OPEN:** streaming group closure for Harbor jobs.
 - **OPEN:** mapping variable-depth span trees (OpenTelemetry, ChatGPT branches) onto keys.
-- **OPEN:** fold drift vs. batch reduce quality; whether the final pass on close is enough.
+- **OPEN:** how far provisional (running) reduce results drift from the full reduce on close.
 - `requires-python` must be raised to >=3.10 for DSPy.

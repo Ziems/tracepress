@@ -26,4 +26,11 @@ uv run python examples/failure_modes.py example_harbor_jobs/trials --tasks wal-r
 Add `--replay` to feed the steps in as a simulated stream (`--faults` also shuffles and
 duplicates rows and drops closes). With a warm cache the output matches the batch run exactly.
 
+To watch trials as a live stream, with a running progress note per trial updated each step
+(`lm_fold` with `emit="update"`):
+
+```bash
+uv run python examples/live_monitor.py example_harbor_jobs/trials --tasks wal-recovery-ordering --limit 2 --speed 60
+```
+
 Run the tests with `uv run pytest`.
