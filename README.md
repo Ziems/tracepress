@@ -23,4 +23,7 @@ A fuller example, steps → trials → tasks → benchmark:
 uv run python examples/failure_modes.py example_harbor_jobs/trials --tasks wal-recovery-ordering gsea-proteomics
 ```
 
+Add `--replay` to feed the steps in as a simulated stream (`--faults` also shuffles and
+duplicates rows and drops closes). With a warm cache the output matches the batch run exactly.
+
 Run the tests with `uv run pytest`.

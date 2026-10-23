@@ -97,8 +97,23 @@ Built and tested: the plan/runtime/event engine; `map`, `filter`, `select`, `exp
 tree merge); `collect` / `acollect` / `to_pandas` / `tp.collect(*tables)` /
 `from_rows` / `from_pandas`; ATIF and Harbor adapters; placeholder adapters.
 
-Not yet: `lm_fold`, `emit="update"` (raise `NotImplementedError`), replay, sinks / `.start()`,
+Replay (`tp.replay`) is built, with timing, interleaving and fault injection. Batch-vs-replay
+equivalence holds in the tests under every fault setting, and on the real Harbor sample
+(6 tasks, 546 LM calls) the replayed output is byte-identical to the batch output.
+
+Not yet: `lm_fold`, `emit="update"` (raise `NotImplementedError`), sinks / `.start()`,
 user overrides for merge/fold signatures, backpressure (queues are unbounded).
+
+Replay findings:
+
+- **Duplicate rows cost repeat LM calls.** Results stay correct (rows are keyed, so the
+  duplicate replaces the original), and the cache makes replay free, but a real stream
+  would pay for each duplicate. **OPEN:** dedupe by key and version in row-level LM
+  operators.
+- A close with no rows under it (e.g. the steps of a crashed trial) keeps its position
+  relative to the source's preceding row, since there's no timestamp to place it by.
+- `collect()` on a replay runs until the replay ends; on a truly live source it would never
+  return, so live sources will need `.start()`.
 
 Decisions made while building:
 
