@@ -1,6 +1,6 @@
 """TracePress: LLM-powered map/reduce over agent traces, for batch and streaming data."""
 
-from . import read
+from . import pipelines, read
 from .adapters import Adapter, from_pandas, from_rows, replay
 from .lm import configure
 from .plan import GroupedTable, Table, acollect, collect, every, rows_to_pandas
@@ -31,6 +31,7 @@ __all__ = [
     "from_pandas",
     "from_rows",
     "last_run",
+    "pipelines",
     "read",
     "replay",
     "rows_to_pandas",

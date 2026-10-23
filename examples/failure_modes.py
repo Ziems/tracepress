@@ -8,22 +8,7 @@ import json
 from pathlib import Path
 
 import tracepress as tp
-
-
-def clip(value, limit: int) -> str:
-    text = value if isinstance(value, str) else json.dumps(value, default=str)
-    return text if len(text) <= limit else text[:limit] + f"... [{len(text) - limit} more chars]"
-
-
-def render_step(row) -> str:
-    """One compact text block per step. Long tool output is clipped to keep calls cheap."""
-    parts = []
-    if row.message:
-        parts.append(f"Agent says: {clip(row.message, 1500)}")
-    for call in row.tool_calls:
-        parts.append(f"Tool call {call['name']}: {clip(call['arguments'], 800)}")
-        parts.append(f"Result: {clip(call['result'] or '', 1500)}")
-    return "\n".join(parts) or "(empty step)"
+from tracepress.pipelines.harbor import render_step
 
 
 def build(src, rewards: dict[str, float]):

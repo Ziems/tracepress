@@ -77,8 +77,9 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    ```
 
    Write `render(r)` to turn a step into compact text, and **clip long tool output** (to about
-   1,500 characters) to keep prompts small. `examples/failure_modes.py` has a working `render_step`
-   and the full four-level pipeline (`build(src, rewards)`).
+   1,500 characters) to keep prompts small. `tracepress.pipelines.harbor` has `render_step` and
+   `clip` (head and tail) you can reuse. `examples/failure_modes.py` has the full four-level
+   pipeline (`build(src, rewards)`).
 
    Operators:
    - `map(fn, columns=...)`, `filter(pred)`, `select(*cols)`, `explode(col)`: plain Python, free
@@ -122,6 +123,32 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    To ask a new question without redoing the step-level work, feed results back in:
    `tp.from_rows(trial_rows).lm_map("summary, failure_mode -> category").collect()`.
    `examples/explore_results.ipynb` walks through all of this.
+
+## Built-in pipelines
+
+For Harbor jobs, `tp.pipelines.harbor` has the two failure taxonomies from the Terminal-Bench 2.0
+paper (arXiv:2601.11868). Try these before writing your own failure analysis when the user asks
+"how do these runs fail?" in Terminal-Bench terms.
+
+```python
+from tracepress.pipelines import harbor
+
+modes = harbor.trajectory_taxonomy(src)            # one row per (failed trial, failure mode)
+wide = harbor.trajectory_labels_wide(modes.collect())   # one dict per trial, plus class rollups
+commands = harbor.step_taxonomy(src)               # one row per failed tool call
+```
+
+- `trajectory_taxonomy(src, failed_only=True, modes=TRAJECTORY_MODES)`: each agent step is
+  digested, the digests are joined into a per-trial transcript, and each of the 9 modes gets its
+  own rubric judge. Columns: `failure_mode`, `mode_class`, `matched`, `rationale` (cites step
+  numbers) and `transcript`. Cost: one call per agent step plus 9 per trial.
+- `step_taxonomy(src, failed_only=False, taxonomy=COMMAND_TAXONOMY)`: detects whether each tool
+  call failed, then classifies it as `error_category` / `error_subcategory`. A subcategory outside
+  the taxonomy becomes `"other"`. Cost: one call per tool call plus one per failure.
+- Both taxonomies are plain dicts (`TRAJECTORY_MODES` of `Mode(cls, name, definition, rubric)`,
+  `COMMAND_TAXONOMY` of category to subcategories). Copy and edit them to change the labels.
+- `examples/harbor_taxonomy.py` runs both and prints rates. Section 6 of the notebook shows
+  them as tables.
 
 ## Pitfalls
 
