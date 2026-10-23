@@ -12,3 +12,6 @@ wheels/
 example_harbor_jobs/
 # Secrets
 .env
+
+# Example outputs
+out/
