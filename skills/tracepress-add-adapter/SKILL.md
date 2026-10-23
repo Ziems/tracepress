@@ -16,7 +16,7 @@ the adapter's choice. Existing adapters to copy from:
 
 - A user has traces in a format with no reader. `tp.read.dspy`, `tp.read.otel`,
   `tp.read.claude_code` and `tp.read.chatgpt` are placeholders that raise `NotImplementedError`
-  (see `adapters/placeholders.py` and "Planned adapters" in `SPEC.md`).
+  (see `adapters/placeholders.py` and "Planned adapters" in `docs/SPEC.md`).
 - Turning a one-off log format into TracePress tables
 
 ## Steps
@@ -34,7 +34,7 @@ the adapter's choice. Existing adapters to copy from:
      `timestamp`, `reward`), so existing pipelines carry over. Never name a column after a level.
 
    For trees of variable depth (OpenTelemetry spans, branching chats), mapping depth onto keys is an
-   open design question in `SPEC.md`. A flat table with `parent_id` plus a depth column is the
+   open design question in `docs/SPEC.md`. A flat table with `parent_id` plus a depth column is the
    simplest first step; say so to the user.
 
 3. **Implement the adapter.**
@@ -102,5 +102,5 @@ the adapter's choice. Existing adapters to copy from:
      ```
    - run `uv run pytest`
 
-6. **Document it.** Add the adapter to the "Planned adapters" table in `SPEC.md` (status v1), and
+6. **Document it.** Add the adapter to the "Planned adapters" table in `docs/SPEC.md` (status v1), and
    add a line to the `README.md` if users will call it directly.
