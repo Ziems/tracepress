@@ -18,7 +18,7 @@ from typing import Any
 import dspy
 
 from . import signatures as sigs
-from .lm import Executor, resolve_lm
+from .lm import Executor, config, resolve_lm
 from .rows import Closed, Event, Key, Row, RowAdded, RowUpdated, is_prefix, sort_key
 
 log = logging.getLogger("tracepress")
@@ -209,7 +209,7 @@ class LMRowOp(AsyncOperator):
 
     async def _run(self, row: Row, updated: bool) -> None:
         inputs = {name: row.get(name) for name in self.inputs}
-        pred = await self.guarded(f"row {row.key}", self.executor.call(self.module, self.lm, **inputs))
+        pred = await self.guarded(f"row {row.key}", self.executor.call(self.module, self.lm, inputs))
         if pred is not None:
             self.handle(row, pred, updated)
 
@@ -430,16 +430,18 @@ class LMReduceOp(GroupOp):
         children = [self.child_record(r) for r in rows]
         chunks = _chunk(children, self.chunk_chars)
         partials = await asyncio.gather(
-            *(self._call(self.reducer, keys, {self.children_name: c}) for c in chunks)
+            *(self._call(self.reducer, keys, {self.children_name: c}, config().reduce_timeout) for c in chunks)
         )
         # Tree-merge until one result remains.
         while len(partials) > 1:
             groups = _chunk([_plain(p) for p in partials], self.chunk_chars, min_size=2)
-            partials = await asyncio.gather(*(self._call(self.merger, keys, {"partials": g}) for g in groups))
+            partials = await asyncio.gather(
+                *(self._call(self.merger, keys, {"partials": g}, config().reduce_timeout) for g in groups)
+            )
         return partials[0]
 
-    async def _call(self, module, keys, extra) -> dict[str, Any]:
-        pred = await self.executor.call(module, self.lm, **keys, **extra)
+    async def _call(self, module, keys, extra, timeout: float | None = None) -> dict[str, Any]:
+        pred = await self.executor.call(module, self.lm, {**keys, **extra}, timeout)
         return {name: pred[name] for name in self.outputs_names}
 
 
@@ -489,7 +491,7 @@ class FoldOp(GroupOp):
                 inputs[name] = dict(gkey)[name]
             else:
                 inputs[name] = row.get(name)
-        pred = await self.executor.call(self.module, self.lm, **inputs)
+        pred = await self.executor.call(self.module, self.lm, inputs)
         return {name: pred[name] for name in self.spec.outputs}
 
     async def finalize(self, gkey, rows, states):

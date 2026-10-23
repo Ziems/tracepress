@@ -166,3 +166,27 @@ def test_unparseable_response_falls_back_to_next_adapter():
         tp.configure(fallback_adapters=[dspy.XMLAdapter()])
     assert [r.topic for r in rows] == ["t"] * 6
     assert tp.last_run().fallbacks == 6 and tp.last_run().errors == 0
+
+
+def test_hung_calls_time_out_and_retry():
+    from fakes import HangingLM
+
+    tp.configure(request_timeout=0.1, timeout_retries=2)
+    try:
+        lm = HangingLM(lambda f: {"topic": "t"}, hangs=1)
+        rows = rows_table().lm_map("summary -> topic", lm=lm).collect(max_concurrency=1)
+        assert [r.topic for r in rows] == ["t"] * 6
+        assert tp.last_run().timeouts == 1 and tp.last_run().errors == 0
+
+        stuck = HangingLM(lambda f: {"topic": "t"}, hangs=100)
+        assert rows_table().lm_map("summary -> topic", lm=stuck).collect() == []
+        assert tp.last_run().errors == 6 and tp.last_run().timeouts == 6 * 3
+    finally:
+        tp.configure(request_timeout=30.0, timeout_retries=2)
+
+
+def test_call_log_records_latency():
+    rows_table().lm_map("summary -> topic", lm=DummyLM([{"topic": "t"}] * 6)).collect()
+    stats = tp.last_run()
+    assert len(stats.call_log) == 6 and all(ok for *_, ok in stats.call_log)
+    assert set(stats.latency()) == {"p50", "p90", "p99", "max"}

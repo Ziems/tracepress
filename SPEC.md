@@ -139,8 +139,34 @@ Streaming findings:
   a row's children once the row is final.
 - **Downstream LM operators run on every provisional row** they receive. That's the
   cascade cost noted in the design; `.filter(lambda r: r.final)` stops it.
-- **One hung LM request stalls a whole fold**, because fold steps are sequential. Requests
-  now time out after `request_timeout` seconds (default 60) and are retried.
+- **One hung LM request stalls a whole fold**, because fold steps are sequential. See
+  "LM latency and timeouts" below.
+
+### LM latency and timeouts
+
+Measured on GPT-6 Luna via OpenRouter, uncached, about 950 calls:
+
+| Workload | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| per-step `lm_map` (concurrency 32) | 3.9s | 5.3s | 6.9s | 10.8s |
+| fold steps (sequential per trial) | 5.7s | 8.1s | 14.5s | 14.5s |
+| six-task failure analysis (maps + reduces) | 3.9s | 6.0s | 9.6s | 17.6s |
+
+- Latency tracks output length: roughly 2s plus ~90 completion tokens per second. Luna
+  spends 40–250 completion tokens on reasoning even for one-sentence answers.
+- **Requests occasionally hang** (none in this sample, but earlier runs stalled for up to
+  10 minutes, litellm's default timeout). A sequential fold over ~22 steps at ~6s/step takes
+  ~2 minutes per trial even without hangs.
+- **Timeouts are enforced by the executor** (`asyncio.wait_for`), not passed to the LM,
+  because DSPy includes request kwargs in its cache key and changing a timeout would
+  otherwise invalidate the cache. `request_timeout=30` (row calls, fold steps, running
+  updates; ~2x the worst observed) and `reduce_timeout=120` (full reduces and merges,
+  whose prompts can approach the chunk budget). A timed-out attempt is retried up to
+  `timeout_retries=2` times; `tp.last_run()` counts `timeouts` and keeps a per-call
+  `call_log` with `latency()` percentiles.
+- Lower `reasoning_effort` was inconclusive: `minimal` medians of 1.8–4.0s vs 3.0–3.4s for
+  the default across three runs, with provider variance as large as the effect. The default
+  is unchanged; pass `tp.configure(lm=dspy.LM(..., reasoning_effort=...))` to try it.
 - A close with no rows under it (e.g. the steps of a crashed trial) keeps its position
   relative to the source's preceding row, since there's no timestamp to place it by.
 - `collect()` on a replay runs until the replay ends; on a truly live source it would never
