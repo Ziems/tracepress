@@ -17,18 +17,12 @@ The same pipeline runs on a finished batch or a live stream. It's built on
 uv add tracepress        # or: pip install tracepress
 ```
 
-Set your model provider's API key as an environment variable. A `.env` file in the
-working directory also works.
-
-```bash
-export OPENROUTER_API_KEY=sk-or-...
-```
-
-Then pick a model. The suggested one is cheap and good at this:
+Pick a model. GPT-6-luna is a good balance between cost, performance, and speed:
 
 ```python
 import tracepress as tp
 
+os.environ["OPENROUTER_API_KEY"] = "sk-or-..."
 tp.configure(lm="openrouter:openai/gpt-6-luna")
 ```
 
@@ -48,7 +42,7 @@ failed, and give me the common failure modes per task."*
 
 - **tracepress-analyze-traces:** failure modes, summaries and comparisons over finished runs.
 - **tracepress-stream-traces:** live monitoring with running notes per trial.
-- **tracepress-add-adapter:** support for a new trace format.
+- **tracepress-add-adapter:** support for a new trace format (pull requests appreciated :P).
 
 ## Why did these runs fail?
 
@@ -97,6 +91,7 @@ failed run against 9 failure modes, and the other classifies every failed comman
 ```python
 from tracepress.pipelines import harbor
 
+src = tp.read.harbor("jobs/my-job")
 modes, commands = tp.collect(harbor.trajectory_taxonomy(src), harbor.step_taxonomy(src, failed_only=True))
 ```
 
@@ -143,7 +138,7 @@ Here's how one trial's note grew, from [examples/live_monitor.py](https://github
 
 ## Works with
 
-- **Traces:** [Harbor](https://github.com/laude-institute/harbor) jobs, and ATIF trajectory
+- **Traces:** [Harbor](https://github.com/harbor-framework/harbor) jobs, and ATIF trajectory
 files. OpenTelemetry, Claude Code and DSPy traces are planned.
 - **Models:** OpenRouter, Portkey, or any litellm model ([docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md)).
 - **Output:** plain rows, or pandas with `.to_pandas()`.
@@ -155,9 +150,19 @@ analysis. It's saved with its outputs, so you can read it without running anythi
 - [examples/](https://github.com/Ziems/tracepress/tree/main/examples) has runnable scripts. Clone the repo; it includes a sample Harbor job.
 
 
+## Acknowledgements
+
+This project is inspired by similar work applying map reduce to agent traces.
+
+- [LOTUS](https://github.com/lotus-data/lotus) by Liana Patel et al., whose semantic operators
+  (LLM-based map, reduce and filter) run semantic operations over pandas DataFrames.
+- [Harbor](https://github.com/harbor-framework/harbor), whose `harbor jobs summarize` command
+  summarizes agent trajectories from evaluation runs.
+
 ## Development
 
 ```bash
 uv sync
 uv run pytest
 ```
+
