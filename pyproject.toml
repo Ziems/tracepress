@@ -3,6 +3,8 @@ name = "tracepress"
 version = "0.1.0"
 description = "LLM-powered map/reduce over agent traces: find failures, summarize runs, and watch agents live."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 keywords = ["agents", "traces", "llm", "dspy", "evaluation", "observability", "harbor", "terminal-bench"]
 classifiers = [
