@@ -7,6 +7,7 @@ hundreds of runs in a few lines of Python. Point it at trajectories and ask, for
 - *Which commands break most often?*
 - *What is this agent doing right now, and is it stuck?*
 - *When are my users frustrated and what is causing it?*
+- *What was the agent thinking, and does its reasoning match what it did?*
 
 The same pipeline runs on a finished batch or a live stream. It's built on
 [DSPy](https://dspy.ai).
@@ -156,7 +157,7 @@ Here's how one trial's note grew, from [examples/live_monitor.py](https://github
 
 - **Traces:** [Harbor](https://github.com/harbor-framework/harbor) jobs, and ATIF trajectory
 files. OpenTelemetry, Claude Code and DSPy traces are planned.
-- **Models:** OpenRouter, Portkey, or any litellm model ([docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md)).
+- **Models:** OpenRouter, Portkey, or almost any model ([docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md)).
 - **Output:** plain rows, or pandas with `.to_pandas()`.
 
 ## Learn more

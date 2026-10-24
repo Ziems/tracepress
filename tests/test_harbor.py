@@ -61,3 +61,14 @@ def test_missing_paths(tmp_path):
 def test_placeholder_adapters_raise(reader):
     with pytest.raises(NotImplementedError, match="isn't implemented yet"):
         getattr(tp.read, reader)("anything")
+
+
+def test_atif_reader_jsonl(harbor_dir, tmp_path):
+    trajectories = [harbor_dir / "trials" / name / "agent" / "trajectory.json" for name in ("alpha__1", "beta__1")]
+    (tmp_path / "bundles").mkdir()
+    bundle = tmp_path / "bundles" / "bundle.jsonl"
+    bundle.write_text("\n".join(p.read_text() for p in trajectories) + "\n")
+    src = tp.read.atif(bundle)
+    assert [r.trajectory for r in src.table("trajectories").collect()] == ["alpha__1", "beta__1"]
+    assert len(src.table("steps").collect()) == 6
+    assert len(tp.read.atif(tmp_path / "bundles").table("trajectories").collect()) == 2

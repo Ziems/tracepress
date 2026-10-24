@@ -45,8 +45,14 @@ def clip(value: Any, limit: int) -> str:
 
 
 def render_step(row: Row) -> str:
-    """One compact text block per step. Long tool output is clipped to keep calls cheap."""
+    """One compact text block per step. Long tool output is clipped to keep calls cheap.
+
+    The agent's reasoning comes first when the trace has it; it often says why the agent did
+    what it did.
+    """
     parts = []
+    if row.get("reasoning", None):
+        parts.append(f"Agent thinks: {clip(row.reasoning, 1500)}")
     if row.message:
         parts.append(f"Agent says: {clip(row.message, 1500)}")
     for call in row.tool_calls:

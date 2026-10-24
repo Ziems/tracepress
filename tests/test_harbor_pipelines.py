@@ -96,3 +96,12 @@ def test_pipelines_build_inside_an_event_loop_and_over_replay(harbor_dir):
     rows, calls = asyncio.run(run())
     assert {r.trial for r in rows} == {"alpha__2"}
     assert calls == []
+
+
+def test_render_step_includes_reasoning_when_present():
+    with_reasoning = tp.Row((("step", 1),), {"reasoning": "The tests look flaky; skip them.", "message": "Done.",
+                                             "tool_calls": [], "observation": None})
+    text = pipes.render_step(with_reasoning)
+    assert text.index("Agent thinks: The tests look flaky") < text.index("Agent says: Done.")
+    without = tp.Row((("step", 1),), {"message": "Done.", "tool_calls": [], "observation": None})
+    assert "Agent thinks" not in pipes.render_step(without)

@@ -90,8 +90,20 @@ async def load_json(path: Path) -> dict:
     return await asyncio.to_thread(lambda: json.loads(path.read_text()))
 
 
+async def load_jsonl(path: Path) -> list[dict]:
+    """One trajectory per line, as in exported trajectory bundles."""
+    def read() -> list[dict]:
+        with path.open() as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    return await asyncio.to_thread(read)
+
+
 class ATIFAdapter(Adapter):
-    """Bare ATIF trajectory files. Levels: trajectory > step (> call)."""
+    """ATIF trajectories: one per .json file, or one per line of a .jsonl file.
+
+    Levels: trajectory > step (> call).
+    """
 
     levels = ("trajectory", "step")
 
@@ -108,9 +120,16 @@ class ATIFAdapter(Adapter):
     def trajectory_id(self, path: Path, data: dict) -> str:
         return data.get("session_id") or str(path)
 
-    async def events(self, table: str) -> AsyncIterator[Event]:
+    async def documents(self) -> AsyncIterator[tuple[Path, dict]]:
         for path in self.paths:
-            data = await load_json(path)
+            if path.suffix == ".jsonl":
+                for data in await load_jsonl(path):
+                    yield path, data
+            else:
+                yield path, await load_json(path)
+
+    async def events(self, table: str) -> AsyncIterator[Event]:
+        async for path, data in self.documents():
             prefix = (("trajectory", self.trajectory_id(path, data)),)
             if table == "trajectories":
                 agent = data.get("agent") or {}
@@ -132,11 +151,11 @@ class ATIFAdapter(Adapter):
 
 
 def read_atif(path: str | Path | Iterable[str | Path]) -> ATIFAdapter:
-    """A file, a directory (searched for *.json), a glob, or a list of paths."""
+    """A .json or .jsonl file, a directory (searched for both), a glob, or a list of paths."""
     if isinstance(path, (str, Path)):
-        p = Path(path)
+        p = Path(path).expanduser()
         if p.is_dir():
-            paths = list(p.rglob("*.json"))
+            paths = [*p.rglob("*.json"), *p.rglob("*.jsonl")]
         elif p.exists():
             paths = [p]
         else:
