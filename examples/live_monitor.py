@@ -8,36 +8,25 @@ Harbor trials are replayed in timestamp order (`--speed 30` = 30x real time). Pa
 
 import argparse
 import asyncio
-import json
 
 import tracepress as tp
+from tracepress.pipelines.harbor import clip, render_step
 
 
-def clip(value, limit: int) -> str:
-    text = value if isinstance(value, str) else json.dumps(value, default=str)
-    return text if len(text) <= limit else text[:limit] + f"... [{len(text) - limit} more chars]"
-
-
-def render_step(row) -> str:
-    parts = [f"Agent says: {clip(row.message, 800)}"] if row.message else []
-    for call in row.tool_calls:
-        parts.append(f"Tool call {call['name']}: {clip(call['arguments'], 400)}")
-        parts.append(f"Result: {clip(call['result'] or '', 800)}")
-    return "\n".join(parts) or "(empty step)"
+def step_text(row) -> str:
+    """Agent steps rendered compactly; the user step is the task the agent was given."""
+    return render_step(row) if row.source == "agent" else f"Task given to the agent: {row.message}"
 
 
 def pipeline(src):
-    steps = (
-        src.table("steps")
-        .filter(lambda r: r.source == "agent")
-        .map(lambda r: {"step_text": render_step(r)}, columns={"step_text": str})
-    )
+    steps = src.table("steps").map(lambda r: {"step_text": step_text(r)}, columns={"step_text": str})
     return steps.group_by("trial").lm_fold(
         "progress, step_text -> progress, stuck: bool, concern",
         instructions=(
-            "You are monitoring a coding agent live. `previous_progress` is your running note on what the agent "
-            "has done so far. Update it (at most 3 sentences) with the newest step. Set `stuck` if the agent "
-            "seems to be looping or making no headway, and give a short `concern` (or 'none')."
+            "You are monitoring a coding agent live. The first step is the task it was given. "
+            "`previous_progress` is your running note on what the agent has done so far. Update it (at most "
+            "3 sentences) with the newest step. Set `stuck` if the agent seems to be looping or making no "
+            "headway, and give a short `concern` (or 'none')."
         ),
         emit="update",
     )

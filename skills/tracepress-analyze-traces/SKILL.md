@@ -59,8 +59,8 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    Images in tool results are replaced with `[image omitted]`.
 
 2. **Estimate the cost.** There's roughly one call per row for `lm_map` / `lm_filter` / `lm_extract`
-   and one per group for `lm_reduce`. A step-level map dominates: count agent steps first with
-   `len(src.table("steps").filter(lambda r: r.source == "agent").collect())`. As a reference,
+   and one per group for `lm_reduce`. A step-level map dominates: count steps first with
+   `len(src.table("steps").collect())`. As a reference,
    six Harbor tasks (30 trials, about 530 agent steps) through a four-level pipeline was 546 calls,
    about $0.08 and 1–2 minutes uncached. Tell the user the estimate before running anything large.
 
@@ -68,26 +68,50 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    and outputs become new columns.
 
    ```python
-   rewards = {r.trial: r.reward for r in src.table("trials").collect()}   # plain floats, see pitfalls
+   import dspy
+   from tracepress.pipelines.harbor import render_step
 
-   steps = (
-       src.table("steps")
-       .filter(lambda r: r.source == "agent")
-       .map(lambda r: {"step_text": render(r), "reward": rewards.get(r.trial)},
-            columns={"step_text": str, "reward": float})
-   )
+   def step_text(r):   # the user step is the task the agent was given
+       return render_step(r) if r.source == "agent" else f"Task given to the agent: {r.message}"
+
+   trials, tests = tp.collect(src.table("trials"), src.table("tests"))   # plain floats, see pitfalls
+   rewards = {r.trial: r.reward for r in trials}
+   failed_tests = {}
+   for t in tests:
+       if t.status != "passed":
+           failed_tests.setdefault(t.trial, []).append(t.name.split("::")[-1])
+
+   steps = src.table("steps").map(lambda r: {"step_text": step_text(r)}, columns={"step_text": str})
    notes = steps.lm_map("step_text -> what_happened, is_mistake: bool",
-                        instructions="Summarize this agent step in one sentence; was it a mistake?")
-   per_trial = notes.group_by("trial", "reward").lm_reduce(
-       "reward, what_happened, is_mistake -> summary, failure_mode")
+                        instructions="Summarize this step in one sentence; was it a mistake? "
+                                     "For the task step, say what the agent was asked to do.")
+   per_trial = (
+       notes.map(lambda r: {"reward": rewards[r.trial],
+                            "failed_tests": ", ".join(failed_tests.get(r.trial, [])) or "none"},
+                 columns={"reward": float, "failed_tests": str})
+       .group_by("trial", "reward", "failed_tests")
+       .lm_reduce("reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
+                  instructions="... explain the failure using the verifier's failed tests.")
+   )
    per_task = per_trial.group_by("task").lm_reduce(
-       "task, summary, failure_mode, reward -> common_failures: list[str], what_separates_passes")
+       "task, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
+       instructions="Write each failure as what the agent was supposed to do and what it did instead.",
+       module=dspy.ChainOfThought)
    ```
 
-   Write `render(r)` to turn a step into compact text, and **clip long tool output** (to about
-   1,500 characters) to keep prompts small. `tracepress.pipelines.harbor` has `render_step` and
-   `clip` (head and tail) you can reuse. `examples/failure_modes.py` has the full four-level
-   pipeline (`build(src, rewards)`).
+   **Give the LM the context a reader needs:**
+   - Keep the user step, which holds the task, so summaries can say what the agent was asked to do.
+   - Pass the verifier's failed tests into trial summaries. Agents often claim success, and without
+     the tests the failures come out vague.
+   - Phrase task-level failures as "supposed to X, but did Y".
+   - Don't ask the LM to count. Compute counts in Python, e.g. failed runs per task, and pass them in
+     as group keys.
+   - Use `module=dspy.ChainOfThought` on the final, few-call reduces.
+
+   Write a render function that turns a step into compact text, and **clip long tool output** (to
+   about 1,500 characters) to keep prompts small. `tracepress.pipelines.harbor` has `render_step`
+   and `clip` (head and tail) you can reuse. `examples/failure_modes.py` has the full four-level
+   pipeline, including failed-run counts (`build(src, trials, tests)`).
 
    Operators:
    - `map(fn, columns=...)`, `filter(pred)`, `select(*cols)`, `explode(col)`: plain Python, free
