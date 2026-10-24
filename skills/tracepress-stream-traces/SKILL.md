@@ -40,9 +40,8 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
    newest child, or from group keys.
 
    ```python
-   steps = (src_or_live.table("steps")
-            .filter(lambda r: r.source == "agent")
-            .map(lambda r: {"step_text": render(r)}, columns={"step_text": str}))
+   # Keep the user step (the task) so the note knows what the agent is meant to be doing.
+   steps = src_or_live.table("steps").map(lambda r: {"step_text": render(r)}, columns={"step_text": str})
 
    monitor = steps.group_by("trial").lm_fold(
        "progress, step_text -> progress, stuck: bool, concern",
