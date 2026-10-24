@@ -61,13 +61,13 @@ per_trial = (
     notes.map(lambda r: {"reward": rewards[r.trial], "failed_tests": failed_tests[r.trial]})
     .group_by("trial", "reward", "failed_tests")
     .lm_reduce("reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
-               instructions="Explain the failure using the failed tests ...")
+               instructions="One agent run, step by step ... explain the failure using the failed tests.")
 )
 per_task = (
     per_trial.map(lambda r: {"failed_runs": failed_runs[r.task]})
     .group_by("task", "failed_runs")
     .lm_reduce("task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
-               instructions="Say what the agent was supposed to do and what it did ...",
+               instructions="Write each failure as what the agent was supposed to do and what it did instead ...",
                module=dspy.ChainOfThought)
 )
 ```
@@ -79,19 +79,19 @@ Here's an excerpt of its output on two tasks from the sample job: 10 trials, 173
 > **mvcc-lsm-compaction** (1 of 5 runs passed)
 >
 > - ✗ The agent was supposed to retain only the versions needed for visibility while respecting the
->   storage budget. Instead, it retained every version in the tested case, causing the
->   storage-budget check to fail. (3 of 4 failed runs)
+> storage budget. Instead, it retained every version in the tested case, causing the
+> storage-budget check to fail. (3 of 4 failed runs)
 > - ✗ The agent was supposed to preserve the unpublished prepared versions needed for correct
->   visibility across flushes, including tombstone tails, interleaved keys, ordered prepared
->   versions, and versions left after partial publication. Instead, flush handling did not reliably
->   preserve those cases. (1 of 4 failed runs)
+> visibility across flushes, including tombstone tails, interleaved keys, ordered prepared
+> versions, and versions left after partial publication. Instead, flush handling did not reliably
+> preserve those cases. (1 of 4 failed runs)
 >
 > **embedding-drift-monitor** (4 of 5 runs passed)
 >
 > - ✗ The agent was supposed to make pairwise cosine calculations match the reference values, but
->   the implementation returned mismatched values and failed the corresponding test. (1 of 1 failed runs)
+> the implementation returned mismatched values and failed the corresponding test. (1 of 1 failed runs)
 > - ✓ Passing runs tested behavior across stable, drifting, and zero-containing data ... and verified
->   that stable data avoided false alerts while clear drift was detected.
+> that stable data avoided false alerts while clear drift was detected.
 
 Every row keeps its key, so you can drill from any summary back to the exact steps behind it.
 Reruns come from the cache, so you only pay for prompts that changed.
@@ -165,15 +165,14 @@ files. OpenTelemetry, Claude Code and DSPy traces are planned.
 analysis. It's saved with its outputs, so you can read it without running anything.
 - [examples/](https://github.com/Ziems/tracepress/tree/main/examples) has runnable scripts. Clone the repo; it includes a sample Harbor job.
 
-
 ## Acknowledgements
 
 This project is inspired by similar work applying map reduce to agent traces.
 
 - [LOTUS](https://github.com/lotus-data/lotus) by Liana Patel et al., whose semantic operators
-  (LLM-based map, reduce and filter) run semantic operations over pandas DataFrames.
+(LLM-based map, reduce and filter) run semantic operations over pandas DataFrames.
 - [Harbor](https://github.com/harbor-framework/harbor), whose `harbor jobs summarize` command
-  summarizes agent trajectories from evaluation runs.
+summarizes agent trajectories from evaluation runs.
 
 ## Development
 
