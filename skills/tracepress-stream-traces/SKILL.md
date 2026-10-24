@@ -57,6 +57,8 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
      that position, so the final state never depends on arrival order.
    - `emit=tp.every(n)` emits every n children instead of every one.
    - **Context:** keep the task step, and pass trial-level facts (model, agent) in as group keys.
+     Render steps with `render_step`, which includes the agent's reasoning when the trace has it,
+     so the fold can flag a plan to skip checks or game the tests as it happens.
      Then the note can say what the agent is meant to be doing, not only what it just did.
    - **No Chain of Thought on per-step folds.** Every step is a sequential call, so it slows the
      whole stream. Save it for a final reduce over the finished notes, if there is one.

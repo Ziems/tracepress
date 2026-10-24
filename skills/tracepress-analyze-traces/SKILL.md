@@ -15,6 +15,7 @@ DSPy's disk cache, so rerunning a pipeline only pays for prompts that changed.
 - Comparing attempts, agents or models on the same tasks
 - Summarizing what an agent did, step by step or per trial
 - Drilling from an aggregate finding back to the exact steps behind it
+- Auditing the agent's reasoning (chain of thought) against what it actually did
 
 For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 
@@ -55,7 +56,8 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    - `tool_calls`: one row per call (`name, arguments, result`)
    - `tests`: per-test `name, status, message, trace` from the verifier
 
-   `tp.read.atif(path)` reads bare ATIF trajectory files (`trajectories`, `steps`, `tool_calls`).
+   `tp.read.atif(path)` reads ATIF trajectories (`trajectories`, `steps`, `tool_calls`): a `.json`
+   file per trajectory, a `.jsonl` bundle with one per line, a directory of either, or a glob.
    Images in tool results are replaced with `[image omitted]`.
 
 2. **Estimate the cost.** There's roughly one call per row for `lm_map` / `lm_filter` / `lm_extract`
@@ -172,12 +174,24 @@ pass in everything that explains the run. Summaries are only as specific as thei
 - **Ground truth:** failed tests and their messages (Harbor's `tests` table), or any verifier or
   grader output. Agents often claim success; without ground truth the failures come out vague.
 - **Comparison keys:** model, agent or config, when the question compares them.
+- **The agent's reasoning:** when steps have a `reasoning` column (chain of thought), use it.
+  `render_step` puts it first as "Agent thinks: …". It's often the clearest signal of why a run
+  went wrong. Check whether `reasoning` is non-empty before relying on it: some agents (e.g. Claude
+  Code in Harbor) record redacted or empty reasoning.
 - **Counts and rates:** compute them in Python and pass them in as group keys. LMs miscount.
 
 Attach trial-level facts to child rows with a dict lookup in `map`, and include them in `group_by`
 so they're scalar reduce inputs. Then phrase the output for a reader who hasn't seen the traces.
 For failures, that means "supposed to X, but did Y", ending with how many runs it affected.
 `examples/failure_modes.py` does all of this.
+
+**Auditing reasoning.** To check whether an agent did what it thought, give each step with
+reasoning one `lm_map` with `task, reasoning, action -> matches_action: bool, red_flag, note`. Make
+`red_flag` a `Literal` (gave up, rationalized a failure, gaming the tests, skipped verification,
+ignored evidence, or none), and ask the note to quote the reasoning. Then run a Chain of Thought
+`lm_reduce` per run that receives `step_id`, so it can cite real step numbers. Keep the flag list
+short and sharp: a vague flag like "unjustified assumption" fires on everything and buries the
+signal. Section 7 of `examples/explore_results.ipynb` is a worked example.
 
 ## Built-in pipelines
 
