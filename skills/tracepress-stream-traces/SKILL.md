@@ -56,6 +56,10 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
    - Children are folded in key order. A child that arrives late makes the fold recompute from
      that position, so the final state never depends on arrival order.
    - `emit=tp.every(n)` emits every n children instead of every one.
+   - **Context:** keep the task step, and pass trial-level facts (model, agent) in as group keys.
+     Then the note can say what the agent is meant to be doing, not only what it just did.
+   - **No Chain of Thought on per-step folds.** Every step is a sequential call, so it slows the
+     whole stream. Save it for a final reduce over the finished notes, if there is one.
 
 3. **Or keep a provisional reduce.** `lm_reduce(..., emit="update")` (or `tp.every(n)`) updates a
    running result as children arrive, and finishes with a full reduce when the group closes. The

@@ -99,14 +99,8 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
        module=dspy.ChainOfThought)
    ```
 
-   **Give the LM the context a reader needs:**
-   - Keep the user step, which holds the task, so summaries can say what the agent was asked to do.
-   - Pass the verifier's failed tests into trial summaries. Agents often claim success, and without
-     the tests the failures come out vague.
-   - Phrase task-level failures as "supposed to X, but did Y".
-   - Don't ask the LM to count. Compute counts in Python, e.g. failed runs per task, and pass them in
-     as group keys.
-   - Use `module=dspy.ChainOfThought` on the final, few-call reduces.
+   Before writing it, read "Getting good output" below: which operators get Chain of Thought,
+   and what context to pass in.
 
    Write a render function that turns a step into compact text, and **clip long tool output** (to
    about 1,500 characters) to keep prompts small. `tracepress.pipelines.harbor` has `render_step`
@@ -155,6 +149,35 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    To ask a new question without redoing the step-level work, feed results back in:
    `tp.from_rows(trial_rows).lm_map("summary, failure_mode -> category").collect()`.
    `examples/explore_results.ipynb` walks through all of this.
+
+## Getting good output
+
+Two habits make the biggest difference to what the user reads.
+
+**1. Use Chain of Thought on the bottleneck operators.** Pass `module=dspy.ChainOfThought` to the
+operators that run few calls but decide what the user sees or what survives downstream:
+- final reduces (per task, per benchmark), whose output is the answer
+- judges and classifiers whose labels get counted or acted on
+- `lm_filter` gates that drop rows everything later depends on
+
+Don't use it on wide per-row maps, such as one call per step over thousands of steps. There it
+multiplies cost and time, and a single row's summary rarely needs the reasoning. If unsure, use it
+where there's at most one call per trial or per group.
+
+**2. Give the LM the context a reader needs.** Look at what the tables hold before building, then
+pass in everything that explains the run. Summaries are only as specific as their inputs.
+- **The goal:** keep the task or user prompt (the user step in Harbor and ATIF), so summaries can
+  say what the agent was meant to do.
+- **The outcome:** reward, pass or fail, exception type and message.
+- **Ground truth:** failed tests and their messages (Harbor's `tests` table), or any verifier or
+  grader output. Agents often claim success; without ground truth the failures come out vague.
+- **Comparison keys:** model, agent or config, when the question compares them.
+- **Counts and rates:** compute them in Python and pass them in as group keys. LMs miscount.
+
+Attach trial-level facts to child rows with a dict lookup in `map`, and include them in `group_by`
+so they're scalar reduce inputs. Then phrase the output for a reader who hasn't seen the traces.
+For failures, that means "supposed to X, but did Y", ending with how many runs it affected.
+`examples/failure_modes.py` does all of this.
 
 ## Built-in pipelines
 
