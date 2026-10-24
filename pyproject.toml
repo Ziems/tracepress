@@ -1,6 +1,6 @@
 [project]
 name = "tracepress"
-version = "0.1.1"
+version = "0.1.2"
 description = "LLM-powered map/reduce over agent traces: find failures, summarize runs, and watch agents live."
 readme = "README.md"
 license = "Apache-2.0"
