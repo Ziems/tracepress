@@ -32,6 +32,10 @@ the adapter's choice. Existing adapters to copy from:
      they can be grouped on directly
    - columns named after the optional conventions (`source`, `message`, `tool_calls`, `error`,
      `timestamp`, `reward`), so existing pipelines carry over. Never name a column after a level.
+   - the context that explains a run, wherever the format has it: the task or user prompt (as a
+     `source="user"` step), the outcome (reward, pass or fail, error), and any ground truth such as
+     test or grader results (as its own table, like Harbor's `tests`). Summaries are only as
+     specific as their inputs, so don't drop these even when they're awkward to parse.
 
    For trees of variable depth (OpenTelemetry spans, branching chats), mapping depth onto keys is an
    open design question in `docs/SPEC.md`. A flat table with `parent_id` plus a depth column is the
