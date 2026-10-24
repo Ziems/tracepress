@@ -33,6 +33,23 @@ Model strings have the form `provider:model`.
 
 Keys are read from the environment, or from a `.env` file in the working directory.
 
+## Local models
+
+Any locally hosted model works, so your traces never leave your machine.
+
+- **Ollama:** use its litellm string, e.g. `tp.configure(lm="ollama_chat/llama3.1")`. It talks to
+  Ollama on `localhost:11434` by default.
+- **vLLM, llama.cpp, LM Studio, or any other OpenAI-compatible server:** point a `dspy.LM` at it:
+
+  ```python
+  import dspy
+
+  tp.configure(lm=dspy.LM("openai/my-model", api_base="http://localhost:8000/v1", api_key="local"))
+  ```
+
+Local models have no price, so their calls show up as `unpriced_calls` in `tp.last_run()`. Add a
+price with `tp.configure(prices=...)` if you want a cost estimate.
+
 ## Cost and caching
 
 Every call goes through DSPy's disk cache, so rerunning a pipeline only pays for prompts that

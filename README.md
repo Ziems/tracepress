@@ -27,7 +27,8 @@ os.environ["OPENROUTER_API_KEY"] = "sk-or-..."
 tp.configure(lm="openrouter:openai/gpt-6-luna")
 ```
 
-You can also use Portkey or any litellm model; see [docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md).
+You can also use Portkey, any litellm model, or a model you host locally (Ollama, vLLM, or any
+OpenAI-compatible server); see [docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md).
 
 ### Use it from your coding agent
 
@@ -157,7 +158,7 @@ Here's how one trial's note grew, from [examples/live_monitor.py](https://github
 
 - **Traces:** [Harbor](https://github.com/harbor-framework/harbor) jobs, and ATIF trajectory
 files. OpenTelemetry, Claude Code and DSPy traces are planned.
-- **Models:** OpenRouter, Portkey, or almost any model ([docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md)).
+- **Models:** OpenRouter, Portkey, locally hosted models, or almost any other model ([docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md)).
 - **Output:** plain rows, or pandas with `.to_pandas()`.
 
 ## Learn more
