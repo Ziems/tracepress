@@ -20,8 +20,12 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 
 ## Steps
 
-1. **Get a stream.** There is no live trace source yet, so replay stored traces in timestamp
-   order. Trials overlap the way they actually ran.
+1. **Get a stream.** For a real live system that exports OpenTelemetry, use
+   `tp.watch.otlp(port=4318)` and point its exporter at `http://localhost:4318`
+   (`OTEL_EXPORTER_OTLP_ENDPOINT`). It has `steps` keyed `trace > step`; group by `"trace"`.
+   Steps stream as they complete, and a trace closes a couple of seconds after its root span
+   ends. Otherwise, replay stored traces in timestamp order. Trials overlap the way they
+   actually ran.
 
    ```python
    import tracepress as tp

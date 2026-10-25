@@ -154,10 +154,39 @@ Here's how one trial's note grew, from [examples/live_monitor.py](https://github
       recovered state matched, committed and replayed LSNs were ordered 1–10, …
 ```
 
+## Your own coding sessions
+
+Claude Code and Codex keep every session on disk, so you can ask questions of your own
+work. Steps use the same columns as Harbor's, so the same pipelines and `render_step` work:
+
+```python
+src = tp.read.claude_code(project="my-repo", limit=50)    # or tp.read.codex()
+steps = src.table("steps").filter(lambda r: r.source == "user")
+moments = steps.lm_map("message -> frustrated: bool, about", instructions="Is the user frustrated with the agent?")
+```
+
+## OpenTelemetry
+
+`tp.read.otel(path)` reads OTLP JSON files, and `tp.watch.otlp()` receives traces live from any
+OTLP exporter. Spans following the GenAI conventions, OpenInference or OpenLLMetry (OpenAI
+Agents SDK, LangChain, LlamaIndex, Pydantic AI, Vercel AI SDK, …) become agent steps:
+
+```python
+from tracepress.pipelines.harbor import render_step
+
+live = tp.watch.otlp(port=4318)    # then set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+monitor = live.table("steps").map(lambda r: {"step_text": render_step(r)}, columns={"step_text": str}) \
+    .group_by("trace").lm_fold("progress, step_text -> progress, stuck: bool", emit="update")
+async for event in monitor.events():
+    print(event)
+```
+
+The raw span tree is there too, as the `spans` table.
+
 ## Works with
 
-- **Traces:** [Harbor](https://github.com/harbor-framework/harbor) jobs, and ATIF trajectory
-files. OpenTelemetry, Claude Code and DSPy traces are planned.
+- **Traces:** [Harbor](https://github.com/harbor-framework/harbor) jobs, ATIF trajectory files,
+Claude Code and Codex sessions, and OpenTelemetry (files or live). DSPy traces are planned.
 - **Models:** OpenRouter, Portkey, locally hosted models, or almost any other model ([docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md)).
 - **Output:** plain rows, or pandas with `.to_pandas()`.
 

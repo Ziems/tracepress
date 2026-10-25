@@ -48,7 +48,10 @@ NOTICE = (
 
 # Plan node labels (see plan.py); anything else is reported as "other".
 OPS = {"map", "filter", "select", "explode", "reduce", "lm_map", "lm_filter", "lm_extract", "lm_reduce", "lm_fold"}
-SOURCES = {"HarborAdapter": "harbor", "ATIFAdapter": "atif", "RowsAdapter": "rows", "ReplayAdapter": "replay"}
+SOURCES = {
+    "HarborAdapter": "harbor", "ATIFAdapter": "atif", "RowsAdapter": "rows", "ReplayAdapter": "replay",
+    "ClaudeCodeAdapter": "claude_code", "CodexAdapter": "codex", "OTelAdapter": "otel", "OTLPReceiver": "otlp",
+}
 PUBLIC_ERROR_MODULES = ("builtins", "asyncio", "concurrent", "tracepress", "dspy", "litellm", "pydantic", "json")
 
 _pending: list[threading.Thread] = []

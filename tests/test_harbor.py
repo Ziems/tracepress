@@ -57,7 +57,7 @@ def test_missing_paths(tmp_path):
         tp.read.harbor(tmp_path)
 
 
-@pytest.mark.parametrize("reader", ["dspy", "otel", "claude_code", "chatgpt"])
+@pytest.mark.parametrize("reader", ["dspy", "chatgpt"])
 def test_placeholder_adapters_raise(reader):
     with pytest.raises(NotImplementedError, match="isn't implemented yet"):
         getattr(tp.read, reader)("anything")

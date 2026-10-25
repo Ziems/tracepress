@@ -60,6 +60,19 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    file per trajectory, a `.jsonl` bundle with one per line, a directory of either, or a glob.
    Images in tool results are replaced with `[image omitted]`.
 
+   Other sources, all with `steps` and `tool_calls` tables in the same step columns (so
+   `render_step` works), plus `is_error` on each call:
+   - `tp.read.claude_code(path=None, project=None, limit=None)` and `tp.read.codex(...)`: the
+     user's own coding-agent sessions (`~/.claude/projects`, `~/.codex/sessions`). Hierarchy
+     `project > session > step`; a `sessions` table has `prompt, cwd, git_branch, model`, timing,
+     tokens and `n_tool_errors` (Claude Code adds `title`, `n_subagents`). Subagent steps have
+     `is_sidechain=True` and an `agent_id`. Harness-injected messages are `source="system"`.
+     These are private: don't copy their contents into files the user didn't ask for.
+   - `tp.read.otel(path)`: OTLP JSON span files. Hierarchy `trace > step` (and `trace > span`).
+     Tables `traces` (status, error, tokens, input/output), `spans` (the raw tree:
+     `parent_span_id, depth, span_type, attributes`), `steps` (with `agent_name, service_name`)
+     and `tool_calls`. There is no reward; use `traces.status` / `error` as the outcome.
+
 2. **Estimate the cost.** There's roughly one call per row for `lm_map` / `lm_filter` / `lm_extract`
    and one per group for `lm_reduce`. A step-level map dominates: count steps first with
    `len(src.table("steps").collect())`. As a reference,

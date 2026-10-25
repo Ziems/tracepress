@@ -120,7 +120,8 @@ Built and tested: the plan/runtime/event engine; `map`, `filter`, `select`, `exp
 `group_by(...).reduce` (Python), `lm_map`, `lm_filter`, `lm_extract`, `lm_reduce` (with
 tree merge and `emit="update"` / `tp.every(n)`), `lm_fold`; `collect` / `acollect` /
 `to_pandas` / `tp.collect(*tables)` / `table.events()` / `from_rows` / `from_pandas`;
-ATIF and Harbor adapters; placeholder adapters; `tp.replay`.
+ATIF, Harbor, Claude Code, Codex and OpenTelemetry adapters; the live OTLP receiver
+(`tp.watch.otlp`); placeholder adapters; `tp.replay`.
 
 Batch-vs-replay equivalence (same keys and values) holds in the tests for reduces, folds
 and provisional reduces under every fault setting. On the real Harbor sample (6 tasks,
@@ -226,14 +227,18 @@ Placeholders exist so no single format shapes the design. Unimplemented adapters
 |---|---|---|---|
 | `tp.read.atif` | ATIF trajectories | trajectory > step | v1 |
 | `tp.read.harbor` | Harbor job / trials dir | dataset > task > trial > step | v1 |
+| `tp.read.claude_code` | Claude Code / Agent SDK session `.jsonl` | project > session > step (+ subagent sidechains) | v1 |
+| `tp.read.codex` | Codex CLI rollout `.jsonl` | project > session > step | v1 |
+| `tp.read.otel` | OpenTelemetry spans (GenAI, OpenInference, OpenLLMetry) as OTLP JSON | trace > span, trace > step | v1 |
+| `tp.watch.otlp` | Live OTLP/HTTP receiver (protobuf or JSON) | trace > span, trace > step | v1 |
 | `tp.read.dspy` | DSPy program traces | run > module call (nested) > LM call | placeholder |
-| `tp.read.otel` | OpenTelemetry / OpenInference spans | trace > span (variable-depth tree via `parent_id`) | placeholder |
-| `tp.read.claude_code` | Claude Code / Agent SDK session `.jsonl` | session > message (+ subagent sidechains) | placeholder |
 | `tp.read.chatgpt` | ChatGPT conversation exports | conversation > message (branching tree) | placeholder |
 
-OpenTelemetry and ChatGPT exports are trees of variable depth, not fixed levels. They are
-the test case for keeping hierarchy adapter-defined; how variable-depth trees map onto
-keys is **OPEN**.
+OpenTelemetry and ChatGPT exports are trees of variable depth, not fixed levels. The
+OpenTelemetry adapter keeps the tree flat (a `spans` table with `parent_span_id` and
+`depth`, keyed by start order) and derives a `steps` table in the shared step convention
+from the LLM and tool spans. Whether deeper trees need keys of their own (e.g. a nested
+agent as a level) is still **OPEN**.
 
 ### ATIF and Harbor adapters
 
@@ -281,6 +286,64 @@ and closures. Each adapter declares:
 Adapters should follow a small set of optional column-name conventions (`role`, `content`,
 `tool_calls`, `error`, `timestamp`, `reward`, ...) so pipelines port between sources where
 the data allows, but nothing in the engine depends on them.
+
+### Coding-agent session adapters
+
+`tp.read.claude_code()` and `tp.read.codex()` read the sessions those agents keep on disk
+(`~/.claude/projects`, `~/.codex/sessions` by default). Both take `project=` (a substring
+of the working directory) and `limit=` (the N most recently active sessions).
+
+**Hierarchy:** `project > session > step`. The project is the session's working directory.
+
+| Table | Grain | Columns |
+|---|---|---|
+| `sessions` | session | prompt, cwd, git branch, model, started/finished/duration, n_steps, n_tool_errors, token counts, path; Claude Code adds title, version, entrypoint, n_subagents; Codex adds git commit, repository, reasoning effort, CLI version |
+| `steps` | step | the ATIF step columns, plus `agent_id` (the subagent, else None) |
+| `tool_calls` | step > call | name, arguments, result, is_error, timestamp, agent_id |
+
+Handling:
+
+- **Claude Code** writes one line per content block; lines sharing a `message.id` become
+  one step, thinking goes to `reasoning`, and tool results are paired with their calls by id.
+  Subagent transcripts (`<session>/subagents/agent-*.jsonl`) are steps of the same session
+  with `is_sidechain=True`. Harness messages (`isMeta`, compaction summaries) are
+  `source="system"`. Attachments, titles and request logs are skipped.
+- **Codex**: one model response (reasoning, message, tool calls) is one step. Outputs are
+  paired by `call_id`, and a non-zero exit code sets `is_error`. Injected context
+  (`<environment_context>`, AGENTS.md, developer messages) is `source="system"`. `event_msg`
+  lines repeat the response items, so only their token counts are read. The older bare
+  rollout format is read too.
+- A torn last line (a session still being written) is skipped.
+
+### OpenTelemetry adapters
+
+`tp.read.otel(path)` reads OTLP JSON (the collector's file exporter, one request per line),
+a single OTLP document, or the Python SDK's `ConsoleSpanExporter` output.
+`tp.watch.otlp(port=4318)` is the live version: an OTLP/HTTP receiver at `/v1/traces` that
+takes protobuf (decoded in-house, no extra dependency) or JSON, gzipped or not.
+
+| Table | Grain | Columns |
+|---|---|---|
+| `traces` | trace | root name, service_name, model, input/output (OpenInference), status, error, timing, n_spans, n_llm_calls, n_tool_calls, n_errors, tokens |
+| `spans` | trace > span | span_id, parent_span_id, depth, name, span_type (llm/tool/agent/other), kind, model, timing, status, error, tokens, attributes, events |
+| `steps` | trace > step | the ATIF step columns, plus service_name, agent_name, span_id, error |
+| `tool_calls` | trace > step > call | name, arguments, result, is_error, timestamp, service_name |
+
+How steps are built (`TraceSteps`): an LLM span becomes an agent step (output text,
+reasoning, requested tool calls), after a user step for any new user message in its input
+(system prompts are not steps). A tool span fills in the result of the call that asked for
+it, by call id or else by tool name; a tool span nobody asked for is a step of its own.
+Results that only show up in the next LLM call's input (tool messages) fill calls too.
+Messages are read from `gen_ai.input/output.messages`, OpenInference's
+`llm.input/output_messages.N.*`, OpenLLMetry's `gen_ai.prompt/completion.N.*`, the older
+GenAI span events, or as a last resort `input.value` / `output.value`.
+
+Live closure: steps stream as they complete (all calls answered, or the same agent made its
+next LLM call). A trace closes `settle` seconds (default 2) after its root span arrives, or
+after `idle_timeout` (default 300) seconds of silence, and only then are its `traces` and
+`spans` rows emitted. Spans for an already closed trace are dropped. Live spans arrive in
+end order, so an enclosing agent span arrives after its steps; `agent_name` is then only
+set when the LLM span carries `gen_ai.agent.name` itself.
 
 ### Simulated streams (replay)
 
@@ -357,8 +420,8 @@ batch reduces see whole groups (tree-reduce, `emit` ignored); streaming reduces 
 
 ## Open questions
 
-- **OPEN:** idle-timeout fallback for traces that never close.
+- **OPEN:** idle-timeout fallback for traces that never close (`tp.watch.otlp` has its own).
 - **OPEN:** streaming group closure for Harbor jobs.
-- **OPEN:** mapping variable-depth span trees (OpenTelemetry, ChatGPT branches) onto keys.
+- **OPEN:** mapping variable-depth span trees onto keys beyond the flat `spans` table (nested agents, ChatGPT branches).
 - **OPEN:** how far provisional (running) reduce results drift from the full reduce on close.
 - `requires-python` must be raised to >=3.10 for DSPy.
