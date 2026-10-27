@@ -98,16 +98,21 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
         coros.append(sink.consume(queue))
 
     tasks = [asyncio.ensure_future(c) for c in coros]
+    # Operators fail this to stop the run at once, e.g. on an error every call will hit.
+    executor.stop = stop = asyncio.get_running_loop().create_future()
+    work = asyncio.gather(*tasks)  # fails with the first task that fails
+    work.add_done_callback(lambda f: f.cancelled() or f.exception())  # read, so a stopped run doesn't warn
     error: BaseException | None = None
     try:
-        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
-        for task in done:
-            task.result()  # re-raise the first failure
+        done, _ = await asyncio.wait([work, stop], return_when=asyncio.FIRST_COMPLETED)
+        failures = [f.exception() for f in done if f.exception()]
+        if failures:
+            raise failures[0]
     except BaseException as e:
         error = e
         raise
     finally:
-        for task in tasks:
+        for task in [*tasks, stop]:
             task.cancel()
         executor.stats.finished = time.monotonic()
         last_run = executor.stats

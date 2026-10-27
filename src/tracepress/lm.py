@@ -41,7 +41,7 @@ class Config:
     # Tried in order when a response can't be parsed. A different format is also a
     # different cache entry, so a cached bad response can't fail the same call forever.
     fallback_adapters: list[dspy.Adapter] = field(default_factory=lambda: [dspy.XMLAdapter()])
-    max_concurrency: int = 32
+    max_concurrency: int = 128
     # Seconds before a call is abandoned and retried. Requests occasionally hang (litellm
     # would wait 10 minutes), and one hang stalls a whole fold. Measured on GPT-6 Luna:
     # per-row and fold-step calls p50 ~4s, worst ~15s; reduces scale with their output.
@@ -61,7 +61,7 @@ _config = Config()
 
 
 def configure(**kwargs: Any) -> Config:
-    """Set global defaults, e.g. `tp.configure(lm="openrouter:openai/gpt-6-luna", max_concurrency=64)`."""
+    """Set global defaults, e.g. `tp.configure(lm="openrouter:openai/gpt-6-luna", max_concurrency=256)`."""
     for name, value in kwargs.items():
         if not hasattr(_config, name):
             raise TypeError(f"unknown setting {name!r}")
@@ -285,6 +285,7 @@ class Executor:
     def __init__(self, max_concurrency: int | None = None):
         self.semaphore = asyncio.Semaphore(max_concurrency or _config.max_concurrency)
         self.stats = RunStats()
+        self.stop: asyncio.Future | None = None  # set by the runtime; failing it stops the run
 
     async def call(self, module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any],
                    timeout: float | None = None, op: str = "lm") -> dspy.Prediction:
@@ -317,7 +318,25 @@ class Executor:
             try:
                 with dspy.context(lm=lm, adapter=adapter, track_usage=True):
                     return await module.acall(**inputs)
-            except AdapterParseError:
-                if i == len(adapters) - 1:
+            except AdapterParseError as e:
+                if i < len(adapters) - 1:
+                    self.stats.fallbacks += 1
+                    continue
+                if (answer := bare_answer(e)) is None:
                     raise
                 self.stats.fallbacks += 1
+                return answer
+
+
+def bare_answer(error: AdapterParseError) -> dspy.Prediction | None:
+    """The response as the answer, when the model wrote just the text of a lone text output.
+
+    Models sometimes skip the format for a one-field answer, e.g. `-> digest`. Every adapter
+    then fails on the same (cached) response, so the row would be skipped on every run.
+    """
+    outputs = error.signature.output_fields
+    text = (error.lm_response or "").strip()
+    if len(outputs) != 1 or not text or text.startswith(("{", "[", "<")):
+        return None
+    (name, field_info), = outputs.items()
+    return dspy.Prediction(**{name: text}) if field_info.annotation is str else None

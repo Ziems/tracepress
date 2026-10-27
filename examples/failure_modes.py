@@ -14,7 +14,6 @@ from pathlib import Path
 import dspy
 
 import tracepress as tp
-from tracepress.pipelines.harbor import STEP_INPUTS
 
 
 def lookups(trials, tests):
@@ -39,7 +38,7 @@ def build(src, trials, tests):
     rewards, failed_runs, failed_tests = lookups(trials, tests)
 
     notes = src.table("steps").lm_map(
-        f"{STEP_INPUTS} -> what_happened, is_mistake: bool",
+        "source, message, reasoning, tool_calls: list[dict], observation -> what_happened, is_mistake: bool",
         instructions="Summarize this step of a coding agent's run in one sentence, and say whether it was a mistake. "
                      "For a user step (the first one is the task), say what the agent was asked to do.",
     )

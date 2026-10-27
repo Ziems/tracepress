@@ -81,6 +81,18 @@ def test_trajectory_labels_wide(harbor_dir):
     assert not any(wide[2][c] for c in pipes.TRAJECTORY_CLASSES)
 
 
+def test_trajectory_labels_wide_with_skipped_judges():
+    """A trial whose judge calls for a whole class were skipped still gets every class."""
+    def row(trial, mode, cls, matched):
+        return tp.Row((("trial", trial), ("mode", mode)),
+                      {"failure_mode": mode, "mode_class": cls, "matched": matched, "rationale": "r"})
+
+    wide = pipes.trajectory_labels_wide([row("t1", "a", "execution", True), row("t1", "b", "coherence", False),
+                                         row("t2", "b", "coherence", True)])
+    assert wide[1] == {"trial": "t2", "execution": False, "coherence": True, "b": True, "b_rationale": "r"}
+    assert "a" not in wide[1]  # the skipped mode's verdict is unknown, not false
+
+
 def test_step_taxonomy_detects_then_classifies(harbor_dir):
     def fn(fields):
         if fields["name"] != "Bash":

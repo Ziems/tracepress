@@ -10,12 +10,12 @@ import argparse
 import asyncio
 
 import tracepress as tp
-from tracepress.pipelines.harbor import STEP_INPUTS, clip
+from tracepress.pipelines.harbor import clip
 
 
 def pipeline(src):
     return src.table("steps").group_by("trial").lm_fold(
-        f"progress, {STEP_INPUTS} -> progress, stuck: bool, concern",
+        "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool, concern",
         instructions=(
             "You are monitoring a coding agent live. The first step is the task it was given. "
             "`previous_progress` is your running note on what the agent has done so far. Update it (at most "
