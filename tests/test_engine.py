@@ -211,3 +211,21 @@ def test_billing_errors_stop_the_run_instead_of_skipping_rows():
         tp.from_rows(rows).lm_map("summary -> topic", lm=OutOfCredits([])).collect(max_concurrency=4)
     # Only the calls already in flight ran; the other rows were never tried.
     assert OutOfCredits.calls <= 8
+
+
+def test_bare_text_answer_to_a_single_text_output_is_kept():
+    class BareText:
+        """Makes DummyLM reply with the answer's text alone, in no adapter's format."""
+
+        def format_field_with_value(self, fields_with_values, role="user"):
+            return "\n".join(str(v) for v in fields_with_values.values())
+
+    lm = DummyLM([{"topic": "Ran the tests; two failed."}] * 30, adapter=BareText())
+    rows = rows_table().lm_map("summary -> topic", lm=lm).collect()
+    assert [r.topic for r in rows] == ["Ran the tests; two failed."] * 6
+    assert tp.last_run().errors == 0
+
+    # With two outputs there's no telling which field the text was meant for.
+    lm = DummyLM([{"topic": "Ran the tests.", "ok": "yes"}] * 30, adapter=BareText())
+    assert rows_table().lm_map("summary -> topic, note", lm=lm).collect() == []
+    assert tp.last_run().errors == 6

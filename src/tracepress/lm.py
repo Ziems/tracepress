@@ -318,7 +318,25 @@ class Executor:
             try:
                 with dspy.context(lm=lm, adapter=adapter, track_usage=True):
                     return await module.acall(**inputs)
-            except AdapterParseError:
-                if i == len(adapters) - 1:
+            except AdapterParseError as e:
+                if i < len(adapters) - 1:
+                    self.stats.fallbacks += 1
+                    continue
+                if (answer := bare_answer(e)) is None:
                     raise
                 self.stats.fallbacks += 1
+                return answer
+
+
+def bare_answer(error: AdapterParseError) -> dspy.Prediction | None:
+    """The response as the answer, when the model wrote just the text of a lone text output.
+
+    Models sometimes skip the format for a one-field answer, e.g. `-> digest`. Every adapter
+    then fails on the same (cached) response, so the row would be skipped on every run.
+    """
+    outputs = error.signature.output_fields
+    text = (error.lm_response or "").strip()
+    if len(outputs) != 1 or not text or text.startswith(("{", "[", "<")):
+        return None
+    (name, field_info), = outputs.items()
+    return dspy.Prediction(**{name: text}) if field_info.annotation is str else None
