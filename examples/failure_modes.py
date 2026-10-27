@@ -14,12 +14,7 @@ from pathlib import Path
 import dspy
 
 import tracepress as tp
-from tracepress.pipelines.harbor import render_step
-
-
-def step_text(row) -> str:
-    """Agent steps rendered compactly; the user step is the task the agent was given."""
-    return render_step(row) if row.source == "agent" else f"Task given to the agent: {row.message}"
+from tracepress.pipelines.harbor import STEP_INPUTS
 
 
 def lookups(trials, tests):
@@ -43,11 +38,10 @@ def build(src, trials, tests):
     """The analysis as lazy tables: (step notes, per trial, per task, overall)."""
     rewards, failed_runs, failed_tests = lookups(trials, tests)
 
-    steps = src.table("steps").map(lambda r: {"step_text": step_text(r)}, columns={"step_text": str})
-    notes = steps.lm_map(
-        "step_text -> what_happened, is_mistake: bool",
+    notes = src.table("steps").lm_map(
+        f"{STEP_INPUTS} -> what_happened, is_mistake: bool",
         instructions="Summarize this step of a coding agent's run in one sentence, and say whether it was a mistake. "
-                     "For the task step, say what the agent was asked to do.",
+                     "For a user step (the first one is the task), say what the agent was asked to do.",
     )
 
     # Grouping by trial *and* reward / failed tests makes them scalar inputs to the reduce.

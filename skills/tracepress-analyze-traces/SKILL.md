@@ -61,7 +61,7 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    Images in tool results are replaced with `[image omitted]`.
 
    Other sources, all with `steps` and `tool_calls` tables in the same step columns (so
-   `render_step` works), plus `is_error` on each call:
+   `STEP_INPUTS` works), plus `is_error` on each call:
    - `tp.read.claude_code(path=None, project=None, limit=None)` and `tp.read.codex(...)`: the
      user's own coding-agent sessions (`~/.claude/projects`, `~/.codex/sessions`). Hierarchy
      `project > session > step`; a `sessions` table has `prompt, cwd, git_branch, model`, timing,
@@ -84,10 +84,7 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 
    ```python
    import dspy
-   from tracepress.pipelines.harbor import render_step
-
-   def step_text(r):   # the user step is the task the agent was given
-       return render_step(r) if r.source == "agent" else f"Task given to the agent: {r.message}"
+   from tracepress.pipelines.harbor import STEP_INPUTS   # "source, message, reasoning, tool_calls, observation"
 
    trials, tests = tp.collect(src.table("trials"), src.table("tests"))   # plain floats, see pitfalls
    rewards = {r.trial: r.reward for r in trials}
@@ -96,10 +93,9 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
        if t.status != "passed":
            failed_tests.setdefault(t.trial, []).append(t.name.split("::")[-1])
 
-   steps = src.table("steps").map(lambda r: {"step_text": step_text(r)}, columns={"step_text": str})
-   notes = steps.lm_map("step_text -> what_happened, is_mistake: bool",
-                        instructions="Summarize this step in one sentence; was it a mistake? "
-                                     "For the task step, say what the agent was asked to do.")
+   notes = src.table("steps").lm_map(f"{STEP_INPUTS} -> what_happened, is_mistake: bool",
+                                     instructions="Summarize this step in one sentence; was it a mistake? "
+                                                  "For a user step (the first is the task), say what the agent was asked to do.")
    per_trial = (
        notes.map(lambda r: {"reward": rewards[r.trial],
                             "failed_tests": ", ".join(failed_tests.get(r.trial, [])) or "none"},
@@ -117,9 +113,10 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    Before writing it, read "Getting good output" below: which operators get Chain of Thought,
    and what context to pass in.
 
-   Write a render function that turns a step into compact text, and **clip long tool output** (to
-   about 1,500 characters) to keep prompts small. `tracepress.pipelines.harbor` has `render_step`
-   and `clip` (head and tail) you can reuse. `examples/failure_modes.py` has the full four-level
+   **Pass step columns to the signature as they are** (`STEP_INPUTS`, or `CALL_INPUTS` for a
+   `tool_calls` row) rather than rendering them into one text column: DSPy labels each field, and
+   nothing gets cut. Don't clip tool output in prompts; an error is often in the middle of a long
+   log. (`clip` in `tracepress.pipelines.harbor` is for printing results.) `examples/failure_modes.py` has the full four-level
    pipeline, including failed-run counts (`build(src, trials, tests)`).
 
    Operators:
@@ -188,7 +185,7 @@ pass in everything that explains the run. Summaries are only as specific as thei
   grader output. Agents often claim success; without ground truth the failures come out vague.
 - **Comparison keys:** model, agent or config, when the question compares them.
 - **The agent's reasoning:** when steps have a `reasoning` column (chain of thought), use it.
-  `render_step` puts it first as "Agent thinks: …". It's often the clearest signal of why a run
+  `STEP_INPUTS` includes it. It's often the clearest signal of why a run
   went wrong. Check whether `reasoning` is non-empty before relying on it: some agents (e.g. Claude
   Code in Harbor) record redacted or empty reasoning.
 - **Counts and rates:** compute them in Python and pass them in as group keys. LMs miscount.
@@ -234,9 +231,6 @@ commands = harbor.step_taxonomy(src)               # one row per failed tool cal
 
 ## Pitfalls
 
-- **Telemetry:** TracePress sends one anonymous usage event per run (counts, versions, model
-  and operator names, never data or prompts). If the user asks to turn it off, set
-  `TRACEPRESS_TELEMETRY=0` or call `tp.configure(telemetry=False)`.
 - **Pass plain Python values into pipelines, not numpy or pandas values.** `np.float64(1.0)` renders
   differently in prompts than `1.0`, which changes the prompt and misses the cache. Build lookups
   from `Row`s, not DataFrame columns.

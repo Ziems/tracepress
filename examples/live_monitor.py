@@ -10,18 +10,12 @@ import argparse
 import asyncio
 
 import tracepress as tp
-from tracepress.pipelines.harbor import clip, render_step
-
-
-def step_text(row) -> str:
-    """Agent steps rendered compactly; the user step is the task the agent was given."""
-    return render_step(row) if row.source == "agent" else f"Task given to the agent: {row.message}"
+from tracepress.pipelines.harbor import STEP_INPUTS, clip
 
 
 def pipeline(src):
-    steps = src.table("steps").map(lambda r: {"step_text": step_text(r)}, columns={"step_text": str})
-    return steps.group_by("trial").lm_fold(
-        "progress, step_text -> progress, stuck: bool, concern",
+    return src.table("steps").group_by("trial").lm_fold(
+        f"progress, {STEP_INPUTS} -> progress, stuck: bool, concern",
         instructions=(
             "You are monitoring a coding agent live. The first step is the task it was given. "
             "`previous_progress` is your running note on what the agent has done so far. Update it (at most "

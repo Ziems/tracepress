@@ -8,8 +8,8 @@ from fakes import FuncLM
 
 def judge(fields):
     """Digests echo the step; judges match step repetition and weak verification on alpha only."""
-    if "step_text" in fields:
-        return {"digest": f"did <{fields['step_text'][:20]}>"}
+    if "tool_calls" in fields:
+        return {"digest": f"did <{fields['message'][:20]}>"}
     rubric, transcript = fields["rubric"], fields["transcript"]
     hit = "alpha" in transcript and ("Step repetition" in rubric or "Weak verification" in rubric)
     return {"matched": str(hit), "rationale": "see step 2" if hit else "no evidence"}
@@ -29,7 +29,36 @@ def test_trajectory_taxonomy_judges_every_mode_per_failed_trial(harbor_dir):
     # The task instruction goes in verbatim, agent steps as digests, in step order.
     transcript = rows[0].transcript
     assert transcript.startswith("[step 1] user: Please solve alpha.")
-    assert transcript.index("[step 2] agent: did <Agent says: Looking") < transcript.index("[step 3] agent: did")
+    assert transcript.index("[step 2] agent: did <Looking around.>") < transcript.index("[step 3] agent: did <Done.>")
+
+
+def test_trajectory_digests_see_every_step_field_uncut(tmp_path):
+    from conftest import write_trial
+
+    output = "line\n" * 5000 + "FATAL: disk full"
+    steps = [
+        {"step_id": 1, "source": "user", "message": "Please solve gamma."},
+        {"step_id": 2, "source": "agent", "message": "Writing.", "reasoning_content": "The disk might be full.",
+         "tool_calls": [{"tool_call_id": "c1", "function_name": "Bash", "arguments": {"command": "make"}}],
+         "observation": {"results": [{"source_call_id": "c1", "content": output}]}},
+        {"step_id": 3, "source": "user", "message": "[Image: original 1654x2339, displayed at 1414x2000.]"},
+    ]
+    write_trial(tmp_path / "trials", "gamma", "gamma__1", 0.0, steps=steps)
+    seen = []
+
+    def fn(fields):
+        if "tool_calls" in fields:
+            seen.append(fields)
+            return {"digest": f"digest of {fields['source']} step"}
+        return {"matched": "False", "rationale": "none"}
+
+    rows = pipes.trajectory_taxonomy(tp.read.harbor(tmp_path), lm=FuncLM(fn)).collect()
+    agent = next(f for f in seen if f["source"] == "agent")
+    assert agent["reasoning"] == "The disk might be full."
+    assert "FATAL: disk full" in agent["tool_calls"] and "omitted" not in agent["tool_calls"]
+    # Notes the harness inserted are digested too; only the task instruction stays verbatim.
+    assert rows[0].transcript.splitlines()[0] == "[step 1] user: Please solve gamma."
+    assert "[step 3] user: digest of user step" in rows[0].transcript
 
 
 def test_trajectory_taxonomy_all_trials_and_custom_modes(harbor_dir):
@@ -54,8 +83,7 @@ def test_trajectory_labels_wide(harbor_dir):
 
 def test_step_taxonomy_detects_then_classifies(harbor_dir):
     def fn(fields):
-        text = fields["command_text"]
-        if "Tool: Bash" not in text:
+        if fields["name"] != "Bash":
             return {"is_failure_present": "False"}
         # Detection and classification share the input; answer both field sets.
         return {"is_failure_present": "True", "error_category": "Filesystem & Permissions",
@@ -97,11 +125,3 @@ def test_pipelines_build_inside_an_event_loop_and_over_replay(harbor_dir):
     assert {r.trial for r in rows} == {"alpha__2"}
     assert calls == []
 
-
-def test_render_step_includes_reasoning_when_present():
-    with_reasoning = tp.Row((("step", 1),), {"reasoning": "The tests look flaky; skip them.", "message": "Done.",
-                                             "tool_calls": [], "observation": None})
-    text = pipes.render_step(with_reasoning)
-    assert text.index("Agent thinks: The tests look flaky") < text.index("Agent says: Done.")
-    without = tp.Row((("step", 1),), {"message": "Done.", "tool_calls": [], "observation": None})
-    assert "Agent thinks" not in pipes.render_step(without)

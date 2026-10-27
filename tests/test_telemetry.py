@@ -45,7 +45,7 @@ def secret_table():
 
 def test_one_event_per_run_with_counts(sent, harbor_dir):
     def fn(fields):
-        if "step_text" in fields:
+        if "tool_calls" in fields:
             return {"digest": "d"}
         return {"matched": "False", "rationale": "r"}
 

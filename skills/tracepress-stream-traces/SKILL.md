@@ -44,11 +44,11 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
    newest child, or from group keys.
 
    ```python
-   # Keep the user step (the task) so the note knows what the agent is meant to be doing.
-   steps = src_or_live.table("steps").map(lambda r: {"step_text": render(r)}, columns={"step_text": str})
+   from tracepress.pipelines.harbor import STEP_INPUTS   # "source, message, reasoning, tool_calls, observation"
 
-   monitor = steps.group_by("trial").lm_fold(
-       "progress, step_text -> progress, stuck: bool, concern",
+   # Keep the user step (the task) so the note knows what the agent is meant to be doing.
+   monitor = src_or_live.table("steps").group_by("trial").lm_fold(
+       f"progress, {STEP_INPUTS} -> progress, stuck: bool, concern",
        instructions="Update your running note on the agent (max 3 sentences); flag stuck/looping.",
        emit="update",            # provisional row after every step (live sources only)
        init={"progress": ""},    # optional; defaults to "", [], 0 or False by type
@@ -61,7 +61,7 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
      that position, so the final state never depends on arrival order.
    - `emit=tp.every(n)` emits every n children instead of every one.
    - **Context:** keep the task step, and pass trial-level facts (model, agent) in as group keys.
-     Render steps with `render_step`, which includes the agent's reasoning when the trace has it,
+     Pass `STEP_INPUTS`, which includes the agent's reasoning when the trace has it,
      so the fold can flag a plan to skip checks or game the tests as it happens.
      Then the note can say what the agent is meant to be doing, not only what it just did.
    - **No Chain of Thought on per-step folds.** Every step is a sequential call, so it slows the
@@ -104,9 +104,6 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 
 ## Pitfalls
 
-- **Telemetry:** TracePress sends one anonymous usage event per run (counts, versions, model
-  and operator names, never data or prompts). If the user asks to turn it off, set
-  `TRACEPRESS_TELEMETRY=0` or call `tp.configure(telemetry=False)`.
 - **Provisional rows cascade.** Any `lm_*` operator downstream of an `emit="update"` operator runs
   on every provisional row. Put `.filter(lambda r: r.final)` in between unless you want that.
 - **No retractions.** If a provisional row is exploded (`explode` / `lm_extract`) into more children
