@@ -259,15 +259,18 @@ def trajectory_labels_wide(rows: list[Row]) -> list[dict[str, Any]]:
     """Pivot `trajectory_taxonomy` rows to one dict per trial.
 
     Each dict has the trial's key fields, `<mode>: bool` and `<mode>_rationale` per mode,
-    and `<class>: bool`, true when any mode in that class matched.
+    and `<class>: bool`, true when any mode in that class matched. A mode whose judge call
+    was skipped is left out, and its class is false unless another of its modes matched.
     """
+    classes = {row.mode_class for row in rows}
     by_trial: dict[tuple, dict[str, Any]] = {}
     for row in rows:
         key = dict(row.key)
-        out = by_trial.setdefault(row.key[:-1], {k: v for k, v in key.items() if k != "mode"})
+        out = by_trial.setdefault(row.key[:-1], {**{k: v for k, v in key.items() if k != "mode"},
+                                                 **dict.fromkeys(classes, False)})
         out[row.failure_mode] = bool(row.matched)
         out[f"{row.failure_mode}_rationale"] = row.rationale
-        out[row.mode_class] = out.get(row.mode_class, False) or bool(row.matched)
+        out[row.mode_class] = out[row.mode_class] or bool(row.matched)
     return list(by_trial.values())
 
 

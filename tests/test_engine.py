@@ -1,4 +1,5 @@
 import pandas as pd
+import dspy
 import pytest
 from dspy.utils import DummyLM
 
@@ -195,3 +196,18 @@ def test_call_log_records_latency():
 def test_map_rejects_columns_shadowing_key_levels():
     with pytest.raises(ValueError, match="shadow"):
         rows_table().map(lambda r: {"trial": "x"}, columns={"trial": str})
+
+
+def test_billing_errors_stop_the_run_instead_of_skipping_rows():
+    class OutOfCredits(DummyLM):
+        calls = 0
+
+        async def aforward(self, *args, **kwargs):
+            OutOfCredits.calls += 1
+            raise dspy.LMBillingError("exceeds your available credits (402)", model="m")
+
+    rows = [Row((("trial", i),), {"summary": f"trial {i}"}) for i in range(200)]
+    with pytest.raises(dspy.LMBillingError):
+        tp.from_rows(rows).lm_map("summary -> topic", lm=OutOfCredits([])).collect(max_concurrency=4)
+    # Only the calls already in flight ran; the other rows were never tried.
+    assert OutOfCredits.calls <= 8

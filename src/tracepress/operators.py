@@ -25,6 +25,10 @@ log = logging.getLogger("tracepress")
 
 END = object()  # end-of-stream marker
 
+# Errors every later call would hit too. Skipping the row would only skip all the rest, so
+# these stop the run whatever `on_error` says.
+STOP_RUN = (dspy.LMBillingError, dspy.LMAuthError)
+
 
 def supersedes(new: Row, old: Row | None) -> bool:
     """Whether `new` should replace `old` for the same key.
@@ -94,6 +98,10 @@ class AsyncOperator(Operator):
         self.pending.pop(task, None)
         if not task.cancelled() and task.exception() and self.failure is None:
             self.failure = task.exception()
+            # Stop the run now, not once this operator's input ends.
+            stop = self.executor.stop if self.executor else None
+            if stop is not None and not stop.done():
+                stop.set_exception(self.failure)
 
     def waiting_on(self, prefix: Key) -> list[asyncio.Task]:
         return [t for t, k in self.pending.items() if is_prefix(prefix, k)]
@@ -116,7 +124,7 @@ class AsyncOperator(Operator):
         try:
             return await coro
         except Exception as exc:
-            if self.on_error == "raise":
+            if self.on_error == "raise" or isinstance(exc, STOP_RUN):
                 raise
             self.executor.stats.errors += 1
             log.warning("tracepress: skipping %s after error: %s: %s", what, type(exc).__name__, exc)

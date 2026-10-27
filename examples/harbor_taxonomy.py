@@ -33,7 +33,7 @@ def main() -> None:
     wide = harbor.trajectory_labels_wide(mode_rows)
     print(f"\n=== Trajectory failure modes ({len(wide)} trials) ===")
     for cls in harbor.TRAJECTORY_CLASSES:
-        print(f"{cls}: {sum(w[cls] for w in wide)}/{len(wide)}")
+        print(f"{cls}: {sum(w.get(cls, False) for w in wide)}/{len(wide)}")
         for mode_id, mode in harbor.TRAJECTORY_MODES.items():
             if mode.cls == cls:
                 print(f"  {mode.name}: {sum(w.get(mode_id, False) for w in wide)}")
