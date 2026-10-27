@@ -61,7 +61,7 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    Images in tool results are replaced with `[image omitted]`.
 
    Other sources, all with `steps` and `tool_calls` tables in the same step columns (so
-   `STEP_INPUTS` works), plus `is_error` on each call:
+   the same signatures work), plus `is_error` on each call:
    - `tp.read.claude_code(path=None, project=None, limit=None)` and `tp.read.codex(...)`: the
      user's own coding-agent sessions (`~/.claude/projects`, `~/.codex/sessions`). Hierarchy
      `project > session > step`; a `sessions` table has `prompt, cwd, git_branch, model`, timing,
@@ -84,7 +84,6 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 
    ```python
    import dspy
-   from tracepress.pipelines.harbor import STEP_INPUTS   # "source, message, reasoning, tool_calls, observation"
 
    trials, tests = tp.collect(src.table("trials"), src.table("tests"))   # plain floats, see pitfalls
    rewards = {r.trial: r.reward for r in trials}
@@ -93,7 +92,7 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
        if t.status != "passed":
            failed_tests.setdefault(t.trial, []).append(t.name.split("::")[-1])
 
-   notes = src.table("steps").lm_map(f"{STEP_INPUTS} -> what_happened, is_mistake: bool",
+   notes = src.table("steps").lm_map("source, message, reasoning, tool_calls: list[dict], observation -> what_happened, is_mistake: bool",
                                      instructions="Summarize this step in one sentence; was it a mistake? "
                                                   "For a user step (the first is the task), say what the agent was asked to do.")
    per_trial = (
@@ -113,8 +112,8 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    Before writing it, read "Getting good output" below: which operators get Chain of Thought,
    and what context to pass in.
 
-   **Pass step columns to the signature as they are** (`STEP_INPUTS`, or `CALL_INPUTS` for a
-   `tool_calls` row) rather than rendering them into one text column: DSPy labels each field, and
+   **Pass step columns to the signature as they are** (`source, message, reasoning, tool_calls: list[dict], observation`, or
+   `name, arguments: dict, result` for a `tool_calls` row) rather than rendering them into one text column: DSPy labels each field, and
    nothing gets cut. Don't clip tool output in prompts; an error is often in the middle of a long
    log. (`clip` in `tracepress.pipelines.harbor` is for printing results.) `examples/failure_modes.py` has the full four-level
    pipeline, including failed-run counts (`build(src, trials, tests)`).
@@ -185,7 +184,7 @@ pass in everything that explains the run. Summaries are only as specific as thei
   grader output. Agents often claim success; without ground truth the failures come out vague.
 - **Comparison keys:** model, agent or config, when the question compares them.
 - **The agent's reasoning:** when steps have a `reasoning` column (chain of thought), use it.
-  `STEP_INPUTS` includes it. It's often the clearest signal of why a run
+  Include it in the signature. It's often the clearest signal of why a run
   went wrong. Check whether `reasoning` is non-empty before relying on it: some agents (e.g. Claude
   Code in Harbor) record redacted or empty reasoning.
 - **Counts and rates:** compute them in Python and pass them in as group keys. LMs miscount.
