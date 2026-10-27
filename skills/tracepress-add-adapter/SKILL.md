@@ -1,6 +1,6 @@
 ---
 name: tracepress-add-adapter
-description: Add support for a new agent-trace format or source to TracePress by writing an adapter (e.g. DSPy, OpenTelemetry, Claude Code sessions, ChatGPT exports, or a custom log format). Use when asked to load traces TracePress can't read yet, implement one of its placeholder readers, or turn some trace data into TracePress tables.
+description: Add support for a new agent-trace format or source to TracePress by writing an adapter (e.g. DSPy, ChatGPT exports, Inspect AI logs, another coding agent's sessions, or a custom log format). Use when asked to load traces TracePress can't read yet, implement one of its placeholder readers, or turn some trace data into TracePress tables.
 ---
 
 # Writing a TracePress adapter
@@ -10,12 +10,16 @@ complete. The engine knows nothing about specific formats. Hierarchy, tables and
 the adapter's choice. Existing adapters to copy from:
 - `src/tracepress/adapters/atif.py`: ATIF trajectories (simple, two levels)
 - `src/tracepress/adapters/harbor.py`: Harbor jobs (four levels, several tables)
+- `src/tracepress/adapters/sessions.py` + `claude_code.py` / `codex.py`: one `.jsonl` per
+  session, a shared base class, steps in the ATIF step columns
+- `src/tracepress/adapters/otel.py`: a variable-depth span tree, kept flat (`spans`) and read
+  as steps (`steps`); `otlp.py` is its live version (`bounded = False`)
 - `src/tracepress/adapters/base.py`: the `Adapter` base class and `RowsAdapter`
 
 ## When to use
 
-- A user has traces in a format with no reader. `tp.read.dspy`, `tp.read.otel`,
-  `tp.read.claude_code` and `tp.read.chatgpt` are placeholders that raise `NotImplementedError`
+- A user has traces in a format with no reader. `tp.read.dspy` and `tp.read.chatgpt` are
+  placeholders that raise `NotImplementedError`
   (see `adapters/placeholders.py` and "Planned adapters" in `docs/SPEC.md`).
 - Turning a one-off log format into TracePress tables
 
@@ -36,12 +40,12 @@ the adapter's choice. Existing adapters to copy from:
      `source="user"` step), the outcome (reward, pass or fail, error), and any ground truth such as
      test or grader results (as its own table, like Harbor's `tests`). Also keep the agent's
      reasoning (thinking or chain-of-thought blocks) in a `reasoning` column on its step:
-     `render_step` reads it. Summaries are only as specific as their inputs, so don't drop these
+     `STEP_INPUTS` reads it. Summaries are only as specific as their inputs, so don't drop these
      even when they're awkward to parse.
 
    For trees of variable depth (OpenTelemetry spans, branching chats), mapping depth onto keys is an
-   open design question in `docs/SPEC.md`. A flat table with `parent_id` plus a depth column is the
-   simplest first step; say so to the user.
+   open design question in `docs/SPEC.md`. A flat table with `parent_id` plus a depth column, and a
+   derived table in the step convention, is what the OpenTelemetry adapter does; copy it.
 
 3. **Implement the adapter.**
 

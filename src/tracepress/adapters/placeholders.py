@@ -19,6 +19,4 @@ def _planned(name: str, hierarchy: str):
 
 
 read_dspy = _planned("DSPy", "run > module call (nested) > LM call")
-read_otel = _planned("OpenTelemetry / OpenInference", "trace > span tree via parent_id")
-read_claude_code = _planned("Claude Code / Agent SDK session", "session > message (+ subagent sidechains)")
 read_chatgpt = _planned("ChatGPT conversation export", "conversation > message (branching tree)")

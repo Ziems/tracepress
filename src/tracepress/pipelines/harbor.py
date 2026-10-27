@@ -32,40 +32,23 @@ from ..adapters.replay import ReplayAdapter
 from ..plan import Table
 from ..rows import Row
 
-# --- Rendering --------------------------------------------------------------------------
+# --- Inputs -----------------------------------------------------------------------------
+
+# Every agent-trace adapter's steps have these columns, so they go into signatures as they
+# are, e.g. f"{STEP_INPUTS} -> what_happened". DSPy labels each field; nothing is cut.
+STEP_INPUTS = "source, message, reasoning, tool_calls: list[dict], observation"
+
+# The same for one row of a `tool_calls` table.
+CALL_INPUTS = "name, arguments: dict, result"
 
 
 def clip(value: Any, limit: int) -> str:
-    """Text of at most about `limit` chars, keeping the head and the tail (where errors usually are)."""
+    """Text of at most about `limit` chars, keeping the head and the tail. For printing, not prompts."""
     text = value if isinstance(value, str) else json.dumps(value, default=str)
     if len(text) <= limit:
         return text
     head, tail = text[: limit * 2 // 3], text[-(limit // 3):]
     return f"{head}\n... [{len(text) - len(head) - len(tail)} chars omitted] ...\n{tail}"
-
-
-def render_step(row: Row) -> str:
-    """One compact text block per step. Long tool output is clipped to keep calls cheap.
-
-    The agent's reasoning comes first when the trace has it; it often says why the agent did
-    what it did.
-    """
-    parts = []
-    if row.get("reasoning", None):
-        parts.append(f"Agent thinks: {clip(row.reasoning, 1500)}")
-    if row.message:
-        parts.append(f"Agent says: {clip(row.message, 1500)}")
-    for call in row.tool_calls:
-        parts.append(f"Tool call {call['name']}: {clip(call['arguments'], 800)}")
-        parts.append(f"Result: {clip(call['result'] or '', 1500)}")
-    if row.observation:
-        parts.append(f"Observation: {clip(row.observation, 1500)}")
-    return "\n".join(parts) or "(empty step)"
-
-
-def render_command(row: Row) -> str:
-    """One tool call as a command and its output."""
-    return f"Tool: {row.name}\nInput: {clip(row.arguments, 2000)}\nOutput: {clip(row.result or '(no output)', 4000)}"
 
 
 def _failed(reward: float | None) -> bool:
@@ -217,7 +200,9 @@ DIGEST_INSTRUCTIONS = (
     "Keep, in a few lines: the commands or actions taken (with key arguments); what the output "
     "showed (errors, exit status, test results, key values); any claims the agent made (e.g. "
     "'tests pass', 'done'); plans or commitments it stated; checks it performed and their result; "
-    "and whether it declared the task complete. Don't add judgments or guesses."
+    "and whether it declared the task complete. If `source` isn't 'agent', the step is something "
+    "the agent was given (a user message, or a note or loaded skill from the harness); say what "
+    "it tells the agent. Don't add judgments or guesses."
 )
 
 JUDGE_INSTRUCTIONS = (
@@ -228,16 +213,11 @@ JUDGE_INSTRUCTIONS = (
     "support the decision in one to three sentences."
 )
 
-USER_STEP_PLACEHOLDER = "(not an agent step)"
-
-
 def _transcript(rows: list[Row]) -> dict[str, Any]:
-    parts = []
-    for row in rows:
-        if row.source == "agent":
-            parts.append(f"[step {row.step}] agent: {row.digest}")
-        else:
-            parts.append(f"[step {row.step}] {row.source}: {row.message}")
+    # The task instruction goes in verbatim, since judges check the agent against its exact
+    # directives. Every other step, including notes the harness inserted, as its digest.
+    task = next((row for row in rows if row.source == "user"), None)
+    parts = [f"[step {row.step}] {row.source}: {row.message if row is task else row.digest}" for row in rows]
     return {"transcript": "\n\n".join(parts), "n_steps": len(rows)}
 
 
@@ -247,22 +227,16 @@ def trajectory_taxonomy(src: Adapter, *, failed_only: bool = True, lm=None,
 
     Keys are `dataset > task > trial > model > reward > mode`; columns include
     `failure_mode`, `mode_class`, `transcript` and `n_steps`. Trials without a trajectory
-    (the agent crashed before writing one) are skipped. Costs one LM call per agent step
-    plus one per mode per trial; `trajectory_labels_wide` pivots to one row per trial.
+    (the agent crashed before writing one) are skipped. Costs one LM call per step plus one
+    per mode per trial; `trajectory_labels_wide` pivots to one row per trial.
     """
     modes = TRAJECTORY_MODES if modes is None else modes
     rewards = _rewards(src)
     steps = src.table("steps")
     if failed_only:
         steps = steps.filter(lambda r: _failed(rewards.get(r.trial)))
-    steps = steps.map(
-        # Non-agent steps (the task instruction, system notes) go into the transcript verbatim.
-        # They get a fixed placeholder input so their digest call is a cache hit.
-        lambda r: {"step_text": render_step(r) if r.source == "agent" else USER_STEP_PLACEHOLDER,
-                   "reward": rewards.get(r.trial)},
-        columns={"step_text": str, "reward": float},
-    )
-    digests = steps.lm_map("step_text -> digest", instructions=DIGEST_INSTRUCTIONS, lm=lm)
+    steps = steps.map(lambda r: {"reward": rewards.get(r.trial)}, columns={"reward": float})
+    digests = steps.lm_map(f"{STEP_INPUTS} -> digest", instructions=DIGEST_INSTRUCTIONS, lm=lm)
     per_trial = digests.group_by("trial", "model", "reward").reduce(
         _transcript, columns={"transcript": str, "n_steps": int})
     judged = (
@@ -418,8 +392,8 @@ COMMAND_TAXONOMY: dict[str, list[str]] = {
 OTHER = "other"
 
 DETECT_INSTRUCTIONS = (
-    "You are an expert at reading command-line inputs and outputs. `command_text` is one command "
-    "a coding agent ran in a terminal and everything it printed. First identify what kind of "
+    "You are an expert at reading command-line inputs and outputs. This is one tool call a coding "
+    "agent made: the tool's `name`, its `arguments`, and everything it returned as `result`. First identify what kind of "
     "command it is and what kind of output it produced, then decide whether the output shows "
     "that the command failed (an error, a non-zero exit, a missing tool or file, a crash, a "
     "failing test). Expected non-matches, such as grep finding nothing while searching, are not failures."
@@ -431,21 +405,18 @@ def render_taxonomy(taxonomy: dict[str, list[str]]) -> str:
 
 
 def classify_signature(taxonomy: dict[str, list[str]]) -> type[dspy.Signature]:
-    """`command_text -> error_category, error_subcategory`, with the category constrained to the taxonomy."""
+    """`name, arguments, result -> error_category, error_subcategory`, with the category constrained to the taxonomy."""
     category = Literal[tuple(taxonomy)]  # type: ignore[valid-type]
     instructions = (
         "You are an expert at classifying errors in command-line inputs and outputs. "
-        "`command_text` is a command a coding agent ran and its output, and the command failed. "
+        "This is one tool call a coding agent made (`name`, `arguments`, `result`), and it failed. "
         "Classify the failure into the taxonomy below: pick an `error_category` and one of its "
         "subcategories as `error_subcategory`, copied exactly. When several apply, pick the most "
         "specific one. If none fit, use the closest category and the subcategory 'other'.\n\n"
         f"Taxonomy:\n{render_taxonomy(taxonomy)}"
     )
-    return dspy.Signature({
-        "command_text": (str, dspy.InputField()),
-        "error_category": (category, dspy.OutputField()),
-        "error_subcategory": (str, dspy.OutputField()),
-    }, instructions)
+    sig = dspy.Signature(f"{CALL_INPUTS} -> error_category, error_subcategory", instructions)
+    return sig.with_updated_fields("error_category", type_=category)
 
 
 def _snap(taxonomy: dict[str, list[str]], row: Row) -> dict[str, Any]:
@@ -460,7 +431,7 @@ def step_taxonomy(src: Adapter, *, failed_only: bool = False, lm=None,
     """One row per failed tool call, with `error_category` and `error_subcategory`.
 
     Keys are the `tool_calls` keys (`dataset > task > trial > step > call`); columns include
-    `name`, `arguments`, `result` and `command_text`. Every tool call costs one detection
+    `name`, `arguments` and `result`. Every tool call costs one detection
     call, and each failed one a classification call. `failed_only` keeps calls from failed
     trials only.
     """
@@ -469,11 +440,7 @@ def step_taxonomy(src: Adapter, *, failed_only: bool = False, lm=None,
     if failed_only:
         rewards = _rewards(src)
         calls = calls.filter(lambda r: _failed(rewards.get(r.trial)))
-    failures = (
-        calls
-        .map(lambda r: {"command_text": render_command(r)}, columns={"command_text": str})
-        .lm_filter("command_text -> is_failure_present: bool", instructions=DETECT_INSTRUCTIONS, lm=lm)
-    )
+    failures = calls.lm_filter(f"{CALL_INPUTS} -> is_failure_present: bool", instructions=DETECT_INSTRUCTIONS, lm=lm)
     return _tagged(
         failures
         .lm_map(classify_signature(taxonomy), lm=lm)

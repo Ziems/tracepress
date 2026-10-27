@@ -47,7 +47,7 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({
         "trials": wide,
-        "commands": [{k: v for k, v in r.to_dict().items() if k != "command_text"} for r in command_rows],
+        "commands": [r.to_dict() for r in command_rows],
     }, indent=2, default=str))
     print(f"wrote {out}")
 

@@ -54,10 +54,11 @@ compares the runs that passed with the ones that didn't:
 
 ```python
 src = tp.read.harbor("jobs/my-job")
-# step_text, rewards, failed_tests and failed_runs: see examples/failure_modes.py
+# rewards, failed_tests and failed_runs: see examples/failure_modes.py
+from tracepress.pipelines.harbor import STEP_INPUTS   # "source, message, reasoning, tool_calls, observation"
 
-steps = src.table("steps").map(lambda r: {"step_text": step_text(r)}, columns={"step_text": str})
-notes = steps.lm_map("step_text -> what_happened, is_mistake: bool", instructions="Summarize this step ...")
+notes = src.table("steps").lm_map(f"{STEP_INPUTS} -> what_happened, is_mistake: bool",
+                                  instructions="Summarize this step ...")
 
 per_trial = (
     notes.map(lambda r: {"reward": rewards[r.trial], "failed_tests": failed_tests[r.trial]})
@@ -135,9 +136,8 @@ stored runs back as a stream, so you can try it without a live system:
 
 ```python
 live = tp.replay(tp.read.harbor("jobs/my-job"))   # or a live source
-live_steps = live.table("steps").map(lambda r: {"step_text": step_text(r)}, columns={"step_text": str})
-monitor = live_steps.group_by("trial").lm_fold(
-    "progress, step_text -> progress, stuck: bool, concern", emit="update")
+monitor = live.table("steps").group_by("trial").lm_fold(
+    f"progress, {STEP_INPUTS} -> progress, stuck: bool, concern", emit="update")
 
 async for event in monitor.events():
     print(event)
@@ -154,10 +154,39 @@ Here's how one trial's note grew, from [examples/live_monitor.py](https://github
       recovered state matched, committed and replayed LSNs were ordered 1–10, …
 ```
 
+## Your own coding sessions
+
+Claude Code and Codex keep every session on disk, so you can ask questions of your own
+work. Steps use the same columns as Harbor's, so the same pipelines and `STEP_INPUTS` work:
+
+```python
+src = tp.read.claude_code(project="my-repo", limit=50)    # or tp.read.codex()
+steps = src.table("steps").filter(lambda r: r.source == "user")
+moments = steps.lm_map("message -> frustrated: bool, about", instructions="Is the user frustrated with the agent?")
+```
+
+## OpenTelemetry
+
+`tp.read.otel(path)` reads OTLP JSON files, and `tp.watch.otlp()` receives traces live from any
+OTLP exporter. Spans following the GenAI conventions, OpenInference or OpenLLMetry (OpenAI
+Agents SDK, LangChain, LlamaIndex, Pydantic AI, Vercel AI SDK, …) become agent steps:
+
+```python
+from tracepress.pipelines.harbor import STEP_INPUTS
+
+live = tp.watch.otlp(port=4318)    # then set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+monitor = live.table("steps").group_by("trace") \
+    .lm_fold(f"progress, {STEP_INPUTS} -> progress, stuck: bool", emit="update")
+async for event in monitor.events():
+    print(event)
+```
+
+The raw span tree is there too, as the `spans` table.
+
 ## Works with
 
-- **Traces:** [Harbor](https://github.com/harbor-framework/harbor) jobs, and ATIF trajectory
-files. OpenTelemetry, Claude Code and DSPy traces are planned.
+- **Traces:** [Harbor](https://github.com/harbor-framework/harbor) jobs, ATIF trajectory files,
+Claude Code and Codex sessions, and OpenTelemetry (files or live). DSPy traces are planned.
 - **Models:** OpenRouter, Portkey, locally hosted models, or almost any other model ([docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md)).
 - **Output:** plain rows, or pandas with `.to_pandas()`.
 
