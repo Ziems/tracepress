@@ -40,7 +40,7 @@ the adapter's choice. Existing adapters to copy from:
      `source="user"` step), the outcome (reward, pass or fail, error), and any ground truth such as
      test or grader results (as its own table, like Harbor's `tests`). Also keep the agent's
      reasoning (thinking or chain-of-thought blocks) in a `reasoning` column on its step:
-     `STEP_INPUTS` reads it. Summaries are only as specific as their inputs, so don't drop these
+     pipelines pass it to the LM. Summaries are only as specific as their inputs, so don't drop these
      even when they're awkward to parse.
 
    For trees of variable depth (OpenTelemetry spans, branching chats), mapping depth onto keys is an
