@@ -91,6 +91,7 @@ class SessionAdapter(Adapter):
 
     levels = ("project", "session", "step")
     session_columns: dict[str, Any] = {}
+    step_columns: dict[str, Any] = SESSION_STEP_COLUMNS
 
     def __init__(self, files: list[SessionFile]):
         self.files = files
@@ -98,14 +99,18 @@ class SessionAdapter(Adapter):
     def tables(self) -> dict[str, Schema]:
         return {
             "sessions": Schema(self.levels[:2], dict(self.session_columns)),
-            "steps": Schema(self.levels, dict(SESSION_STEP_COLUMNS)),
+            "steps": Schema(self.levels, dict(self.step_columns)),
             "tool_calls": Schema((*self.levels, "call"), dict(SESSION_CALL_COLUMNS)),
         }
 
     @abstractmethod
     def parse(self, file: SessionFile) -> Parsed: ...
 
+    async def prepare(self) -> None:
+        """Work across all sessions, done once before any of them is parsed."""
+
     async def events(self, table: str) -> AsyncIterator[Event]:
+        await self.prepare()
         by_project: dict[str, list[SessionFile]] = {}
         for file in self.files:
             by_project.setdefault(file.project, []).append(file)

@@ -52,8 +52,8 @@ def claude_dir(tmp_path):
         _cc("user", 10, {"role": "user", "content": "look"}, isSidechain=True, agentId="abc"),
         _assistant(11, "m9", [{"type": "text", "text": "The header is missing."}], isSidechain=True, agentId="abc"),
     ])
-    other = [_cc("user", 1, {"role": "user", "content": "Hi"}, cwd="/work/other", sessionId="s2"),
-             _assistant(2, "m1", [{"type": "text", "text": "Hello."}], cwd="/work/other", sessionId="s2")]
+    other = [_cc("user", 1, {"role": "user", "content": "Hi"}, cwd="/work/other", sessionId="s2", uuid="o1"),
+             _assistant(2, "m1", [{"type": "text", "text": "Hello."}], cwd="/work/other", sessionId="s2", uuid="o2")]
     _write(projects / "-work-other" / "s2.jsonl", other)
     _write(projects / "-work-other" / "s3.jsonl", [{"type": "summary", "summary": "nothing here"}])
     return projects
@@ -175,3 +175,30 @@ def test_session_replay_matches_batch(reader, table, claude_dir, codex_dir):
     for seed in range(3):
         live = tp.replay(src, seed=seed, shuffle_within=4, duplicates=0.3)
         assert count(live.table(table)) == batch
+
+
+def test_claude_code_forked_session(claude_dir):
+    """A resumed or forked session copies its parent's lines, ids included; they count once."""
+    parent = [json.loads(line) for line in (claude_dir / "-work-app" / "s1.jsonl").read_text().splitlines()[:-1]
+              if line.strip()]
+    copied = [{**line, "sessionId": "s4"} for line in parent if line.get("type") in ("user", "assistant")]
+    _write(claude_dir / "-work-app" / "s4.jsonl", copied + [
+        _cc("user", 30, {"role": "user", "content": "Now add a test."}, sessionId="s4", uuid="u30"),
+        _cc("user", 31, {"role": "user", "content": "<task-notification>done</task-notification>"}, sessionId="s4",
+            uuid="u31", origin={"kind": "task-notification"}),
+        _assistant(32, "m30", [{"type": "text", "text": "Added."}], sessionId="s4", uuid="u32"),
+    ])
+    src = tp.read.claude_code(claude_dir, project="app", subagents=False)
+    sessions = {r.session: r for r in src.table("sessions").collect()}
+    fork = sessions["s4"]
+    assert (fork.forked_from, fork.n_inherited_steps, fork.n_steps, fork.prompt) == ("s1", 5, 3, "Now add a test.")
+    assert (fork.input_tokens, fork.started_at, fork.cli_version) == (10, "2026-01-01T00:00:30Z", "2.1.0")
+    assert sessions["s1"].forked_from is None and sessions["s1"].n_steps == 5
+    steps = [s for s in src.table("steps").collect() if s.session == "s4"]
+    assert [(s.source, s.message) for s in steps] == [
+        ("user", "Now add a test."), ("system", "<task-notification>done</task-notification>"), ("agent", "Added.")]
+
+    kept = tp.read.claude_code(claude_dir, project="app", subagents=False, inherited=True)
+    steps = [s for s in kept.table("steps").collect() if s.session == "s4"]
+    assert [s.inherited for s in steps] == [True] * 5 + [False] * 3
+    assert {r.session: r.n_steps for r in kept.table("sessions").collect()}["s4"] == 8
