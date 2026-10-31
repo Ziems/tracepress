@@ -102,6 +102,8 @@ def test_cache_and_cost_accounting():
     assert stats.unpriced_calls == 1 and stats.by_model["openai/acme-unreleased-model"].cost_usd is None
     assert stats.by_op == {"lm_map": 2, "lm_reduce": 1}
     assert "cost=$0.600000 (+1 unpriced calls)" in repr(stats)
+    stats.record(unknown, "lm_reduce", 1.0, 100, 10, ok=True, cached=False, reported_cost=0.25)
+    assert stats.unpriced_calls == 1 and stats.cost_usd == pytest.approx(0.85)
 
 
 @pytest.mark.parametrize("env", [{"TRACEPRESS_TELEMETRY": "0"}, {"TRACEPRESS_TELEMETRY": "off"}, {"DO_NOT_TRACK": "1"}])

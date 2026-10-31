@@ -21,6 +21,9 @@ dependencies = [
     "python-dotenv>=1.2.4",
 ]
 
+[project.optional-dependencies]
+jev = ["dspy[typesafe]>=3.4.1"]  # TypeSafe's Jev, for typesafe: model strings
+
 [project.urls]
 Homepage = "https://github.com/Ziems/tracepress"
 Repository = "https://github.com/Ziems/tracepress"

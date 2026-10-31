@@ -30,6 +30,14 @@ tp.configure(lm="openrouter:openai/gpt-6-luna")
 You can also use Portkey, any litellm model, or a model you host locally (Ollama, vLLM, or any
 OpenAI-compatible server); see [docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md).
 
+**Use Jev wherever a classification is all you need.** For a stage whose answer is a yes/no, a
+pick from fixed options, or a score, TypeSafe's Jev is the recommended model: it's far cheaper
+and faster than a generative model, and on the Who&When Pro failure-attribution benchmark it
+matched GPT-6-luna's accuracy at about a third of the cost and in seconds instead of minutes.
+Install `tracepress[jev]`, set `TYPESAFE_API_KEY`, and pass `lm="typesafe:jev-latest"` to those
+operators. Keep a generative model for stages that write text. See
+[docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md#jev).
+
 ### Use it from your coding agent
 
 TracePress ships skills that teach Claude Code, Codex, Cursor and other coding agents to
@@ -187,7 +195,7 @@ The raw span tree is there too, as the `spans` table.
 
 - **Traces:** [Harbor](https://github.com/harbor-framework/harbor) jobs, ATIF trajectory files,
 Claude Code and Codex sessions, and OpenTelemetry (files or live). DSPy traces are planned.
-- **Models:** OpenRouter, Portkey, locally hosted models, or almost any other model ([docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md)).
+- **Models:** OpenRouter, Portkey, TypeSafe's Jev, locally hosted models, or almost any other model ([docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md)).
 - **Output:** plain rows, or pandas with `.to_pandas()`.
 
 ## Learn more

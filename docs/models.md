@@ -22,6 +22,7 @@ Model strings have the form `provider:model`.
 |---|---|---|
 | `openrouter:openai/gpt-6-luna` | OpenRouter | `OPENROUTER_API_KEY` |
 | `portkey:openai-prod/gpt-5` | Portkey's gateway, model `@openai-prod/gpt-5` from your Model Catalog | `PORTKEY_API_KEY` |
+| `typesafe:jev-latest` | TypeSafe's Jev, recommended for classification-only stages (see [Jev](#jev)) | `TYPESAFE_API_KEY` |
 | `anthropic/claude-opus-5` (no `provider:`) | litellm, as is | that provider's usual key |
 
 - **Portkey:** the part before the `/` is your Model Catalog provider slug. Writing
@@ -32,6 +33,47 @@ Model strings have the form `provider:model`.
 - **Other setups:** pass a `dspy.LM` object directly.
 
 Keys are read from the environment, or from a `.env` file in the working directory.
+
+## Jev
+
+**Jev is the recommended model for any stage where classification alone is enough:** flagging
+steps, picking an agent or an error category, scoring severity, filtering rows. Use a generative
+model only for stages that must write text.
+
+Jev, TypeSafe's System One model, doesn't generate text. It answers decision outputs (a `Noul`
+yes/no, a `Choice` among fixed options, or a `Score`) with probabilities. That makes it much
+cheaper (about $0.042 per million input tokens) and faster than a generative model, with no
+output to parse. On the Who&When Pro failure-attribution benchmark, one Jev call per trace
+matched a GPT-6-luna judge's accuracy for about a third of the cost ($0.34 vs. $1.06 per 1,000
+traces) in about 7 seconds per 1,000 traces instead of 3.5 minutes.
+
+Install the extra and use it in any operator whose signature's outputs are all decisions:
+
+```bash
+pip install "tracepress[jev]"
+```
+
+```python
+from typing import Annotated, Literal
+
+import dspy
+from dspy.experimental import Choice, Noul
+
+class Triage(dspy.Signature):
+    """Judge one step of an agent's trace."""
+    step_text: str = dspy.InputField()
+    failed: Noul = dspy.OutputField(desc="Did this step fail?")
+    kind: Annotated[Literal["tool", "reasoning", "planning"], Choice] = dspy.OutputField(
+        desc="What kind of mistake it is, if any")
+
+judged = steps.lm_map(Triage, lm="typesafe:jev-latest")
+```
+
+Every decision output needs a `desc`; Jev reads it as the question. Text outputs (`str`) need a
+generative model, so pipelines that need both mix them per operator: a generative `lm_map` that
+writes notes, then a Jev stage that decides from them, or the other way around. If a stage asks
+for a free-text `reason` only to justify its label, consider dropping it and running the stage
+on Jev; Jev's probabilities say how sure it is.
 
 ## Local models
 
