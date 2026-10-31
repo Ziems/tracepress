@@ -29,6 +29,21 @@ def test_openrouter_prefix_maps_to_litellm(monkeypatch):
     assert lm_config.make_lm("openrouter:openai/gpt-6-luna").model == "openrouter/openai/gpt-6-luna"
 
 
+def test_openrouter_asks_for_cost_only_when_the_price_is_unknown(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
+    assert "extra_body" not in lm_config.make_lm("openrouter:openai/gpt-6-luna").kwargs  # priced: cache keys unchanged
+    unpriced = lm_config.make_lm("openrouter:acme/unreleased-model")
+    assert unpriced.kwargs["extra_body"] == {"usage": {"include": True}}
+
+
+def test_typesafe_prefix_builds_a_decision_client(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-test")
+    lm = lm_config.make_lm("typesafe:jev-latest")
+    assert lm.supports_decision_requests and lm.model == "jev-latest"
+    assert lm_config.model_label(lm) == ("typesafe", "jev-latest")
+    assert lm_config.resolve_lm(lm) is lm  # not a dspy.BaseLM, but still an LM
+
+
 def test_portkey_prefix_targets_the_gateway_with_a_provider_slug(monkeypatch):
     monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
     for spec in ("portkey:openai-prod/gpt-5", "portkey:@openai-prod/gpt-5"):

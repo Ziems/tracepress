@@ -27,7 +27,12 @@ PORTKEY_BASE_URL = "https://api.portkey.ai/v1"
 
 # USD per million (input, output) tokens, for models litellm has no price for. Extend
 # with `tp.configure(prices={...})`, keyed by the litellm model name (`lm.model`).
-PRICES = {"openrouter/openai/gpt-6-luna": (0.10, 0.50)}
+PRICES = {
+    "openrouter/openai/gpt-6-luna": (0.10, 0.50),
+    # typesafe.ai lists $42 per billion input tokens; it lists no output price, so this assumes
+    # the same. Jev's outputs are a few tokens per decision, so the assumption barely matters.
+    "jev-latest": (0.042, 0.042),
+}
 
 
 @dataclass
@@ -98,7 +103,11 @@ def _require_env(name: str, spec: str) -> str:
 
 def _openrouter(model: str, spec: str) -> dspy.LM:
     _require_env("OPENROUTER_API_KEY", spec)
-    return _labeled(dspy.LM(f"openrouter/{model}"), "openrouter", model)
+    # For models with no known price (e.g. ones newer than litellm's price list), ask
+    # OpenRouter to report each call's cost. Only for those: the flag changes the request,
+    # so adding it to priced models would miss every response already cached for them.
+    kwargs = {} if call_cost(f"openrouter/{model}", 1, 1) else {"extra_body": {"usage": {"include": True}}}
+    return _labeled(dspy.LM(f"openrouter/{model}", **kwargs), "openrouter", model)
 
 
 def _portkey(model: str, spec: str) -> dspy.LM:
@@ -119,14 +128,24 @@ def _portkey(model: str, spec: str) -> dspy.LM:
 
 
 
-PROVIDERS = {"openrouter": _openrouter, "portkey": _portkey}
+def _typesafe(model: str, spec: str) -> Any:
+    # TypeSafe's System One models (Jev) answer decision outputs (Noul, Score, Choice) with
+    # probabilities instead of generating text. Needs `pip install "tracepress[jev]"`.
+    _require_env("TYPESAFE_API_KEY", spec)
+    from dspy.experimental import TypeSafe
+
+    return _labeled(TypeSafe(model), "typesafe", model)
+
+
+PROVIDERS = {"openrouter": _openrouter, "portkey": _portkey, "typesafe": _typesafe}
 
 
 def make_lm(spec: str) -> dspy.LM:
     """Build an LM from a model string.
 
-    `provider:model` routes through a known gateway: `openrouter:openai/gpt-6-luna` or
-    `portkey:<provider slug>/<model>`. Anything else is a plain litellm model string,
+    `provider:model` routes through a known gateway: `openrouter:openai/gpt-6-luna`,
+    `portkey:<provider slug>/<model>`, or `typesafe:jev-latest` (decision outputs only).
+    Anything else is a plain litellm model string,
     passed through as is (`anthropic/claude-...`, `ollama_chat/llama3:8b`).
     """
     _load_env()
@@ -179,7 +198,7 @@ def resolve_lm(lm: str | dspy.LM | None) -> dspy.LM:
             "No LM configured. Pick one with tp.configure(lm=...), an operator's lm=, or the "
             f'TRACEPRESS_LM environment variable, e.g. tp.configure(lm="{SUGGESTED_LM}").'
         )
-    if isinstance(lm, dspy.BaseLM):
+    if not isinstance(lm, str):  # a dspy.LM, or another client such as TypeSafe's System One
         return lm
     if lm not in _lm_cache:
         _lm_cache[lm] = make_lm(lm)
@@ -245,7 +264,8 @@ class RunStats:
         return {"p50": pick(0.5), "p90": pick(0.9), "p99": pick(0.99), "max": times[-1]}
 
     def record(self, lm: dspy.BaseLM, op: str, seconds: float, prompt: int, completion: int,
-               ok: bool, cached: bool) -> None:
+               ok: bool, cached: bool, reported_cost: float | None = None) -> None:
+        """`reported_cost` is what the provider billed, when it says; it wins over the price table."""
         name = getattr(lm, "model", None) or type(lm).__name__
         model = self.by_model.get(name) or self.by_model.setdefault(name, ModelStats(model_label(lm)))
         model.calls += 1
@@ -261,7 +281,7 @@ class RunStats:
             self.cached_calls += 1
             model.cached_calls += 1
             return
-        cost = call_cost(name, prompt, completion)
+        cost = reported_cost if reported_cost is not None else call_cost(name, prompt, completion)
         if cost is None:
             self.unpriced_calls += 1
             model.cost_usd = None
@@ -309,7 +329,9 @@ class Executor:
         usage = pred.get_lm_usage() or {}
         prompt = sum(u.get("prompt_tokens") or 0 for u in usage.values())
         completion = sum(u.get("completion_tokens") or 0 for u in usage.values())
-        self.stats.record(lm, op, time.monotonic() - start, prompt, completion, ok=True, cached=not usage)
+        costs = [u["cost"] for u in usage.values() if u.get("cost") is not None]  # e.g. OpenRouter's usage.cost
+        self.stats.record(lm, op, time.monotonic() - start, prompt, completion, ok=True, cached=not usage,
+                          reported_cost=sum(costs) if costs else None)
         return pred
 
     async def _predict(self, module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any]) -> dspy.Prediction:
