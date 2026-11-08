@@ -221,23 +221,45 @@ class OTLPReceiver(Adapter):
         self.open: dict[str, _Trace] = {}
         self.closed: set[str] = set()
         self.server: asyncio.AbstractServer | None = None
+        self._listening: asyncio.Future | None = None  # None when stopped; shared while starting
         self._sweeper: asyncio.Task | None = None
+        self._clients: set[asyncio.StreamWriter] = set()
 
     def tables(self) -> dict[str, Schema]:
         return otel_tables()
 
     async def start(self) -> None:
-        if self.server is None:
-            self.server = await asyncio.start_server(
-                lambda r, w: _serve_http(r, w, self.receive), self.host, self.port)
-            self.port = self.server.sockets[0].getsockname()[1]  # the real port, when 0 was asked for
-            self._sweeper = asyncio.create_task(self._sweep())
+        # Set before the first await, so tables starting together share one server.
+        if self._listening is None:
+            self._listening = asyncio.ensure_future(self._listen())
+        try:
+            await asyncio.shield(self._listening)
+        except OSError:  # e.g. the port is taken; a later start can try again
+            self._listening = None
+            raise
+
+    async def _listen(self) -> None:
+        self.server = await asyncio.start_server(self._client, self.host, self.port)
+        self.port = self.server.sockets[0].getsockname()[1]  # the real port, when 0 was asked for
+        self._sweeper = asyncio.create_task(self._sweep())
+
+    async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._clients.add(writer)
+        try:
+            await _serve_http(reader, writer, self.receive)
+        finally:
+            self._clients.discard(writer)
 
     async def stop(self) -> None:
+        listening, self._listening = self._listening, None
+        if listening:
+            await asyncio.gather(listening, return_exceptions=True)
         if self._sweeper:
             self._sweeper.cancel()
         if self.server:
             self.server.close()
+            for writer in list(self._clients):  # exporters keep connections open, and closing waits for them
+                writer.close()
             await self.server.wait_closed()
         self.server = self._sweeper = None
 

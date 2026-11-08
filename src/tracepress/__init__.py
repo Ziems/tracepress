@@ -9,7 +9,10 @@ from .schema import Schema
 
 
 def last_run():
-    """Stats (LM calls, tokens, errors, time) for the most recent run."""
+    """Stats (LM calls, tokens, errors, time) for the most recent run, even one still going.
+
+    `.status` is "running", "completed", "failed" or "cancelled"; `.error` is what ended it.
+    """
     from . import runtime
 
     return runtime.last_run

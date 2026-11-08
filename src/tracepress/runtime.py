@@ -97,6 +97,7 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
         build(node)[0].outputs.append(queue)
         coros.append(sink.consume(queue))
 
+    last_run = executor.stats  # already, so a live run's progress can be read
     tasks = [asyncio.ensure_future(c) for c in coros]
     # Operators fail this to stop the run at once, e.g. on an error every call will hit.
     executor.stop = stop = asyncio.get_running_loop().create_future()
@@ -112,23 +113,28 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
         error = e
         raise
     finally:
+        # A run that ended early must not leave LM calls running, in a loop that may live on.
+        spawned = [task for op in ops.values() for task in op.cancel()]
         for task in [*tasks, stop]:
             task.cancel()
-        executor.stats.finished = time.monotonic()
+        executor.stats.conclude(error)
         last_run = executor.stats
         telemetry.report(executor.stats, nodes, ops, error)
+        await asyncio.gather(*tasks, *spawned, return_exceptions=True)  # sources release what they hold
     return [sink.result() for sink in sinks]
 
 
 async def stream_events(node: Node, max_concurrency: int | None = None) -> AsyncIterator[Event]:
     sink = QueueSink()
     run = asyncio.ensure_future(run_async([node], max_concurrency, [sink]))
+    run.add_done_callback(lambda _: sink.out.put_nowait(END))  # a failed run never sends its own
     try:
         while (event := await sink.out.get()) is not END:
             yield event
         await run
     finally:
         run.cancel()
+        await asyncio.gather(run, return_exceptions=True)
 
 
 def run(nodes: list[Node], max_concurrency: int | None = None) -> list[list[Row]]:

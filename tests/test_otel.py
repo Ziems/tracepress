@@ -300,3 +300,54 @@ async def _live_otlp_receiver():
     trace_rows = [e.row for name, e in seen if name == "traces" and isinstance(e, tp.RowAdded)]
     assert [(r.trace, r.n_spans, r.name) for r in trace_rows] == [("a" * 32, 4, "invoke_agent helper")]
     assert live.server is None  # stopped once nothing listens
+
+
+async def _free_port() -> int:
+    probe = tp.watch.otlp(port=0)
+    await probe.start()
+    port = probe.port
+    await probe.stop()
+    return port
+
+
+def test_tables_starting_together_share_one_receiver():
+    async def run():
+        live = tp.watch.otlp(port=await _free_port())
+        pipeline = asyncio.ensure_future(tp.acollect(live.table("traces"), live.table("steps")))
+        await asyncio.sleep(0.2)
+        assert not pipeline.done(), pipeline  # the second table would have failed to bind the port
+        assert live.server is not None
+        pipeline.cancel()
+        await asyncio.gather(pipeline, return_exceptions=True)
+        assert live.server is None  # the port is free by the time the run has ended
+        assert tp.last_run().status == "cancelled"
+
+    asyncio.run(run())
+
+
+def test_stop_does_not_wait_for_exporters_to_hang_up():
+    async def run():
+        live = tp.watch.otlp(port=0)
+        await live.start()
+        _, writer = await asyncio.open_connection("127.0.0.1", live.port)  # idle keep-alive connection
+        await asyncio.sleep(0.05)
+        await asyncio.wait_for(live.stop(), 5)
+        writer.close()
+        assert live.server is None
+
+    asyncio.run(run())
+
+
+def test_receiver_can_start_after_the_port_was_taken():
+    async def run():
+        holder = tp.watch.otlp(port=0)
+        await holder.start()
+        live = tp.watch.otlp(port=holder.port)
+        with pytest.raises(OSError):
+            await live.start()
+        await holder.stop()
+        await live.start()
+        assert live.server is not None
+        await live.stop()
+
+    asyncio.run(run())

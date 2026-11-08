@@ -118,3 +118,6 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 - **A hung LM request stalls a sequential fold** until it times out (`request_timeout`, 30s), and is
   then retried. Watch `tp.last_run().timeouts`.
 - **`collect()` raises inside a running event loop.** Use `acollect()` / `events()` there.
+- **`events()` raises the run's error** once the events before it are delivered. Leaving the loop
+  early stops the run and its LM calls. `tp.last_run()` reads live: `.status` is `running` until
+  the run ends, and the counts are the totals so far.

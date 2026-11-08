@@ -176,7 +176,10 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    ```python
    notes_rows, trial_rows, task_rows = tp.collect(notes, per_trial, per_task)  # shared work runs once
    tp.last_run()   # calls, errors, fallbacks, timeouts, tokens, seconds; .latency() for percentiles
+   tp.last_run().status   # "completed", "failed" or "cancelled"; .error says why
    ```
+
+   A run with skipped rows is still `completed`, so check `errors` as well as `status`.
 
    In Jupyter (or any running event loop), use `await tp.acollect(...)` / `await table.acollect()`.
    LM errors are skipped by default and counted in `errors`. Pass `on_error="raise"` to fail fast.

@@ -1,3 +1,5 @@
+import asyncio
+
 import pandas as pd
 import dspy
 import pytest
@@ -211,6 +213,102 @@ def test_billing_errors_stop_the_run_instead_of_skipping_rows():
         tp.from_rows(rows).lm_map("summary -> topic", lm=OutOfCredits([])).collect(max_concurrency=4)
     # Only the calls already in flight ran; the other rows were never tried.
     assert OutOfCredits.calls <= 8
+
+
+# --- Run lifecycle ------------------------------------------------------------------------
+
+
+class OutOfCredits(DummyLM):
+    async def aforward(self, *args, **kwargs):
+        raise dspy.LMBillingError("exceeds your available credits (402)", model="m")
+
+
+class CountingLM(DummyLM):
+    """Counts calls started. The first takes `first` seconds and fails if `fail`; the rest are slow."""
+
+    def __init__(self, first=0.01, fail=False):
+        super().__init__([{"topic": "t"}] * 100)
+        self.first, self.fail, self.started = first, fail, 0
+
+    async def aforward(self, *args, **kwargs):
+        self.started += 1
+        n = self.started
+        await asyncio.sleep(self.first if n == 1 else 0.05)
+        if self.fail and n == 1:
+            raise dspy.LMBillingError("exceeds your available credits (402)", model="m")
+        return await super().aforward(*args, **kwargs)
+
+
+def many_rows(n=30):
+    return tp.from_rows([Row((("trial", i),), {"summary": f"trial {i}"}) for i in range(n)])
+
+
+def test_last_run_says_how_the_run_ended():
+    rows_table().lm_map("summary -> topic", lm=DummyLM([{"topic": "t"}] * 6)).collect()
+    stats = tp.last_run()
+    assert stats.status == "completed" and stats.error is None
+    assert "status" not in repr(stats)  # only a run that didn't complete draws attention to it
+
+    with pytest.raises(dspy.LMBillingError):
+        rows_table().lm_map("summary -> topic", lm=OutOfCredits([])).collect()
+    stats = tp.last_run()
+    assert stats.status == "failed" and isinstance(stats.error, dspy.LMBillingError)
+    assert "status=failed (LMBillingError)" in repr(stats)
+
+
+def test_skipped_rows_still_complete_the_run():
+    assert rows_table().lm_map("summary -> topic", lm=DummyLM([])).collect() == []
+    assert tp.last_run().status == "completed" and tp.last_run().errors == 6
+
+
+def test_last_run_is_readable_while_the_run_is_going():
+    async def run():
+        seen = []
+        async for event in many_rows(3).lm_map("summary -> topic", lm=CountingLM()).events():
+            seen.append(tp.last_run().status)
+        return seen, tp.last_run().status
+
+    seen, after = asyncio.run(run())
+    assert seen == ["running"] * len(seen) and seen and after == "completed"
+
+
+def test_events_raises_the_runs_error_instead_of_hanging():
+    async def run():
+        table = rows_table().lm_map("summary -> topic", lm=OutOfCredits([]), on_error="raise")
+        return [e async for e in table.events()]
+
+    with pytest.raises(dspy.LMBillingError):
+        asyncio.run(asyncio.wait_for(run(), 5))
+
+
+def test_failed_run_stops_its_lm_calls():
+    # In a loop that stays open, like Jupyter's, queued calls would otherwise keep going.
+    async def run():
+        lm = CountingLM(fail=True)
+        with pytest.raises(dspy.LMBillingError):
+            await many_rows().lm_map("summary -> topic", lm=lm).acollect(max_concurrency=2)
+        started = lm.started
+        await asyncio.sleep(0.2)
+        return started, lm.started
+
+    at_failure, later = asyncio.run(run())
+    assert at_failure == later < 30
+
+
+def test_leaving_events_early_stops_the_run():
+    async def run():
+        lm = CountingLM()
+        stream = many_rows().lm_map("summary -> topic", lm=lm).events(max_concurrency=2)
+        async for _ in stream:
+            break
+        await stream.aclose()
+        started = lm.started
+        await asyncio.sleep(0.2)
+        return started, lm.started
+
+    at_exit, later = asyncio.run(run())
+    assert at_exit == later < 30
+    assert tp.last_run().status == "cancelled"
 
 
 def test_bare_text_answer_to_a_single_text_output_is_kept():
