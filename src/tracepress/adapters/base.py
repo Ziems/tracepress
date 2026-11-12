@@ -31,6 +31,21 @@ class Adapter(ABC):
 
         return Table(Node(lambda: SourceOp(self, name), None, tables[name], f"{type(self).__name__}.{name}"))
 
+    def __getattr__(self, name: str) -> Table:
+        # `src.steps` for `src.table("steps")`. Only called when normal lookup fails.
+        if name.startswith("_") or self.__dict__.get("_finding_table"):
+            raise AttributeError(name)
+        self.__dict__["_finding_table"] = True  # tables() may itself look up a missing attribute
+        try:
+            tables = self.tables()
+        except AttributeError:
+            raise AttributeError(name) from None
+        finally:
+            del self.__dict__["_finding_table"]
+        if name in tables:
+            return self.table(name)
+        raise AttributeError(f"{type(self).__name__} has no attribute or table {name!r}; tables: {sorted(tables)}")
+
     def __repr__(self) -> str:
         return f"{type(self).__name__}(tables={sorted(self.tables())})"
 

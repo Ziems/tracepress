@@ -62,28 +62,24 @@ compares the runs that passed with the ones that didn't:
 
 ```python
 src = tp.read.harbor("jobs/my-job")
-# rewards, failed_tests and failed_runs: see examples/failure_modes.py
+# failed_tests and failed_runs are small reduces: see examples/failure_modes.py
 
-notes = src.table("steps").lm_map(
-    "source, message, reasoning, tool_calls: list[dict], observation -> what_happened, is_mistake: bool",
-    instructions="Summarize this step ...")
+notes = src.steps.lm_map("step -> what_happened, is_mistake: bool", instructions="Summarize this step ...")
 
-per_trial = (
-    notes.map(lambda r: {"reward": rewards[r.trial], "failed_tests": failed_tests[r.trial]})
-    .group_by("trial", "reward", "failed_tests")
-    .lm_reduce("reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
-               instructions="Explain the failure using the failed tests ...")
-)
-per_task = (
-    per_trial.map(lambda r: {"failed_runs": failed_runs[r.task]})
-    .group_by("task", "failed_runs")
-    .lm_reduce("task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
-               instructions="Say what the agent was supposed to do and what it did ...",
-               module=dspy.ChainOfThought)
-)
+per_trial = notes.join(src.trials).join(failed_tests).group_by("trial").lm_reduce(
+    "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
+    instructions="Explain the failure using the failed tests ...")
+
+per_task = per_trial.join(failed_runs).group_by("task").lm_reduce(
+    "task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
+    instructions="Say what the agent was supposed to do and what it did ...",
+    module=dspy.ChainOfThought)
 ```
 
-The full pipeline, including the `rewards`, `failed_tests` and `failed_runs` lookups, is in
+`step` is the whole step (its message, reasoning, tool calls and output). Columns with one value
+per trial, like `reward` and `instruction` joined from `src.trials`, reach the trial's reduce once
+rather than once per step, and are carried onto its output rows. The full pipeline, including
+`failed_tests` and `failed_runs`, is in
 [examples/failure_modes.py](https://github.com/Ziems/tracepress/blob/main/examples/failure_modes.py).
 Here's an excerpt of its output on two tasks from the sample job: 10 trials, 173 LM calls, $0.03.
 
@@ -170,7 +166,7 @@ work. Steps use the same columns as Harbor's, so the same pipelines work:
 
 ```python
 src = tp.read.claude_code(project="my-repo", limit=50)    # or tp.read.codex()
-steps = src.table("steps").filter(lambda r: r.source == "user")
+steps = src.steps.filter(lambda r: r.source == "user")
 moments = steps.lm_map("message -> frustrated: bool, about", instructions="Is the user frustrated with the agent?")
 ```
 

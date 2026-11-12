@@ -27,6 +27,9 @@ STEP_COLUMNS = {
     "is_sidechain": bool,
 }
 
+# What `step` means as an LM input (`"step -> summary"`): the step's content, without bookkeeping.
+STEP_RECORD = ("source", "message", "reasoning", "tool_calls", "observation")
+
 TOOL_CALL_COLUMNS = {"name": str, "arguments": dict, "result": str, "timestamp": str}
 
 
@@ -113,7 +116,7 @@ class ATIFAdapter(Adapter):
     def tables(self) -> dict[str, Schema]:
         return {
             "trajectories": Schema(("trajectory",), {"agent": str, "model": str, "n_steps": int, "final_metrics": dict}),
-            "steps": Schema(("trajectory", "step"), dict(STEP_COLUMNS)),
+            "steps": Schema(("trajectory", "step"), dict(STEP_COLUMNS), {}, STEP_RECORD),
             "tool_calls": Schema(("trajectory", "step", "call"), dict(TOOL_CALL_COLUMNS)),
         }
 

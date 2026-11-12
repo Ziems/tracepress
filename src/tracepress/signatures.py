@@ -20,6 +20,11 @@ def parse(sig: SigLike, instructions: str | None = None) -> type[dspy.Signature]
     return parsed
 
 
+def as_record(sig: type[dspy.Signature], name: str) -> type[dspy.Signature]:
+    """Make input `name` take a whole row (a dict of its columns)."""
+    return sig.with_updated_fields(name, type_=dict, desc=f"the whole {name}: its fields as a dict")
+
+
 def inputs(sig: type[dspy.Signature]) -> list[str]:
     return list(sig.input_fields)
 

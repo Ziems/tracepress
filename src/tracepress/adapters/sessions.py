@@ -18,7 +18,7 @@ from typing import Any
 
 from ..rows import Closed, Event, Key, Row, RowAdded
 from ..schema import Schema
-from .atif import STEP_COLUMNS, TOOL_CALL_COLUMNS
+from .atif import STEP_COLUMNS, STEP_RECORD, TOOL_CALL_COLUMNS
 from .base import Adapter
 
 SESSION_STEP_COLUMNS = {**STEP_COLUMNS, "agent_id": str}  # agent_id: the subagent, None on the main thread
@@ -99,7 +99,7 @@ class SessionAdapter(Adapter):
     def tables(self) -> dict[str, Schema]:
         return {
             "sessions": Schema(self.levels[:2], dict(self.session_columns)),
-            "steps": Schema(self.levels, dict(self.step_columns)),
+            "steps": Schema(self.levels, dict(self.step_columns), {}, STEP_RECORD),
             "tool_calls": Schema((*self.levels, "call"), dict(SESSION_CALL_COLUMNS)),
         }
 

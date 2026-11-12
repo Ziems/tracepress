@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
@@ -12,6 +12,13 @@ class Schema:
     # Column name -> type. None means the columns are unknown (e.g. after a plain `map`),
     # so name checks are skipped downstream.
     columns: dict[str, Any] | None = field(default_factory=dict)
+    # Column name -> the depth (number of key levels) at which it's constant. A trial's
+    # reward on a steps table has depth 3 (dataset > task > trial). Columns not listed
+    # can differ from row to row. Grouping at that depth or deeper lifts them to scalars.
+    grain: dict[str, int] = field(default_factory=dict)
+    # The columns that make up a row when a signature names the row's own level, e.g.
+    # `"step -> summary"`. None means every column.
+    record: tuple[str, ...] | None = None
 
     @property
     def open(self) -> bool:
@@ -32,4 +39,13 @@ class Schema:
         clash = [n for n in new if n in self.columns or n in self.levels]
         if clash:
             raise ValueError(f"output field(s) {clash} already exist in the table")
-        return Schema(self.levels, {**self.columns, **new})
+        return replace(self, columns={**self.columns, **new})
+
+    def constant(self, name: str, depth: int) -> bool:
+        """Whether `name` is a column with one value per key prefix of length `depth`."""
+        return name not in self.levels and self.grain.get(name, len(self.levels) + 1) <= depth
+
+    @property
+    def row_name(self) -> str | None:
+        """The level naming one row of this table (e.g. `step`), usable as a whole-row input."""
+        return self.levels[-1] if self.levels else None

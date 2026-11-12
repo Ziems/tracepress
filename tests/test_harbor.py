@@ -35,9 +35,9 @@ def test_tests_table(harbor_dir):
 
 
 def test_filters(harbor_dir):
-    assert len(tp.read.harbor(harbor_dir, tasks=["beta"]).trials) == 2
-    assert len(tp.read.harbor(harbor_dir, tasks=["bench/alpha"]).trials) == 2
-    assert len(tp.read.harbor(harbor_dir, limit=3).trials) == 3
+    assert len(tp.read.harbor(harbor_dir, tasks=["beta"]).trial_dirs) == 2
+    assert len(tp.read.harbor(harbor_dir, tasks=["bench/alpha"]).trial_dirs) == 2
+    assert len(tp.read.harbor(harbor_dir, limit=3).trial_dirs) == 3
 
 
 def test_group_by_task(harbor_dir):

@@ -72,7 +72,7 @@ def _rewards(src: Adapter) -> dict[str, float | None]:
         src = src.source
     if not isinstance(src, HarborAdapter):
         raise TypeError(f"tp.pipelines.harbor needs a tp.read.harbor(...) source, got {type(src).__name__}")
-    return {trial.result["trial_name"]: trial_values(trial)["reward"] for trial in src.trials}
+    return {trial.result["trial_name"]: trial_values(trial)["reward"] for trial in src.trial_dirs}
 
 
 # --- Trajectory taxonomy (paper §4.4, Appendix C) ----------------------------------------

@@ -16,61 +16,42 @@ import dspy
 import tracepress as tp
 
 
-def lookups(trials, tests):
-    """Trial-level facts to attach to rows: there are no joins yet, so these are plain dicts.
-
-    Takes collected `trials` and `tests` rows (collect them with `.collect()`, or with
-    `await ....acollect()` in Jupyter).
-    """
-    rewards = {r.trial: r.reward for r in trials}
-    failed_runs: dict[str, int] = {}
-    for r in trials:
-        failed_runs[r.task] = failed_runs.get(r.task, 0) + int((r.reward or 0) < 1)
-    failed_tests: dict[str, list[str]] = {}
-    for t in tests:
-        if t.status != "passed":
-            failed_tests.setdefault(t.trial, []).append(t.name.split("::")[-1])
-    return rewards, failed_runs, failed_tests
-
-
-def build(src, trials, tests):
+def build(src):
     """The analysis as lazy tables: (step notes, per trial, per task, overall)."""
-    rewards, failed_runs, failed_tests = lookups(trials, tests)
+    # Trial- and task-level facts, as small tables joined onto the rows that need them.
+    failed_tests = (
+        src.tests.filter(lambda r: r.status != "passed")
+        .group_by("trial")
+        .reduce(lambda rs: {"failed_tests": ", ".join(r.name.split("::")[-1] for r in rs)},
+                columns={"failed_tests": str})
+    )
+    failed_runs = src.trials.group_by("task").reduce(
+        lambda rs: {"failed_runs": sum((r.reward or 0) < 1 for r in rs)}, columns={"failed_runs": int})
 
-    notes = src.table("steps").lm_map(
-        "source, message, reasoning, tool_calls: list[dict], observation -> what_happened, is_mistake: bool",
+    notes = src.steps.lm_map(
+        "step -> what_happened, is_mistake: bool",
         instructions="Summarize this step of a coding agent's run in one sentence, and say whether it was a mistake. "
                      "For a user step (the first one is the task), say what the agent was asked to do.",
     )
 
-    # Grouping by trial *and* reward / failed tests makes them scalar inputs to the reduce.
-    per_trial = (
-        notes.map(lambda r: {"reward": rewards.get(r.trial),
-                             "failed_tests": ", ".join(failed_tests.get(r.trial, [])) or "none"},
-                  columns={"reward": float, "failed_tests": str})
-        .group_by("trial", "reward", "failed_tests")
-        .lm_reduce(
-            "reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
-            instructions="One agent run, step by step; the first step is the task it was given. Reward 1.0 "
-                         "means it passed, and failed_tests are the verifier's tests that failed. Summarize what "
-                         "it was asked to do and how it went, and explain the failure using the failed tests. "
-                         "For passes, use 'none' as failure_mode.",
-        )
+    # reward and failed_tests have one value per trial, so the reduce gets each once.
+    per_trial = notes.join(src.trials).join(failed_tests).group_by("trial").lm_reduce(
+        "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
+        instructions="One agent run, step by step, and the task it was given. Reward 1.0 means it passed, and "
+                     "failed_tests are the verifier's tests that failed (empty when none did). Summarize what it "
+                     "was asked to do and how it went, and explain the failure using the failed tests. "
+                     "For passes, use 'none' as failure_mode.",
     )
 
-    per_task = (
-        per_trial.map(lambda r: {"failed_runs": failed_runs.get(r.task, 0)}, columns={"failed_runs": int})
-        .group_by("task", "failed_runs")
-        .lm_reduce(
-            "task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
-            instructions="Compare these runs of one task. Write each failure as what the agent was supposed to do and "
-                         "what it did instead, so it makes sense to someone who hasn't read the task. End each failure "
-                         "with how many of the failed_runs it affected, e.g. (3 of 4 failed runs).",
-            module=dspy.ChainOfThought,
-        )
+    per_task = per_trial.join(failed_runs).group_by("task").lm_reduce(
+        "task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
+        instructions="Compare these runs of one task. Write each failure as what the agent was supposed to do and "
+                     "what it did instead, so it makes sense to someone who hasn't read the task. End each failure "
+                     "with how many of the failed_runs it affected, e.g. (3 of 4 failed runs).",
+        module=dspy.ChainOfThought,
     )
 
-    overall = per_task.group_by("dataset").lm_reduce(
+    overall = per_task.group_by().lm_reduce(
         "task, common_failures -> top_failure_modes: list[str]",
         instructions="Across all tasks, list the most common failure modes for this agent, most frequent first.",
         module=dspy.ChainOfThought,
@@ -93,18 +74,16 @@ def main() -> None:
     tp.configure(lm=args.lm)
 
     src = tp.read.harbor(args.path, tasks=args.tasks, limit=args.limit)
-    trials, tests = tp.collect(src.table("trials"), src.table("tests"))
-
     if args.replay:
         faults = {"shuffle_within": 8, "duplicates": 0.05, "drop_closes": 0.2} if args.faults else {}
         src = tp.replay(src, speed=args.speed, **faults)
 
-    _, per_trial, per_task, overall = build(src, trials, tests)
+    _, per_trial, per_task, overall = build(src)
     trial_rows, task_rows, overall_rows = tp.collect(per_trial, per_task, overall)
     stats = tp.last_run()
 
     for row in overall_rows:
-        print(f"\n=== {row.dataset}: top failure modes ===")
+        print("\n=== Top failure modes ===")
         for mode in row.top_failure_modes:
             print(f"  - {mode}")
     for row in task_rows:
