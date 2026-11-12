@@ -407,6 +407,43 @@ batch reduces see whole groups (tree-reduce, `emit` ignored); streaming reduces 
   expensive lower levels can be computed once and higher levels iterated on.
 - `.start(sink)` runs in the background and returns a handle (`stop()`, `status()`, awaitable).
 
+### Lifecycles
+
+State is kept as plain data next to the code that uses it; there is no state machine framework.
+A lifecycle gets an explicit name only when someone outside its code needs to see it, or when an
+unnamed state has caused a bug.
+
+**Run** (`RunStats.status`, read through `tp.last_run()`):
+
+```
+running -> completed          every source ended; skipped rows still count as completed
+        -> failed             an Exception ended it (a stop-the-run LM error, on_error="raise", a source error)
+        -> cancelled          Ctrl-C, a cancelled task, or leaving table.events() early
+```
+
+Ending, in any of these ways, cancels the run's spawned work (including queued LM calls) and waits for
+its sources to release what they hold, so a port is free once the run has ended. `table.events()`
+delivers what was already queued and then raises a failed run's error. Fold and running-reduce
+workers are ordinary spawned work: their failures stop the run at once too.
+
+**OTLP receiver:** stopped -> starting -> listening -> stopped. Tables starting together share one
+server. Stopping closes open exporter connections, which would otherwise hold it open forever.
+
+**Named by the existing data, and tested, so left as they are:**
+
+| Lifecycle | Where | States |
+|---|---|---|
+| Row | `Row.final`, `Row.version` | provisional -> final; consumers keep the newest version |
+| Group | `GroupOp.groups` | open -> finishing (popped) -> emitted; `dirty` / `invalidated_at` rewind its fold |
+| OTLP trace | `_Trace`, `OTLPReceiver.closed` | open -> root seen -> closed (late spans dropped) |
+| Agent step | `TraceSteps` (`_open`, `_done`, `released`) | waiting on calls -> ready -> released, in order |
+| LM call | `Executor.call`, `_predict` | linear retries, then adapter fallbacks, then the bare-text answer |
+| Telemetry | `telemetry.mode()` | off / debug / on, from settings in precedence order |
+
+Known limits: a row arriving after its group closed reopens the group, because `Closed` is trusted
+rather than enforced (enforcing it means remembering every closed key). For the same reason,
+`OTLPReceiver.closed` keeps one id per closed trace for the receiver's lifetime.
+
 ### Execution and LM calls
 
 - **Parallelism = many concurrent LM calls** in one async process, bounded by per-provider /

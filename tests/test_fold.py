@@ -1,5 +1,6 @@
 import asyncio
 
+import dspy
 import pytest
 from fakes import FuncLM
 
@@ -182,3 +183,29 @@ def test_duplicates_do_not_cost_extra_lm_calls(harbor_dir):
     steps_of(tp.replay(src)).lm_map("text -> trail", lm=plain).collect()
     steps_of(tp.replay(src, duplicates=1.0)).lm_map("text -> trail", lm=dup).collect()
     assert dup.calls == plain.calls == 9
+
+
+def test_fold_failure_stops_a_live_run():
+    class OpenStream(tp.Adapter):
+        """Steps of one trial that never closes, so nothing else would end the run."""
+
+        levels = ("trial", "step")
+        bounded = False
+
+        def tables(self):
+            return {"steps": tp.Schema(self.levels, {"text": str})}
+
+        async def events(self, table):
+            for i in range(20):
+                yield tp.RowAdded(Row((("trial", "a"), ("step", i)), {"text": str(i)}))
+                await asyncio.sleep(0.01)
+            await asyncio.Event().wait()
+
+    def out_of_credits(fields):
+        raise dspy.LMBillingError("exceeds your available credits (402)", model="m")
+
+    lm = FuncLM(out_of_credits)
+    table = OpenStream().table("steps").group_by("trial").lm_fold("trail, text -> trail", lm=lm, emit="update")
+    with pytest.raises(dspy.LMBillingError):
+        asyncio.run(asyncio.wait_for(table.acollect(), 5))
+    assert lm.calls < 5  # it stopped at the first failure, and didn't retry on each new step

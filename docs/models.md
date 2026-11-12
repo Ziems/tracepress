@@ -104,7 +104,8 @@ RunStats(calls=186, cached=7, errors=0, fallbacks=0, timeouts=0, prompt_tokens=1
 ```
 
 `by_model` and `by_op` break the totals down by model and by operator. `latency()` gives
-per-call percentiles.
+per-call percentiles. `status` is `running`, `completed`, `failed` or `cancelled`, and `error`
+holds what ended a run that didn't complete. During a live run, `tp.last_run()` shows the totals so far.
 
 Cost is estimated from token counts. Prices come from litellm's price table, plus a built-in
 entry for the suggested model. Add your own prices, in USD per million input and output tokens,

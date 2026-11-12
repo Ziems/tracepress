@@ -245,6 +245,8 @@ class RunStats:
     unpriced_calls: int = 0  # paid calls to models with no known price
     started: float = field(default_factory=time.monotonic)
     finished: float | None = None
+    status: str = "running"  # then "completed", "failed" or "cancelled"; never changes after that
+    error: BaseException | None = None  # what ended the run, unless it completed
     by_model: dict[str, ModelStats] = field(default_factory=dict)  # keyed by `lm.model`
     by_op: dict[str, int] = field(default_factory=dict)  # LM calls per operator, e.g. "lm_map"
     # One entry per call: (seconds, prompt_tokens, completion_tokens, ok). Seconds cover
@@ -254,6 +256,12 @@ class RunStats:
     @property
     def seconds(self) -> float:
         return (self.finished or time.monotonic()) - self.started
+
+    def conclude(self, error: BaseException | None) -> None:
+        """Record how the run ended. `Exception`s failed it; anything else (Ctrl-C, a cancel) stopped it."""
+        self.finished = time.monotonic()
+        self.error = error
+        self.status = "completed" if error is None else "failed" if isinstance(error, Exception) else "cancelled"
 
     def latency(self) -> dict[str, float]:
         """Per-call latency percentiles, in seconds."""
@@ -292,8 +300,10 @@ class RunStats:
 
     def __repr__(self) -> str:
         cost = f"${self.cost_usd:.6f}" + (f" (+{self.unpriced_calls} unpriced calls)" if self.unpriced_calls else "")
+        why = f" ({type(self.error).__name__})" if self.error is not None else ""
+        status = "" if self.status == "completed" else f"status={self.status}{why}, "
         return (
-            f"RunStats(calls={self.calls}, cached={self.cached_calls}, errors={self.errors}, "
+            f"RunStats({status}calls={self.calls}, cached={self.cached_calls}, errors={self.errors}, "
             f"fallbacks={self.fallbacks}, timeouts={self.timeouts}, prompt_tokens={self.prompt_tokens}, "
             f"completion_tokens={self.completion_tokens}, cost={cost}, seconds={self.seconds:.1f})"
         )

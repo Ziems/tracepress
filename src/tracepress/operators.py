@@ -65,6 +65,10 @@ class Operator:
     async def on_end(self) -> None:
         pass
 
+    def cancel(self) -> list[asyncio.Task]:
+        """Stop work still running when the run ends early; returns the tasks stopped."""
+        return []
+
     async def consume(self, queue: asyncio.Queue) -> None:
         while True:
             event = await queue.get()
@@ -89,10 +93,17 @@ class AsyncOperator(Operator):
         self.pending: dict[asyncio.Task, Key] = {}
         self.failure: BaseException | None = None
 
-    def spawn(self, coro, key: Key) -> None:
+    def spawn(self, coro, key: Key) -> asyncio.Task:
         task = asyncio.create_task(coro)
         self.pending[task] = key
         task.add_done_callback(self._done)
+        return task
+
+    def cancel(self) -> list[asyncio.Task]:
+        tasks = list(self.pending)
+        for task in tasks:
+            task.cancel()
+        return tasks
 
     def _done(self, task: asyncio.Task) -> None:
         self.pending.pop(task, None)
@@ -312,7 +323,7 @@ class GroupOp(AsyncOperator):
         g.invalidated_at = min(g.invalidated_at, b)
         del g.states[b:]
         if self.incremental and (g.worker is None or g.worker.done()):
-            g.worker = asyncio.create_task(self._work(gkey, g))
+            g.worker = self.spawn(self._work(gkey, g), gkey)  # so a failure stops the run, as any other does
 
     async def on_close(self, prefix: Key) -> None:
         if len(prefix) > self.depth:
