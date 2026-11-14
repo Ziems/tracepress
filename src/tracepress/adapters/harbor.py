@@ -15,7 +15,7 @@ from typing import Any
 
 from ..rows import Closed, Event, Key, Row, RowAdded
 from ..schema import Schema
-from .atif import STEP_COLUMNS, TOOL_CALL_COLUMNS, load_json, step_rows
+from .atif import STEP_COLUMNS, STEP_RECORD, TOOL_CALL_COLUMNS, load_json, step_rows
 from .base import Adapter
 
 TRIAL_COLUMNS = {
@@ -34,6 +34,7 @@ TRIAL_COLUMNS = {
     "finished_at": str,
     "duration_s": float,
     "path": str,
+    "instruction": str,  # the task the agent was given: the trajectory's first user message
 }
 
 # Small trial fields copied onto steps, tool calls and tests so they can be grouped on directly.
@@ -96,22 +97,23 @@ class HarborAdapter(Adapter):
     levels = ("dataset", "task", "trial", "step")
 
     def __init__(self, trials: list[Trial]):
-        self.trials = trials
+        self.trial_dirs = trials
 
     def tables(self) -> dict[str, Schema]:
         carried = {c: str for c in CARRIED}
+        per_trial = {c: 3 for c in CARRIED}  # one value per trial (dataset > task > trial)
         return {
             "trials": Schema(self.levels[:3], dict(TRIAL_COLUMNS)),
-            "steps": Schema(self.levels, {**carried, **STEP_COLUMNS}),
-            "tool_calls": Schema((*self.levels, "call"), {**carried, **TOOL_CALL_COLUMNS}),
-            "tests": Schema((*self.levels[:3], "test"), {**carried, **TEST_COLUMNS}),
+            "steps": Schema(self.levels, {**carried, **STEP_COLUMNS}, per_trial, STEP_RECORD),
+            "tool_calls": Schema((*self.levels, "call"), {**carried, **TOOL_CALL_COLUMNS}, per_trial),
+            "tests": Schema((*self.levels[:3], "test"), {**carried, **TEST_COLUMNS}, per_trial),
         }
 
     async def events(self, table: str) -> AsyncIterator[Event]:
         # Batch: every trial is finished, so close each task and dataset as soon as
         # its trials have been emitted. Streaming closure for Harbor is still open.
         by_task: dict[tuple[str, str], list[Trial]] = {}
-        for trial in self.trials:
+        for trial in self.trial_dirs:
             by_task.setdefault((trial.dataset, trial.task), []).append(trial)
         datasets = sorted({d for d, _ in by_task})
         for dataset in datasets:
@@ -129,7 +131,7 @@ class HarborAdapter(Adapter):
         values = trial_values(trial)
         carried = {c: values[c] for c in CARRIED}
         if table == "trials":
-            yield RowAdded(Row(trial.key, values))
+            yield RowAdded(Row(trial.key, {**values, "instruction": await _instruction(trial)}))
         elif table == "tests":
             ctrf = trial.path / "verifier" / "ctrf.json"
             if ctrf.exists():
@@ -154,6 +156,15 @@ class HarborAdapter(Adapter):
                     for call in calls:
                         yield RowAdded(call)
                     yield Closed(step.key)
+
+
+async def _instruction(trial: Trial) -> str | None:
+    path = trial.path / "agent" / "trajectory.json"
+    if not path.exists():
+        return None
+    steps = step_rows(await load_json(path), trial.key, {})
+    return next((step.values["message"] for step, _ in steps
+                 if step.values["source"] == "user" and step.values["message"]), None)
 
 
 def _is_trial_result(path: Path) -> dict | None:

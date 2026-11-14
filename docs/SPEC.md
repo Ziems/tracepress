@@ -84,6 +84,11 @@ Same by-name binding as `lm_map`, with one change inside a reduce:
 - A reserved name (e.g. `rows`) receives whole child records.
 - A name that is part of the group key always binds to the key (it is constant within the
   group). This lets `group_by("trial", "reward")` pass `reward` as a scalar.
+- A column the schema knows is constant within the group (its `grain` is at or above the
+  group's depth: Harbor's `model` on steps, or anything joined from `trials`) also binds as a
+  scalar, and is carried onto the output rows.
+- The child level's name (`step` when grouping steps) receives each child's whole record
+  (the schema's `record` columns), as does `lm_map("step -> ...")` for one row.
 
 ```python
 per_trial.group_by("task").lm_reduce(
@@ -109,10 +114,9 @@ results are combined with the merge signature.
 
 ### Deferred
 
-- **Joins** (`join` on keys, `lm_join` semantic predicate). Needed for two-pass patterns
-  such as "build a failure taxonomy, then label each trial against it". The first real
-  pipeline already wanted one: attaching each trial's reward to its steps currently takes
-  a Python dict lookup inside `map`.
+- **Semantic joins** (`lm_join` predicate). Key joins exist: `steps.join(trials)` adds the
+  matching parent row's columns when the other table's levels are a prefix of this one's.
+  Joins on non-prefix keys are not supported yet.
 
 ## Implementation status
 

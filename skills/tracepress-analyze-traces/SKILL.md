@@ -117,24 +117,16 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    ```python
    import dspy
 
-   trials, tests = tp.collect(src.table("trials"), src.table("tests"))   # plain floats, see pitfalls
-   rewards = {r.trial: r.reward for r in trials}
-   failed_tests = {}
-   for t in tests:
-       if t.status != "passed":
-           failed_tests.setdefault(t.trial, []).append(t.name.split("::")[-1])
+   failed_tests = (src.tests.filter(lambda r: r.status != "passed").group_by("trial")
+                   .reduce(lambda rs: {"failed_tests": ", ".join(r.name.split("::")[-1] for r in rs)},
+                           columns={"failed_tests": str}))
 
-   notes = src.table("steps").lm_map("source, message, reasoning, tool_calls: list[dict], observation -> what_happened, is_mistake: bool",
-                                     instructions="Summarize this step in one sentence; was it a mistake? "
-                                                  "For a user step (the first is the task), say what the agent was asked to do.")
-   per_trial = (
-       notes.map(lambda r: {"reward": rewards[r.trial],
-                            "failed_tests": ", ".join(failed_tests.get(r.trial, [])) or "none"},
-                 columns={"reward": float, "failed_tests": str})
-       .group_by("trial", "reward", "failed_tests")
-       .lm_reduce("reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
-                  instructions="... explain the failure using the verifier's failed tests.")
-   )
+   notes = src.steps.lm_map("step -> what_happened, is_mistake: bool",
+                            instructions="Summarize this step in one sentence; was it a mistake? "
+                                         "For a user step (the first is the task), say what the agent was asked to do.")
+   per_trial = notes.join(src.trials).join(failed_tests).group_by("trial").lm_reduce(
+       "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
+       instructions="... explain the failure using the verifier's failed tests.")
    per_task = per_trial.group_by("task").lm_reduce(
        "task, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
        instructions="Write each failure as what the agent was supposed to do and what it did instead.",
@@ -144,23 +136,30 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    Before writing it, read "Getting good output" below: which operators get Chain of Thought,
    and what context to pass in.
 
-   **Pass step columns to the signature as they are** (`source, message, reasoning, tool_calls: list[dict], observation`, or
-   `name, arguments: dict, result` for a `tool_calls` row) rather than rendering them into one text column: DSPy labels each field, and
-   nothing gets cut. Don't clip tool output in prompts; an error is often in the middle of a long
+   **Name the row's own level to pass the whole row**: `step` on a steps table is the step's
+   `source, message, reasoning, tool_calls, observation` as one record (the same in `lm_reduce` and
+   `lm_fold`, where `step` gives each child step). Otherwise pass columns as they are (e.g.
+   `name, arguments: dict, result` for a `tool_calls` row) rather than rendering them into one text
+   column: DSPy labels each field, and nothing gets cut. Don't clip tool output in prompts; an error is often in the middle of a long
    log. (`clip` in `tracepress.pipelines.harbor` is for printing results.) `examples/failure_modes.py` has the full four-level
-   pipeline, including failed-run counts (`build(src, trials, tests)`).
+   pipeline, including failed-run counts.
 
    Operators:
    - `map(fn, columns=...)`, `filter(pred)`, `select(*cols)`, `explode(col)`: plain Python, free
+   - `join(other)`: adds the columns of `other`'s matching row (other's levels must be a prefix
+     of this table's, e.g. `src.steps.join(src.trials)`)
    - `lm_map(sig)`: one call per row; outputs added as columns
    - `lm_filter(sig)`: keeps rows where the signature's single `bool` output is true
    - `lm_extract("x -> items: list[str]", keep=(...))`: one new row per list element, one level deeper
-   - `group_by(*names).lm_reduce(sig)`: one row per group
+   - `group_by(*names).lm_reduce(sig)`: one row per group; `group_by()` reduces the whole table
    - `group_by(*names).reduce(fn)`: Python reduce, `fn(rows) -> dict`
 
    How `lm_reduce` binds its inputs:
    - An input naming a **group key** (a hierarchy level, or an extra column passed to `group_by`)
      gets that single value.
+   - An input naming a column that is **constant within the group** (a trial's `reward` or
+     `instruction` on its steps, joined from `src.trials`) also gets a single value, and the
+     column is carried onto the output rows so the next level up can use it.
    - Any other input names a **child column**. The children arrive as one record per child, so
      values from the same child stay together.
    - `rows` gets whole child records.
@@ -222,10 +221,9 @@ pass in everything that explains the run. Summaries are only as specific as thei
   Include it in the signature. It's often the clearest signal of why a run
   went wrong. Check whether `reasoning` is non-empty before relying on it: some agents (e.g. Claude
   Code in Harbor) record redacted or empty reasoning.
-- **Counts and rates:** compute them in Python and pass them in as group keys. LMs miscount.
+- **Counts and rates:** compute them in Python (a `reduce`) and `join` them on. LMs miscount.
 
-Attach trial-level facts to child rows with a dict lookup in `map`, and include them in `group_by`
-so they're scalar reduce inputs. Then phrase the output for a reader who hasn't seen the traces.
+Attach trial-level facts to child rows with `join`; they become scalar reduce inputs on their own. Then phrase the output for a reader who hasn't seen the traces.
 For failures, that means "supposed to X, but did Y", ending with how many runs it affected.
 `examples/failure_modes.py` does all of this.
 
@@ -269,9 +267,8 @@ commands = harbor.step_taxonomy(src)               # one row per failed tool cal
   differently in prompts than `1.0`, which changes the prompt and misses the cache. Build lookups
   from `Row`s, not DataFrame columns.
 - **Don't name a column after a key level.** For example, use `step_text`, not `step`. `map` raises
-  an error when a column would shadow a level.
-- **There are no joins yet.** Attach trial-level values (reward, etc.) to steps with a dict lookup in
-  `map`, as above. To make such a value a scalar reduce input, include it in `group_by`.
+  an error when a column would shadow a level, and a signature input named `step` on a steps table
+  means the whole step.
 - **`lm_filter` needs exactly one `bool` output**, and `lm_extract` exactly one `list[...]` output.
   Unknown input names fail when the pipeline is built, before any LLM call.
 - **Changing prompts, instructions or input rendering re-runs those calls.** Avoid gratuitous edits

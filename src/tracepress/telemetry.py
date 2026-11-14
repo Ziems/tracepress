@@ -47,7 +47,7 @@ NOTICE = (
 )
 
 # Plan node labels (see plan.py); anything else is reported as "other".
-OPS = {"map", "filter", "select", "explode", "reduce", "lm_map", "lm_filter", "lm_extract", "lm_reduce", "lm_fold"}
+OPS = {"map", "filter", "select", "explode", "reduce", "lm_map", "lm_filter", "lm_extract", "lm_reduce", "lm_fold", "join"}
 SOURCES = {
     "HarborAdapter": "harbor", "ATIFAdapter": "atif", "RowsAdapter": "rows", "ReplayAdapter": "replay",
     "ClaudeCodeAdapter": "claude_code", "CodexAdapter": "codex", "OTelAdapter": "otel", "OTLPReceiver": "otlp",
@@ -120,10 +120,13 @@ def _error_type(error: BaseException | None) -> str | None:
 
 def _walk(nodes: list[Node]) -> list[Node]:
     seen: dict[int, Node] = {}
-    for node in nodes:
-        while node is not None and id(node) not in seen:
-            seen[id(node)] = node
-            node = node.parent
+    stack = list(nodes)
+    while stack:
+        node = stack.pop()
+        if node is None or id(node) in seen:
+            continue
+        seen[id(node)] = node
+        stack.extend([node.parent, *node.others])
     return list(seen.values())
 
 

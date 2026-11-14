@@ -42,6 +42,12 @@ def supersedes(new: Row, old: Row | None) -> bool:
     return new.values != old.values
 
 
+def whole_record(row: Row, columns: tuple[str, ...] | None) -> dict[str, Any]:
+    """A row as one input value: its `columns` (all of them if None), empty ones dropped."""
+    names = columns if columns is not None else tuple(row.values)
+    return {c: v for c in names if (v := row.values.get(c)) not in (None, "", [], {})}
+
+
 class Operator:
     def __init__(self) -> None:
         self.outputs: list[asyncio.Queue] = []
@@ -207,10 +213,12 @@ class LMRowOp(AsyncOperator):
     delivery) or a higher version (a stale update) is skipped, so duplicates cost nothing.
     """
 
-    def __init__(self, sig, lm=None, module: type[dspy.Module] = dspy.Predict, on_error: str = "skip"):
+    def __init__(self, sig, lm=None, module: type[dspy.Module] = dspy.Predict, on_error: str = "skip",
+                 records: dict[str, tuple[str, ...] | None] | None = None):
         super().__init__(on_error)
         self.sig = sig
         self.inputs = sigs.inputs(sig)
+        self.records = records or {}  # inputs that receive the whole row -> its columns
         self.lm = resolve_lm(lm)
         self.module = module(sig)
         self.seen: dict[Key, Row] = {}
@@ -228,7 +236,8 @@ class LMRowOp(AsyncOperator):
         await super().on_close(prefix)
 
     async def _run(self, row: Row, updated: bool) -> None:
-        inputs = {name: row.get(name) for name in self.inputs}
+        inputs = {name: whole_record(row, self.records[name]) if name in self.records else row.get(name)
+                  for name in self.inputs}
         pred = await self.guarded(f"row {row.key}", self.executor.call(self.module, self.lm, inputs, op=self.label))
         if pred is not None:
             self.handle(row, pred, updated)
@@ -293,6 +302,7 @@ class GroupOp(AsyncOperator):
     """
 
     batch = 1
+    carry: tuple[str, ...] = ()  # group constants copied onto each output row
 
     def __init__(self, hier_levels: tuple[str, ...], extra: tuple[str, ...], on_error: str = "skip",
                  emit_every: int | None = None):
@@ -368,6 +378,9 @@ class GroupOp(AsyncOperator):
             self._emit(gkey, g, values, final=True)
 
     def _emit(self, gkey: Key, g: Group, values: dict[str, Any], final: bool) -> None:
+        if self.carry and g.order:
+            first = g.rows[g.order[0]]
+            values = {**values, **{c: first.get(c, None) for c in self.carry if c not in values}}
         g.version += 1
         self.emit_row(Row(gkey, values, final, g.version), updated=g.version > 1)
 
@@ -404,7 +417,7 @@ class LMReduceOp(GroupOp):
     def __init__(
         self,
         sig,
-        key_inputs: dict[str, Any],  # group-key input -> type
+        key_inputs: dict[str, Any],  # scalar input (group key or group constant) -> type
         child_columns: list[str] | None,  # None = whole records (the `rows` input)
         children_name: str,
         hier_levels,
@@ -414,15 +427,22 @@ class LMReduceOp(GroupOp):
         chunk_chars: int = 120_000,
         on_error: str = "skip",
         emit_every: int | None = None,
+        constants: tuple[str, ...] = (),  # key_inputs read from the children (one value per group)
+        record: tuple[str, tuple[str, ...] | None] | None = None,  # (child level name, its columns)
     ):
         super().__init__(hier_levels, extra, on_error, emit_every)
         self.batch = emit_every or 1
         self.key_inputs = key_inputs
+        self.constants = constants
         self.child_columns = child_columns
+        self.record = record
         self.children_name = children_name
         self.chunk_chars = chunk_chars
         self.lm = resolve_lm(lm)
-        reduce_sig = sigs.reduce_signature(sig, key_inputs, child_columns or [sigs.ROWS], children_name)
+        described = child_columns or [sigs.ROWS]
+        if record is not None and record[1] is not None:
+            described = [c for name in described for c in (record[1] if name == record[0] else (name,))]
+        reduce_sig = sigs.reduce_signature(sig, key_inputs, described, children_name)
         self.outputs_names = list(sig.output_fields)
         self.reducer = module(reduce_sig)
         self.merger = module(sigs.merge_signature(reduce_sig, key_inputs, children_name))
@@ -436,17 +456,25 @@ class LMReduceOp(GroupOp):
     def child_record(self, row: Row) -> dict[str, Any]:
         if self.child_columns is None:
             return dict(row.values)
-        return {c: row.get(c) for c in self.child_columns}
+        out: dict[str, Any] = {}
+        for c in self.child_columns:
+            if self.record is not None and c == self.record[0]:
+                out.update(whole_record(row, self.record[1]))
+            else:
+                out[c] = row.get(c)
+        return out
 
-    def keys(self, gkey: Key) -> dict[str, Any]:
-        return {name: dict(gkey)[name] for name in self.key_inputs}
+    def keys(self, gkey: Key, row: Row) -> dict[str, Any]:
+        key = dict(gkey)
+        return {name: row.get(name, None) if name in self.constants else key[name] for name in self.key_inputs}
 
     async def step(self, gkey, prev, batch):
         new = {f"new_{self.children_name}": [self.child_record(r) for r in batch]}
-        return await self._call(self.runner, self.keys(gkey), {"current": _plain(prev) if prev else None, **new})
+        keys = self.keys(gkey, batch[0])
+        return await self._call(self.runner, keys, {"current": _plain(prev) if prev else None, **new})
 
     async def finalize(self, gkey, rows, states):
-        keys = self.keys(gkey)
+        keys = self.keys(gkey, rows[0]) if rows else {name: None for name in self.key_inputs}
         children = [self.child_record(r) for r in rows]
         chunks = _chunk(children, self.chunk_chars)
         partials = await asyncio.gather(
@@ -485,11 +513,15 @@ class FoldOp(GroupOp):
         module: type[dspy.Module] = dspy.Predict,
         on_error: str = "skip",
         emit_every: int | None = None,
+        constants: tuple[str, ...] = (),
+        record: tuple[str, tuple[str, ...] | None] | None = None,
     ):
         super().__init__(hier_levels, extra, on_error, emit_every)
         self.spec = spec
         self.init = init
         self.key_inputs = key_inputs
+        self.constants = constants
+        self.record = record
         self.lm = resolve_lm(lm)
         self.module = module(sigs.fold_signature(spec, key_inputs, child_inputs, child_name))
 
@@ -507,8 +539,12 @@ class FoldOp(GroupOp):
         for name in self.spec.inputs:
             if name in self.spec.state:
                 inputs[self.spec.previous(name)] = state[name]
+            elif name in self.constants:
+                inputs[name] = row.get(name, None)
             elif name in self.key_inputs:
                 inputs[name] = dict(gkey)[name]
+            elif self.record is not None and name == self.record[0]:
+                inputs[name] = whole_record(row, self.record[1])
             else:
                 inputs[name] = row.get(name)
         pred = await self.executor.call(self.module, self.lm, inputs, op=self.label)
@@ -516,6 +552,100 @@ class FoldOp(GroupOp):
 
     async def finalize(self, gkey, rows, states):
         return states[-1] if states else self.empty_state()
+
+
+# --- Joins ------------------------------------------------------------------------------
+
+
+class JoinOp(Operator):
+    """Adds the columns of the matching row from a second table, the right side.
+
+    The right table's levels are a prefix of this table's, so each row has at most one
+    match: the right row keyed by this row's key cut to the right's depth (a step's trial).
+    Rows wait for their match until it arrives, or until the right side closes that key
+    or ends; rows with no match pass through unchanged. Columns already on the row win.
+    A newer version of a right row re-emits the rows it was joined onto.
+    """
+
+    def __init__(self, depth: int):
+        super().__init__()
+        self.depth = depth
+        self.right: dict[Key, Row] = {}
+        self.right_closed: list[Key] = []
+        self.right_done = asyncio.Event()
+        self.waiting: dict[Key, list[tuple[Row, bool]]] = {}  # right key -> rows waiting for it
+        self.joined: dict[Key, dict[Key, Row]] = {}  # right key -> rows emitted, for re-emits
+        self.held: list[Key] = []  # closes held back behind waiting rows
+
+    def ready(self, rkey: Key) -> bool:
+        return (rkey in self.right or self.right_done.is_set()
+                or any(is_prefix(p, rkey) for p in self.right_closed))
+
+    def merge(self, row: Row) -> Row:
+        right = self.right.get(row.key[: self.depth])
+        if right is None:
+            return row
+        values = {**row.values, **{k: v for k, v in right.values.items() if k not in row.values}}
+        return Row(row.key, values, row.final and right.final, row.version)
+
+    def send(self, row: Row, updated: bool) -> None:
+        self.joined.setdefault(row.key[: self.depth], {})[row.key] = row
+        self.emit_row(self.merge(row), updated)
+
+    async def on_row(self, row: Row, updated: bool) -> None:
+        rkey = row.key[: self.depth]
+        if self.ready(rkey):
+            self.send(row, updated)
+        else:
+            self.waiting.setdefault(rkey, []).append((row, updated))
+
+    async def on_close(self, prefix: Key) -> None:
+        self.held.append(prefix)
+        self.release()
+
+    def blocked(self, prefix: Key) -> bool:
+        return any(is_prefix(prefix, k) or is_prefix(k, prefix) for k in self.waiting)
+
+    def release(self) -> None:
+        still = []
+        for prefix in self.held:
+            if self.blocked(prefix):
+                still.append(prefix)
+                continue
+            self.emit(Closed(prefix))
+            for rkey in [k for k in self.joined if is_prefix(prefix, k)]:
+                del self.joined[rkey]  # nothing more is emitted under a closed prefix
+        self.held = still
+
+    def flush(self) -> None:
+        for rkey in [k for k in self.waiting if self.ready(k)]:
+            for row, updated in self.waiting.pop(rkey):
+                self.send(row, updated)
+        self.release()
+
+    async def on_end(self) -> None:
+        await self.right_done.wait()
+        self.flush()
+
+    async def consume_right(self, queue: asyncio.Queue) -> None:
+        while True:
+            event = await queue.get()
+            if event is END:
+                self.right_done.set()
+            elif isinstance(event, Closed):
+                self.right_closed.append(event.prefix)
+            else:
+                row = event.row
+                if not supersedes(row, self.right.get(row.key)):
+                    continue
+                first = row.key not in self.right
+                self.right[row.key] = row
+                if not first:
+                    for left in self.joined.get(row.key, {}).values():
+                        self.emit_row(self.merge(left), updated=True)
+            self.flush()
+            if event is END:
+                return
 
 
 def _plain(values: dict[str, Any]) -> dict[str, Any]:

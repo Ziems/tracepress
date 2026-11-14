@@ -87,8 +87,14 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
             queue: asyncio.Queue = asyncio.Queue()
             parent, live = build(node.parent)
             parent.outputs.append(queue)
-            op.live = live
             coros.append(op.consume(queue))
+            for other in node.others:  # a second input, e.g. the right side of a join
+                side: asyncio.Queue = asyncio.Queue()
+                other_op, other_live = build(other)
+                other_op.outputs.append(side)
+                live = live or other_live
+                coros.append(op.consume_right(side))
+            op.live = live
         return op, op.live
 
     sinks = sinks or [CollectSink() for _ in nodes]

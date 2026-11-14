@@ -27,7 +27,7 @@ from typing import Any
 
 from ..rows import Closed, Event, Key, Row, RowAdded
 from ..schema import Schema
-from .atif import STEP_COLUMNS, TOOL_CALL_COLUMNS
+from .atif import STEP_COLUMNS, STEP_RECORD, TOOL_CALL_COLUMNS
 from .base import Adapter
 
 TRACE_COLUMNS = {
@@ -630,7 +630,7 @@ def otel_tables() -> dict[str, Schema]:
     return {
         "traces": Schema(("trace",), dict(TRACE_COLUMNS)),
         "spans": Schema(("trace", "span"), dict(SPAN_COLUMNS)),
-        "steps": Schema(("trace", "step"), dict(OTEL_STEP_COLUMNS)),
+        "steps": Schema(("trace", "step"), dict(OTEL_STEP_COLUMNS), {}, STEP_RECORD),
         "tool_calls": Schema(("trace", "step", "call"), dict(OTEL_CALL_COLUMNS)),
     }
 
