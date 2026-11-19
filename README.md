@@ -128,6 +128,10 @@ print(detector.optimize_report)                       # held-out score before an
 detector.instructions                                 # the tuned prompt
 ```
 
+[examples/optimize_step_kinds.py](https://github.com/Ziems/tracepress/blob/main/examples/optimize_step_kinds.py)
+runs this on the sample job: classifying steps from their summaries, it took held-out accuracy
+from 0.62 to 0.69 for about 2 cents.
+
 ## Built-in Terminal-Bench taxonomies
 
 For Harbor jobs, the failure taxonomies from the
