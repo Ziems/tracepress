@@ -5,7 +5,7 @@ Name checks happen here, at build time, so a typo in a signature fails before an
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -83,27 +83,79 @@ class Table:
         depth = len(self.schema.levels)
         return {k: min(self.schema.grain.get(k, depth), depth) for k in keep}
 
-    def join(self, other: Table) -> Table:
-        """Add the columns of `other`'s matching row to each row.
+    def join(self, other: Table, on: str | Sequence[str], *, how: str = "left",
+             columns: Sequence[str] | None = None, suffix: str | None = None) -> Table:
+        """Add the columns of `other`'s matching row to each row. Each row matches at most one.
 
-        `other` must be keyed by a prefix of this table's levels, e.g. trials onto steps:
-        `src.steps.join(src.trials)` gives every step its trial's reward and instruction.
-        Columns this table already has are kept as they are.
+        `on` names what to match on:
+        - a key level of both tables, e.g. `src.steps.join(src.trials, on="trial")`. `other`'s
+          levels must be a prefix of this table's, and the match is on the whole key down to that
+          level (a step's own trial). Rows stream through as soon as their match arrives.
+        - one or more columns (or levels) that both tables have, e.g.
+          `trials.join(task_info, on="task_name")`. `other` must have one row per value. Rows
+          wait until `other` has been read to the end, so use this for lookup tables, not for
+          LM output you want to see as it streams.
+
+        `how="left"` keeps rows with no match, unchanged; `how="inner"` drops them. `columns`
+        picks which of `other`'s columns to add (default: all). A column both tables have is an
+        error, unless `suffix` is given, which renames `other`'s copy (`reward` -> `reward_trial`).
+        In a level join, columns this table already has once per matched key (a step's `model`,
+        which is its trial's) are left as they are, so joining the same parent twice is harmless.
         """
+        names = (on,) if isinstance(on, str) else tuple(on)
+        if not names:
+            raise ValueError("join: `on` needs at least one name")
+        if how not in ("left", "inner"):
+            raise ValueError(f"join: how={how!r} isn't supported; use 'left' or 'inner'")
         left, right = self.schema, other.schema
-        depth = len(right.levels)
-        if left.levels[:depth] != right.levels:
-            raise ValueError(f"join: the other table's levels {list(right.levels)} must be a prefix of this "
-                             f"table's levels {list(left.levels)}")
-        if left.open or right.open:
-            columns = None
+        self.schema.require(names, "join (this table)")
+        other.schema.require(names, "join (the other table)")
+        by_level = all(n in left.levels and n in right.levels for n in names)
+        if by_level:
+            depth = len(right.levels)
+            if left.levels[:depth] != right.levels:
+                raise ValueError(f"join: the other table's levels {list(right.levels)} must be a prefix of this "
+                                 f"table's levels {list(left.levels)} to join on {list(names)}")
+            if max(right.levels.index(n) for n in names) != depth - 1:
+                raise ValueError(f"join: the other table has several rows per {list(names)}. Join on its "
+                                 f"deepest level, {right.levels[-1]!r}, so each row matches one.")
+            grain_depth = depth
         else:
-            columns = {**left.columns, **{c: t for c, t in right.columns.items() if c not in left.columns}}
-        added = right.columns or {}
-        grain = {**{c: min(right.grain.get(c, depth), depth) for c in added if c not in (left.columns or {})},
-                 **left.grain}
-        schema = replace(left, columns=columns, grain=grain)
-        return Table(Node(lambda: ops.JoinOp(depth), self._node, schema, "join", others=(other._node,)))
+            depth = 0
+            # The added columns are constant wherever every `on` value is.
+            where = [left.levels.index(n) + 1 if n in left.levels else left.grain.get(n) for n in names]
+            grain_depth = None if None in where else max(where)
+        if columns is not None:
+            other.schema.require(columns, "join columns")
+        added = {c: t for c, t in (right.columns or {}).items()
+                 if c not in names and (columns is None or c in columns)}
+        if columns is not None and right.open:
+            added = {c: Any for c in columns if c not in names}
+        taken = set(left.levels) | set(left.columns or ())
+        if by_level:
+            # A column this table already holds once per matched key came from that same parent
+            # (a step's `model` is its trial's), so it's skipped rather than reported.
+            added = {c: t for c, t in added.items() if not (c in taken and left.constant(c, depth))}
+        clash = [c for c in added if c in taken]
+        if clash and suffix is None:
+            raise ValueError(f"join: column(s) {clash} are on both tables. Pass columns=[...] to add only "
+                             f"some of the other table's columns, or suffix='_x' to keep both copies.")
+        renamed = {c: c + suffix if c in clash else c for c in added}
+        still = [renamed[c] for c in clash if renamed[c] in taken]
+        if still:
+            raise ValueError(f"join: column(s) {still} still clash after adding suffix {suffix!r}")
+        if left.open or right.open:
+            schema_columns = None
+        else:
+            schema_columns = {**left.columns, **{renamed[c]: t for c, t in added.items()}}
+        grain = dict(left.grain)
+        if grain_depth is not None:
+            for c in added:
+                grain[renamed[c]] = min(right.grain.get(c, len(right.levels)), grain_depth) if by_level else grain_depth
+        schema = replace(left, columns=schema_columns, grain=grain)
+        make = lambda: ops.JoinOp(depth, on=None if by_level else names, inner=how == "inner",
+                                  columns=None if right.open and columns is None else tuple(added), suffix=suffix)
+        return Table(Node(make, self._node, schema, "join", others=(other._node,)))
 
     def group_by(self, *names: str) -> GroupedTable:
         return GroupedTable(self, names)

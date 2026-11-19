@@ -124,7 +124,7 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    notes = src.steps.lm_map("step -> what_happened, is_mistake: bool",
                             instructions="Summarize this step in one sentence; was it a mistake? "
                                          "For a user step (the first is the task), say what the agent was asked to do.")
-   per_trial = notes.join(src.trials).join(failed_tests).group_by("trial").lm_reduce(
+   per_trial = notes.join(src.trials, on="trial").join(failed_tests, on="trial").group_by("trial").lm_reduce(
        "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
        instructions="... explain the failure using the verifier's failed tests.")
    per_task = per_trial.group_by("task").lm_reduce(
@@ -146,8 +146,12 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 
    Operators:
    - `map(fn, columns=...)`, `filter(pred)`, `select(*cols)`, `explode(col)`: plain Python, free
-   - `join(other)`: adds the columns of `other`'s matching row (other's levels must be a prefix
-     of this table's, e.g. `src.steps.join(src.trials)`)
+   - `join(other, on=...)`: adds the columns of `other`'s matching row. `on` is required: a key
+     level (other's levels must be a prefix of this table's, e.g.
+     `src.steps.join(src.trials, on="trial")`), or columns both tables have, for a lookup table
+     with one row per value (this waits for the whole lookup table). `how="inner"` drops rows
+     with no match, `columns=[...]` adds only some columns, and `suffix="_x"` keeps both copies
+     of a column both tables have (otherwise that's an error)
    - `lm_map(sig)`: one call per row; outputs added as columns
    - `lm_filter(sig)`: keeps rows where the signature's single `bool` output is true
    - `lm_extract("x -> items: list[str]", keep=(...))`: one new row per list element, one level deeper

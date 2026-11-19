@@ -66,11 +66,11 @@ src = tp.read.harbor("jobs/my-job")
 
 notes = src.steps.lm_map("step -> what_happened, is_mistake: bool", instructions="Summarize this step ...")
 
-per_trial = notes.join(src.trials).join(failed_tests).group_by("trial").lm_reduce(
+per_trial = notes.join(src.trials, on="trial").join(failed_tests, on="trial").group_by("trial").lm_reduce(
     "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
     instructions="Explain the failure using the failed tests ...")
 
-per_task = per_trial.join(failed_runs).group_by("task").lm_reduce(
+per_task = per_trial.join(failed_runs, on="task").group_by("task").lm_reduce(
     "task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
     instructions="Say what the agent was supposed to do and what it did ...",
     module=dspy.ChainOfThought)

@@ -560,51 +560,79 @@ class FoldOp(GroupOp):
 class JoinOp(Operator):
     """Adds the columns of the matching row from a second table, the right side.
 
-    The right table's levels are a prefix of this table's, so each row has at most one
-    match: the right row keyed by this row's key cut to the right's depth (a step's trial).
-    Rows wait for their match until it arrives, or until the right side closes that key
-    or ends; rows with no match pass through unchanged. Columns already on the row win.
-    A newer version of a right row re-emits the rows it was joined onto.
+    Each row has at most one match. By default (`on=None`, a join on key levels) the match is
+    the right row keyed by this row's key cut to the right's depth (a step's trial); rows wait
+    for it until it arrives, or until the right side closes that key or ends. With `on` set to
+    column names, the match is the right row with the same values in those columns; rows wait
+    until the right side has ended, since any right row could still match.
+
+    Rows with no match pass through unchanged (`inner=False`) or are dropped. `columns` limits
+    what's copied; a copied column the row already has is renamed with `suffix`, or skipped
+    when there's no suffix. A newer version of a right row re-emits the rows it was joined onto.
     """
 
-    def __init__(self, depth: int):
+    def __init__(self, depth: int, on: tuple[str, ...] | None = None, inner: bool = False,
+                 columns: tuple[str, ...] | None = None, suffix: str | None = None):
         super().__init__()
         self.depth = depth
-        self.right: dict[Key, Row] = {}
+        self.on = on
+        self.inner = inner
+        self.columns = columns
+        self.suffix = suffix
+        self.right: dict[Any, Row] = {}  # match key -> right row
         self.right_closed: list[Key] = []
         self.right_done = asyncio.Event()
-        self.waiting: dict[Key, list[tuple[Row, bool]]] = {}  # right key -> rows waiting for it
-        self.joined: dict[Key, dict[Key, Row]] = {}  # right key -> rows emitted, for re-emits
+        self.waiting: dict[Any, list[tuple[Row, bool]]] = {}  # match key -> rows waiting for it
+        self.joined: dict[Any, dict[Key, Row]] = {}  # match key -> rows emitted, for re-emits
         self.held: list[Key] = []  # closes held back behind waiting rows
 
-    def ready(self, rkey: Key) -> bool:
-        return (rkey in self.right or self.right_done.is_set()
-                or any(is_prefix(p, rkey) for p in self.right_closed))
+    def left_match(self, row: Row) -> Any:
+        return row.key[: self.depth] if self.on is None else tuple(row.get(n, None) for n in self.on)
 
-    def merge(self, row: Row) -> Row:
-        right = self.right.get(row.key[: self.depth])
+    def right_match(self, row: Row) -> Any:
+        return row.key if self.on is None else tuple(row.get(n, None) for n in self.on)
+
+    def ready(self, match: Any) -> bool:
+        if self.right_done.is_set():
+            return True
+        if self.on is not None:
+            return False  # a column join can't know a value is missing until the right side ends
+        return match in self.right or any(is_prefix(p, match) for p in self.right_closed)
+
+    def merge(self, row: Row) -> Row | None:
+        right = self.right.get(self.left_match(row))
         if right is None:
-            return row
-        values = {**row.values, **{k: v for k, v in right.values.items() if k not in row.values}}
+            return None if self.inner else row
+        values = dict(row.values)
+        for name, value in right.values.items():
+            if (self.columns is not None and name not in self.columns) or (self.on and name in self.on):
+                continue
+            if name in values:
+                if self.suffix is None:
+                    continue
+                name += self.suffix
+            values[name] = value
         return Row(row.key, values, row.final and right.final, row.version)
 
     def send(self, row: Row, updated: bool) -> None:
-        self.joined.setdefault(row.key[: self.depth], {})[row.key] = row
-        self.emit_row(self.merge(row), updated)
+        self.joined.setdefault(self.left_match(row), {})[row.key] = row
+        merged = self.merge(row)
+        if merged is not None:
+            self.emit_row(merged, updated)
 
     async def on_row(self, row: Row, updated: bool) -> None:
-        rkey = row.key[: self.depth]
-        if self.ready(rkey):
+        match = self.left_match(row)
+        if self.ready(match):
             self.send(row, updated)
         else:
-            self.waiting.setdefault(rkey, []).append((row, updated))
+            self.waiting.setdefault(match, []).append((row, updated))
 
     async def on_close(self, prefix: Key) -> None:
         self.held.append(prefix)
         self.release()
 
     def blocked(self, prefix: Key) -> bool:
-        return any(is_prefix(prefix, k) or is_prefix(k, prefix) for k in self.waiting)
+        return any(is_prefix(prefix, row.key) for rows in self.waiting.values() for row, _ in rows)
 
     def release(self) -> None:
         still = []
@@ -613,13 +641,16 @@ class JoinOp(Operator):
                 still.append(prefix)
                 continue
             self.emit(Closed(prefix))
-            for rkey in [k for k in self.joined if is_prefix(prefix, k)]:
-                del self.joined[rkey]  # nothing more is emitted under a closed prefix
+            for match, rows in list(self.joined.items()):  # nothing more is emitted under a closed prefix
+                for key in [k for k in rows if is_prefix(prefix, k)]:
+                    del rows[key]
+                if not rows:
+                    del self.joined[match]
         self.held = still
 
     def flush(self) -> None:
-        for rkey in [k for k in self.waiting if self.ready(k)]:
-            for row, updated in self.waiting.pop(rkey):
+        for match in [k for k in self.waiting if self.ready(k)]:
+            for row, updated in self.waiting.pop(match):
                 self.send(row, updated)
         self.release()
 
@@ -636,13 +667,19 @@ class JoinOp(Operator):
                 self.right_closed.append(event.prefix)
             else:
                 row = event.row
-                if not supersedes(row, self.right.get(row.key)):
+                match = self.right_match(row)
+                current = self.right.get(match)
+                if current is not None and current.key != row.key:
+                    raise ValueError(f"join: the other table has more than one row with {dict(zip(self.on, match))}, "
+                                     "so a row could match several. Join on columns that identify one row.")
+                if not supersedes(row, current):
                     continue
-                first = row.key not in self.right
-                self.right[row.key] = row
-                if not first:
-                    for left in self.joined.get(row.key, {}).values():
-                        self.emit_row(self.merge(left), updated=True)
+                self.right[match] = row
+                if current is not None:
+                    for left in self.joined.get(match, {}).values():
+                        merged = self.merge(left)
+                        if merged is not None:
+                            self.emit_row(merged, updated=True)
             self.flush()
             if event is END:
                 return

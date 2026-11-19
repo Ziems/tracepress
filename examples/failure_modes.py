@@ -35,7 +35,7 @@ def build(src):
     )
 
     # reward and failed_tests have one value per trial, so the reduce gets each once.
-    per_trial = notes.join(src.trials).join(failed_tests).group_by("trial").lm_reduce(
+    per_trial = notes.join(src.trials, on="trial").join(failed_tests, on="trial").group_by("trial").lm_reduce(
         "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
         instructions="One agent run, step by step, and the task it was given. Reward 1.0 means it passed, and "
                      "failed_tests are the verifier's tests that failed (empty when none did). Summarize what it "
@@ -43,7 +43,7 @@ def build(src):
                      "For passes, use 'none' as failure_mode.",
     )
 
-    per_task = per_trial.join(failed_runs).group_by("task").lm_reduce(
+    per_task = per_trial.join(failed_runs, on="task").group_by("task").lm_reduce(
         "task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
         instructions="Compare these runs of one task. Write each failure as what the agent was supposed to do and "
                      "what it did instead, so it makes sense to someone who hasn't read the task. End each failure "

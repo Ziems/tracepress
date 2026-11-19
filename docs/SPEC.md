@@ -114,9 +114,14 @@ results are combined with the merge signature.
 
 ### Deferred
 
-- **Semantic joins** (`lm_join` predicate). Key joins exist: `steps.join(trials)` adds the
-  matching parent row's columns when the other table's levels are a prefix of this one's.
-  Joins on non-prefix keys are not supported yet.
+- **Semantic joins** (`lm_join` predicate). Key joins exist, and always name their key with
+  `on`. `steps.join(trials, on="trial")` matches on key levels (the other table's levels must be
+  a prefix of this one's) and streams. `trials.join(task_info, on="task_name")` matches on
+  columns, needs one right row per value, and waits for the right side to end. Both are
+  many-to-one, `how="left"` (default) or `"inner"`; `columns=` picks the columns to add, and a
+  column on both tables is an error unless `suffix=` renames the right copy (in a level join,
+  columns the left already holds once per matched key are skipped). Right, outer and
+  many-to-many joins are not supported: they'd make rows whose key isn't the left row's.
 
 ## Implementation status
 

@@ -50,7 +50,7 @@ def test_trials_have_instruction(harbor_dir):
 
 def test_join_adds_parent_columns(harbor_dir):
     src = tp.read.harbor(harbor_dir)
-    rows = src.steps.join(src.trials).collect()
+    rows = src.steps.join(src.trials, on="trial").collect()
     assert len(rows) == 9
     first = rows[0]
     assert first.instruction == "Please solve alpha." and first.reward == 1.0
@@ -61,13 +61,13 @@ def test_join_adds_parent_columns(harbor_dir):
 def test_join_needs_a_prefix(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     with pytest.raises(ValueError, match="prefix"):
-        src.trials.join(src.steps)
+        src.trials.join(src.steps, on="trial")
 
 
 def test_reduce_lifts_group_constants_and_carries_them(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     lm = echo(what_went_wrong="nothing")
-    per_trial = (src.steps.join(src.trials).group_by("trial")
+    per_trial = (src.steps.join(src.trials, on="trial").group_by("trial")
                  .lm_reduce("instruction, reward, message -> what_went_wrong", lm=lm))
     rows = per_trial.collect()
     assert len(rows) == 3
@@ -83,7 +83,7 @@ def test_reduce_lifts_group_constants_and_carries_them(harbor_dir):
 def test_hierarchy_compares_trials_by_model(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     summaries = src.steps.lm_map("step -> summary", lm=echo(summary="s"))
-    trajectories = summaries.join(src.trials).group_by("trial").lm_reduce(
+    trajectories = summaries.join(src.trials, on="trial").group_by("trial").lm_reduce(
         "instruction, reward, summary -> trajectory_summary", lm=echo(trajectory_summary="t"))
     lm = echo(where_they_diverged="here")
     contrast = trajectories.group_by("task").lm_reduce(
@@ -106,7 +106,7 @@ def test_reduce_over_whole_steps(harbor_dir):
 def test_fold_reads_whole_step_and_constants(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     lm = echo(progress="p")
-    rows = (src.steps.join(src.trials).group_by("trial")
+    rows = (src.steps.join(src.trials, on="trial").group_by("trial")
             .lm_fold("progress, instruction, step -> progress", lm=lm).collect())
     assert len(rows) == 3
     assert lm.seen[0]["instruction"] == "Please solve alpha."
@@ -146,7 +146,7 @@ class Slow(Adapter):
 
 def test_join_waits_for_late_matches():
     src = Slow()
-    joined = src.steps.join(src.trials)
+    joined = src.steps.join(src.trials, on="trial")
     rows = joined.collect()
     assert [(r.msg, r.get("reward", None)) for r in rows] == [
         ("t1-1", 1.0), ("t1-2", 1.0), ("t2-1", 0.0), ("t2-2", 0.0), ("t3-1", None), ("t3-2", None)]
@@ -163,7 +163,93 @@ def test_join_stops_cleanly_when_a_run_fails():
         raise dspy.LMBillingError("exceeds your available credits (402)", model="m")
 
     src = Slow()
-    table = src.steps.join(src.trials).lm_map("msg -> topic", lm=FuncLM(broke))
+    table = src.steps.join(src.trials, on="trial").lm_map("msg -> topic", lm=FuncLM(broke))
     with pytest.raises(dspy.LMBillingError):
         table.collect()
     assert tp.last_run().status == "failed"
+
+
+# --- Join options: on, how, columns, suffix ---------------------------------------------
+
+
+def test_join_needs_on(harbor_dir):
+    src = tp.read.harbor(harbor_dir)
+    with pytest.raises(TypeError):
+        src.steps.join(src.trials)
+
+
+def test_join_on_a_level_must_be_the_others_deepest(harbor_dir):
+    src = tp.read.harbor(harbor_dir)
+    with pytest.raises(ValueError, match="several rows per"):
+        src.steps.join(src.trials, on="task")
+    with pytest.raises(ValueError, match="unknown field"):
+        src.steps.join(src.trials, on="trail")
+
+
+def test_join_columns_and_clashes(harbor_dir):
+    src = tp.read.harbor(harbor_dir)
+    rows = src.steps.join(src.trials, on="trial", columns=["reward"]).collect()
+    assert "reward" in rows[0].values and "instruction" not in rows[0].values
+    # A step's `model` is its trial's, so it isn't a clash. A genuinely different column is.
+    outcomes = src.trials.map(lambda r: {"message": "run note"}, columns={"message": str})
+    with pytest.raises(ValueError, match=r"\['message'\] are on both tables"):
+        src.steps.join(outcomes, on="trial")
+    rows = src.steps.join(outcomes, on="trial", columns=["message"], suffix="_trial").collect()
+    assert rows[0].message == "Please solve alpha." and rows[0].message_trial == "run note"
+
+
+def test_join_on_a_column(harbor_dir):
+    src = tp.read.harbor(harbor_dir)
+    per_model = src.trials.group_by("model").reduce(lambda rs: {"runs": len(rs)}, columns={"runs": int})
+    joined = src.trials.join(per_model, on="model")
+    assert joined.schema.columns["runs"] is int
+    rows = joined.collect()
+    assert len(rows) == 4 and {r.runs for r in rows} == {4}  # every fixture run uses the same model
+
+
+class Kinds(Adapter):
+    """Steps with a `kind` column, and a lookup table of kinds that arrives late."""
+
+    levels = ("trial", "step")
+
+    def tables(self):
+        return {"steps": Schema(self.levels, {"kind": str}),
+                "kinds": Schema(("row",), {"kind": str, "label": str})}
+
+    def __init__(self, kinds):
+        self.lookup = kinds
+
+    async def events(self, table):
+        if table == "steps":
+            for t in ("t1", "t2"):
+                for i, kind in enumerate(("read", "edit", "other"), 1):
+                    yield RowAdded(Row((("trial", t), ("step", i)), {"kind": kind}))
+                yield Closed((("trial", t),))
+        else:
+            await asyncio.sleep(0.01)
+            for i, (kind, label) in enumerate(self.lookup):
+                yield RowAdded(Row((("row", i),), {"kind": kind, "label": label}))
+
+
+def test_column_join_waits_for_the_whole_lookup_and_keeps_closes_in_order():
+    src = Kinds([("read", "Read a file"), ("edit", "Edited a file")])
+    joined = src.steps.join(src.kinds, on="kind")
+    labels = [(r.trial, r.kind, r.get("label", None)) for r in joined.collect()]
+    assert labels == [("t1", "read", "Read a file"), ("t1", "edit", "Edited a file"), ("t1", "other", None),
+                      ("t2", "read", "Read a file"), ("t2", "edit", "Edited a file"), ("t2", "other", None)]
+    counts = joined.group_by("trial").reduce(lambda rs: {"n": len(rs)}).collect()
+    assert [r.n for r in counts] == [3, 3]
+    inner = src.steps.join(src.kinds, on="kind", how="inner").collect()
+    assert [r.kind for r in inner] == ["read", "edit", "read", "edit"]
+
+
+def test_column_join_rejects_duplicate_matches():
+    src = Kinds([("read", "Read a file"), ("read", "Looked at a file")])
+    with pytest.raises(ValueError, match="more than one row"):
+        src.steps.join(src.kinds, on="kind").collect()
+
+
+def test_join_how_is_checked(harbor_dir):
+    src = tp.read.harbor(harbor_dir)
+    with pytest.raises(ValueError, match="how='outer'"):
+        src.steps.join(src.trials, on="trial", how="outer")
