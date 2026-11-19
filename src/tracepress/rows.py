@@ -31,9 +31,16 @@ class Row:
     values: dict[str, Any] = field(default_factory=dict)
     final: bool = True
     version: int = 0
+    # The rows this one was built from, recorded only by `collect(lineage=True)`: a reduce's
+    # children, or () for a source row. Row-by-row operators pass their input's through.
+    _sources: tuple[Row, ...] | None = field(default=None, compare=False, repr=False)
 
     def __getattr__(self, name: str) -> Any:
-        # Only called when normal attribute lookup fails.
+        # Only called when normal attribute lookup fails. Dunders and the row's own fields
+        # aren't columns: while unpickling, `values` isn't set yet, and looking it up here
+        # would recurse.
+        if name.startswith("__") or name in ("key", "values", "final", "version", "_sources"):
+            raise AttributeError(name)
         try:
             return self.get(name)
         except KeyError:
@@ -49,6 +56,17 @@ class Row:
         if default is KeyError:
             raise KeyError(name)
         return default
+
+    def inputs(self) -> list[Row]:
+        """The rows this row was built from: a reduce's children, and theirs in turn.
+
+        Row-by-row steps (maps, joins, filters) are transparent, so a per-task row's inputs
+        are its trace summaries, and a trace summary's inputs are its steps. Source rows
+        have none. Joins follow their left side. Needs `collect(lineage=True)`.
+        """
+        if self._sources is None:
+            raise ValueError("this row has no lineage; collect with `collect(lineage=True)` to record it")
+        return list(self._sources)
 
     def to_dict(self) -> dict[str, Any]:
         return {**dict(self.key), **self.values}

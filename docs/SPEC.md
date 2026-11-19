@@ -114,9 +114,65 @@ results are combined with the merge signature.
 
 ### Deferred
 
-- **Semantic joins** (`lm_join` predicate). Key joins exist: `steps.join(trials)` adds the
-  matching parent row's columns when the other table's levels are a prefix of this one's.
-  Joins on non-prefix keys are not supported yet.
+- **Semantic joins** (`lm_join` predicate). Key joins exist, and always name their key with
+  `on`. `steps.join(trials, on="trial")` matches on key levels (the other table's levels must be
+  a prefix of this one's) and streams. `trials.join(task_info, on="task_name")` matches on
+  columns, needs one right row per value, and waits for the right side to end. Both are
+  many-to-one, `how="left"` (default) or `"inner"`; `columns=` picks the columns to add, and a
+  column on both tables is an error unless `suffix=` renames the right copy (in a level join,
+  columns the left already holds once per matched key are skipped). Right, outer and
+  many-to-many joins are not supported: they'd make rows whose key isn't the left row's.
+
+### Lineage and what-if reruns
+
+- `collect(lineage=True)` (also `tp.collect`, `acollect`) records what each row was built
+  from. `row.inputs()` returns a reduce row's children; row-by-row operators (maps, joins,
+  filters) pass their input's lineage through, so a per-task row's inputs are its trace
+  summaries and theirs are steps. Source rows have no inputs; joins follow their left side.
+  It's off by default because it keeps every intermediate row alive.
+- `table.rerun(edit={key: values_or_other_key})` returns the table as if some rows had been
+  different. A key is a `(level, id)` pair or a full key. Each edit is inserted (an `EditOp`)
+  right after the nearest node at or above the table whose rows are keyed down to that level,
+  and the plan above it is copied; untouched parts are shared. An edit to another row's key
+  copies that row's values, read by running the plan up to that node once. An edit that
+  matches no row fails the run. Unchanged LM calls hit DSPy's cache, so only dependent work
+  pays.
+
+### Tuning a step's prompt
+
+- Every LM node records an `LMSpec` (`Node.spec`): its op, current instructions, outputs, and a
+  `remake(input_table, instructions)` that re-calls the same method. `table.instructions` reads it.
+- `table.optimize(labels, metric, optimizer="gepa", budget=60, val_frac=0.3, seed=0,
+  reflection_lm=None)` tunes the table's own LM step. Labels carry the table's key column(s)
+  (at least its deepest level) plus the answer. `metric` is an output column matched exactly
+  (strings case-insensitively), or `fn(row, label) -> score | (score, feedback)`.
+- The step's input rows are collected once. Each candidate runs only the rebuilt step over the
+  labeled examples GEPA picks, through a `RowsAdapter` that keeps the input table's schema (so
+  group constants and whole-row inputs bind as before). GEPA reflects on feedback such as
+  "Expected doom_loop=True, got False". The result is the same step with the best
+  instructions, plus `.optimize_report` (train and held-out scores before and after, candidates,
+  LM calls and cost of running the step; reflection calls aren't counted). GEPA's progress goes
+  to the `tracepress` logger at debug level.
+
+### Server (`tracepress serve`, `tp.connect`)
+
+- One process holds a `Hub`: per table, the events pushed so far (`--retain` caps them) and
+  subscribers. A `ServerSource` adapter (live, unbounded) reads it: history first, then new events.
+- Clients declare tables (pickled `Schema`s; `client.stream(adapter)` does it), push events as
+  JSON (`client.push`, or `client.stream` from any adapter in a background thread), and build
+  pipelines on `client.source`, a `RemoteSource` with the server's tables and no rows (collecting
+  it locally raises).
+- `client.register(name=, pipeline=)` cloudpickles the plan's `Node` graph. The server swaps
+  every `RemoteSource` source node for its `ServerSource` and runs the plan with
+  `runtime.stream_events` as a background task; re-registering a name replaces it. Rows and
+  closes go to listeners as JSON over a websocket (`client.listen(name, from_start=False)`
+  yields `ServerEvent(kind, row, prefix)`); `from_start` sends the newest version of each row so
+  far first. Unregistering, or the pipeline stopping, ends listeners' streams.
+- LM defaults come from the server (`--lm`, its environment and `.env`). Registering runs
+  pickled code, so the server binds to localhost by default and needs `--token` (checked as a
+  bearer token) for any other host.
+- Endpoints: `POST /tables`, `GET /tables`, `POST /push`, `POST /register`, `GET /pipelines`,
+  `DELETE /pipelines/{name}`, `GET /listen/{name}` (websocket), `GET /health`.
 
 ## Implementation status
 

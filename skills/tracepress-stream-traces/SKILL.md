@@ -1,6 +1,6 @@
 ---
 name: tracepress-stream-traces
-description: Monitor agent traces as they stream in with TracePress, using running per-trace state (lm_fold), provisional reduce results (emit="update"), and simulated streams replayed from stored traces (tp.replay). Use when asked to watch agents live, track progress or stuck detection step by step, or test that a pipeline behaves the same streamed as in batch.
+description: Monitor agent traces as they stream in with TracePress, using running per-trace state (lm_fold), provisional reduce results (emit="update"), simulated streams replayed from stored traces (tp.replay), and a server that keeps pipelines running for other processes to listen to (tracepress serve, tp.connect). Use when asked to watch agents live, track progress or stuck detection step by step, keep a pipeline running continuously, alert (Slack, paging) or feed a dashboard as traces arrive, or test that a pipeline behaves the same streamed as in batch.
 ---
 
 # Streaming agent traces with TracePress
@@ -15,8 +15,20 @@ provisional rows (`final=False`) as children arrive.
 - Detecting stuck or looping agents while they run
 - Testing streaming behavior offline by replaying stored traces as a stream
 - Checking that a pipeline gives the same final results streamed and in batch
+- Keeping pipelines running on a server, so other processes (a Slack bot, a dashboard, the agent
+  runner) can act on their output as traces arrive
 
 For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill instead.
+
+## Setup
+
+- In the TracePress repo: `uv sync`; run code with `uv run python ...`.
+- Anywhere else, check it's installed with `python -c "import tracepress"`. If that fails, install it
+  from PyPI: `uv add tracepress` in a uv project, otherwise `pip install tracepress`.
+- The server (`tracepress serve`, `tp.connect`) is newer than 0.1.3. If it's missing, upgrade
+  (`uv add -U tracepress` or `pip install -U tracepress`); if it's still missing, install from
+  GitHub: `uv add git+https://github.com/Ziems/tracepress`.
+- Configure a model before running LM operators; see Setup in the `tracepress-analyze-traces` skill.
 
 ## Steps
 
@@ -105,7 +117,50 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
    With a warm cache, replaying costs nothing: duplicates are skipped, and every other prompt
    matches the batch run.
 
+6. **Keep pipelines running on a server** when something else should act on the results (a Slack
+   bot, a dashboard, a process that stops runaway sessions), or several pipelines should share one
+   stream. Any client can stream in or register, and any client can listen; they don't have to be
+   the same process or machine.
+
+   ```bash
+   tracepress serve --port 7700 --lm openrouter:openai/gpt-6-luna
+   ```
+
+   ```python
+   client = tp.connect("localhost:7700")
+   client.stream(tp.watch.otlp())           # background; or tp.replay(src) to test, .wait() for it to finish
+   live = client.source                     # the server's stream: build pipelines on this, not on src
+   doom_loops = live.steps.group_by("trace").lm_fold(
+       "notes, source, message, tool_calls -> notes, doom_loop: bool", emit="update")
+   client.register(name="doom_loops", pipeline=doom_loops)
+
+   # in any other process
+   async for e in tp.connect("localhost:7700").listen("doom_loops"):
+       if e.row is not None and e.row.doom_loop:
+           stop_session(e.row.trace)
+   ```
+
+   - A pipeline registered after traces arrived catches up on the stream so far; registering the
+     same name again replaces it. `client.pipelines()` shows each one's status and row count.
+   - `listen(name, from_start=True)` sends the rows produced so far first, then new ones.
+     Events are `added`, `updated` (a newer version of a row) or `closed`; `e.row` is a normal row.
+   - `client.push(rows, table="steps")` sends rows directly, plus `tp.Closed(prefix)` to finish a
+     group. Tables must be declared first: `client.stream(...)` does it, or `client.declare(schemas)`.
+   - The server's own `--lm` (and its environment and `.env`) is the default LM for registered
+     pipelines.
+
 ## Pitfalls
+
+- **Registering ships code.** The pipeline is pickled with its lambdas, and the server runs it.
+  Only run a server for clients you trust. It binds to localhost; any other `--host` needs
+  `--token`, and clients pass it as `tp.connect(addr, token=...)`. Functions a pipeline imports
+  from the user's own modules must be importable on the server too (lambdas and functions defined
+  in the script travel with it).
+- **Build registered pipelines on `client.source`.** A pipeline built on a local reader runs on
+  the server against that reader, not the stream. Collecting a `client.source` pipeline locally
+  raises; register it instead.
+- **The server keeps every event in memory** to catch up late pipelines. Pass `--retain N` to
+  cap events per table on a long-running server.
 
 - **Provisional rows cascade.** Any `lm_*` operator downstream of an `emit="update"` operator runs
   on every provisional row. Put `.filter(lambda r: r.final)` in between unless you want that.

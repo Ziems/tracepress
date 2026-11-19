@@ -6,6 +6,7 @@ from .lm import configure
 from .plan import GroupedTable, Table, acollect, collect, every, rows_to_pandas
 from .rows import Closed, Row, RowAdded, RowUpdated
 from .schema import Schema
+from .server import connect
 
 
 def last_run():
@@ -30,6 +31,7 @@ __all__ = [
     "acollect",
     "collect",
     "configure",
+    "connect",
     "every",
     "from_pandas",
     "from_rows",

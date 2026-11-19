@@ -22,6 +22,11 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 ## Setup
 
 - In the TracePress repo: `uv sync`; run code with `uv run python ...`.
+- Anywhere else, check it's installed with `python -c "import tracepress"`. If that fails, install it
+  from PyPI: `uv add tracepress` in a uv project, otherwise `pip install tracepress`.
+- `join(on=...)`, `rerun()`, `row.inputs()`, `optimize()` and `tp.connect` are newer than 0.1.3. If
+  one is missing, upgrade (`uv add -U tracepress` or `pip install -U tracepress`); if it's still
+  missing, install from GitHub: `uv add git+https://github.com/Ziems/tracepress`.
 - **There is no default model.** Configure one before running anything:
   `tp.configure(lm="openrouter:openai/gpt-6-luna")`. That's the suggested model, at about $0.10
   per million input tokens and $0.50 per million output tokens. Without one, a run fails with
@@ -124,7 +129,7 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    notes = src.steps.lm_map("step -> what_happened, is_mistake: bool",
                             instructions="Summarize this step in one sentence; was it a mistake? "
                                          "For a user step (the first is the task), say what the agent was asked to do.")
-   per_trial = notes.join(src.trials).join(failed_tests).group_by("trial").lm_reduce(
+   per_trial = notes.join(src.trials, on="trial").join(failed_tests, on="trial").group_by("trial").lm_reduce(
        "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
        instructions="... explain the failure using the verifier's failed tests.")
    per_task = per_trial.group_by("task").lm_reduce(
@@ -146,13 +151,25 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 
    Operators:
    - `map(fn, columns=...)`, `filter(pred)`, `select(*cols)`, `explode(col)`: plain Python, free
-   - `join(other)`: adds the columns of `other`'s matching row (other's levels must be a prefix
-     of this table's, e.g. `src.steps.join(src.trials)`)
+   - `join(other, on=...)`: adds the columns of `other`'s matching row. `on` is required: a key
+     level (other's levels must be a prefix of this table's, e.g.
+     `src.steps.join(src.trials, on="trial")`), or columns both tables have, for a lookup table
+     with one row per value (this waits for the whole lookup table). `how="inner"` drops rows
+     with no match, `columns=[...]` adds only some columns, and `suffix="_x"` keeps both copies
+     of a column both tables have (otherwise that's an error)
    - `lm_map(sig)`: one call per row; outputs added as columns
    - `lm_filter(sig)`: keeps rows where the signature's single `bool` output is true
    - `lm_extract("x -> items: list[str]", keep=(...))`: one new row per list element, one level deeper
    - `group_by(*names).lm_reduce(sig)`: one row per group; `group_by()` reduces the whole table
    - `group_by(*names).reduce(fn)`: Python reduce, `fn(rows) -> dict`
+   - `rerun(edit={("trial", "t1"): {"reward": 1.0}})` or `{("trial", "t1"): ("trial", "t2")}`: the
+     table as if those rows had been different; only work above the edit makes new LM calls
+   - `collect(lineage=True)` then `row.inputs()`: the rows a result was built from, down to steps
+   - `step.optimize(labels, metric="col")`: tune an LM step's instructions with GEPA against labeled
+     rows (a DataFrame with the step's key column and the answer); `.optimize_report` shows the gain
+   - `tracepress serve` + `tp.connect(addr)`: keep pipelines running on a live stream. Build them on
+     `client.source`, then `client.register(name=..., pipeline=...)`; any client can
+     `client.listen(name)`
 
    How `lm_reduce` binds its inputs:
    - An input naming a **group key** (a hierarchy level, or an extra column passed to `group_by`)
@@ -169,6 +186,20 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 
 4. **Try it on a sliver first.** Run with `tp.read.harbor(path, limit=1)` (or one task), read the
    outputs, and tune the instructions. Then run the full set; unchanged prompts come from the cache.
+
+   If the user has labels for some rows (a CSV of trials marked doom loop or not, say), let GEPA
+   tune the step's instructions against them instead of guessing. Call it on the LM step itself:
+
+   ```python
+   detector = src.steps.group_by("trial").lm_reduce("source, message, tool_calls -> doom_loop: bool")
+   tuned = detector.optimize(labels, metric="doom_loop")   # labels: DataFrame with trial, doom_loop
+   print(tuned.optimize_report)                            # held-out score before and after
+   tuned.instructions                                      # show the user the tuned prompt
+   ```
+
+   Only that step reruns per candidate prompt, so it's cheap, but it needs enough labels to hold
+   some out: with a dozen, the held-out score is noise. Show the user the report and the new
+   instructions before using the tuned step. `examples/optimize_step_kinds.py` is a full example.
 
 5. **Run and check the stats.**
 
@@ -189,6 +220,24 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    ```python
    df = tp.rows_to_pandas(notes_rows)                 # key levels become columns
    df[(df.trial == "some-trial") & df.is_mistake]     # the steps behind a trial's failure
+   ```
+
+   To see exactly what a conclusion was built from, collect with lineage and walk down. Each
+   `inputs()` returns the rows one level below: a task's runs, a run's steps.
+
+   ```python
+   top = overall.collect(lineage=True)[0]
+   for task in top.inputs():
+       print(task.task, task.common_failures)
+   task.inputs()[0].inputs()                          # a run's steps
+   ```
+
+   To test a hypothesis ("would this cause go away if run t1 had passed?"), rerun with an edit.
+   Only the reduces above the edited rows make new LM calls; check `tp.last_run()`:
+
+   ```python
+   what_if = overall.rerun(edit={("trial", "t1"): ("trial", "t2")})   # t1 as if it had gone like t2
+   what_if = overall.rerun(edit={("trial", "t1"): {"reward": 1.0}})   # or just change columns
    ```
 
    To ask a new question without redoing the step-level work, feed results back in:

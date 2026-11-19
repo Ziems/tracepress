@@ -5,7 +5,7 @@ Name checks happen here, at build time, so a typo in a signature fails before an
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -15,7 +15,7 @@ from . import lm as lm_config
 from . import operators as ops
 from . import runtime
 from . import signatures as sigs
-from .rows import Row
+from .rows import Key, Row
 from .schema import Schema
 from .signatures import SigLike
 
@@ -28,6 +28,17 @@ class Node:
     label: str
     pipeline: str | None = None  # set on the output nodes of built-in pipelines, for telemetry
     others: tuple[Node, ...] = ()  # further inputs, e.g. the right side of a join
+    spec: LMSpec | None = None  # set on LM nodes, so `optimize` can rebuild them with new instructions
+
+
+@dataclass(frozen=True)
+class LMSpec:
+    """How an LM node was made, so it can be rebuilt with different instructions."""
+
+    op: str  # "lm_map", "lm_filter", "lm_extract", "lm_reduce" or "lm_fold"
+    instructions: str  # what the node runs with now
+    outputs: tuple[str, ...]
+    remake: Callable[[Table, str], Table]  # (input table, instructions) -> the same node, rebuilt
 
 
 class Table:
@@ -42,8 +53,13 @@ class Table:
         cols = "?" if self.schema.open else ", ".join(self.schema.columns)
         return f"Table[{' > '.join(self.schema.levels)}]({cols})"
 
-    def _then(self, make, schema: Schema, label: str) -> Table:
-        return Table(Node(make, self._node, schema, label))
+    def _then(self, make, schema: Schema, label: str, spec: LMSpec | None = None) -> Table:
+        return Table(Node(make, self._node, schema, label, spec=spec))
+
+    @property
+    def instructions(self) -> str | None:
+        """The instructions this table's LM step runs with (None if it isn't an LM step)."""
+        return self._node.spec.instructions if self._node.spec else None
 
     # --- Plain Python operators ---------------------------------------------------------
 
@@ -83,27 +99,79 @@ class Table:
         depth = len(self.schema.levels)
         return {k: min(self.schema.grain.get(k, depth), depth) for k in keep}
 
-    def join(self, other: Table) -> Table:
-        """Add the columns of `other`'s matching row to each row.
+    def join(self, other: Table, on: str | Sequence[str], *, how: str = "left",
+             columns: Sequence[str] | None = None, suffix: str | None = None) -> Table:
+        """Add the columns of `other`'s matching row to each row. Each row matches at most one.
 
-        `other` must be keyed by a prefix of this table's levels, e.g. trials onto steps:
-        `src.steps.join(src.trials)` gives every step its trial's reward and instruction.
-        Columns this table already has are kept as they are.
+        `on` names what to match on:
+        - a key level of both tables, e.g. `src.steps.join(src.trials, on="trial")`. `other`'s
+          levels must be a prefix of this table's, and the match is on the whole key down to that
+          level (a step's own trial). Rows stream through as soon as their match arrives.
+        - one or more columns (or levels) that both tables have, e.g.
+          `trials.join(task_info, on="task_name")`. `other` must have one row per value. Rows
+          wait until `other` has been read to the end, so use this for lookup tables, not for
+          LM output you want to see as it streams.
+
+        `how="left"` keeps rows with no match, unchanged; `how="inner"` drops them. `columns`
+        picks which of `other`'s columns to add (default: all). A column both tables have is an
+        error, unless `suffix` is given, which renames `other`'s copy (`reward` -> `reward_trial`).
+        In a level join, columns this table already has once per matched key (a step's `model`,
+        which is its trial's) are left as they are, so joining the same parent twice is harmless.
         """
+        names = (on,) if isinstance(on, str) else tuple(on)
+        if not names:
+            raise ValueError("join: `on` needs at least one name")
+        if how not in ("left", "inner"):
+            raise ValueError(f"join: how={how!r} isn't supported; use 'left' or 'inner'")
         left, right = self.schema, other.schema
-        depth = len(right.levels)
-        if left.levels[:depth] != right.levels:
-            raise ValueError(f"join: the other table's levels {list(right.levels)} must be a prefix of this "
-                             f"table's levels {list(left.levels)}")
-        if left.open or right.open:
-            columns = None
+        self.schema.require(names, "join (this table)")
+        other.schema.require(names, "join (the other table)")
+        by_level = all(n in left.levels and n in right.levels for n in names)
+        if by_level:
+            depth = len(right.levels)
+            if left.levels[:depth] != right.levels:
+                raise ValueError(f"join: the other table's levels {list(right.levels)} must be a prefix of this "
+                                 f"table's levels {list(left.levels)} to join on {list(names)}")
+            if max(right.levels.index(n) for n in names) != depth - 1:
+                raise ValueError(f"join: the other table has several rows per {list(names)}. Join on its "
+                                 f"deepest level, {right.levels[-1]!r}, so each row matches one.")
+            grain_depth = depth
         else:
-            columns = {**left.columns, **{c: t for c, t in right.columns.items() if c not in left.columns}}
-        added = right.columns or {}
-        grain = {**{c: min(right.grain.get(c, depth), depth) for c in added if c not in (left.columns or {})},
-                 **left.grain}
-        schema = replace(left, columns=columns, grain=grain)
-        return Table(Node(lambda: ops.JoinOp(depth), self._node, schema, "join", others=(other._node,)))
+            depth = 0
+            # The added columns are constant wherever every `on` value is.
+            where = [left.levels.index(n) + 1 if n in left.levels else left.grain.get(n) for n in names]
+            grain_depth = None if None in where else max(where)
+        if columns is not None:
+            other.schema.require(columns, "join columns")
+        added = {c: t for c, t in (right.columns or {}).items()
+                 if c not in names and (columns is None or c in columns)}
+        if columns is not None and right.open:
+            added = {c: Any for c in columns if c not in names}
+        taken = set(left.levels) | set(left.columns or ())
+        if by_level:
+            # A column this table already holds once per matched key came from that same parent
+            # (a step's `model` is its trial's), so it's skipped rather than reported.
+            added = {c: t for c, t in added.items() if not (c in taken and left.constant(c, depth))}
+        clash = [c for c in added if c in taken]
+        if clash and suffix is None:
+            raise ValueError(f"join: column(s) {clash} are on both tables. Pass columns=[...] to add only "
+                             f"some of the other table's columns, or suffix='_x' to keep both copies.")
+        renamed = {c: c + suffix if c in clash else c for c in added}
+        still = [renamed[c] for c in clash if renamed[c] in taken]
+        if still:
+            raise ValueError(f"join: column(s) {still} still clash after adding suffix {suffix!r}")
+        if left.open or right.open:
+            schema_columns = None
+        else:
+            schema_columns = {**left.columns, **{renamed[c]: t for c, t in added.items()}}
+        grain = dict(left.grain)
+        if grain_depth is not None:
+            for c in added:
+                grain[renamed[c]] = min(right.grain.get(c, len(right.levels)), grain_depth) if by_level else grain_depth
+        schema = replace(left, columns=schema_columns, grain=grain)
+        make = lambda: ops.JoinOp(depth, on=None if by_level else names, inner=how == "inner",
+                                  columns=None if right.open and columns is None else tuple(added), suffix=suffix)
+        return Table(Node(make, self._node, schema, "join", others=(other._node,)))
 
     def group_by(self, *names: str) -> GroupedTable:
         return GroupedTable(self, names)
@@ -116,8 +184,9 @@ class Table:
         parsed, records = self._row_inputs(sigs.parse(sig, instructions))
         self.schema.require(sigs.inputs(parsed), "lm_map")
         schema = self.schema.with_columns(sigs.outputs(parsed))
+        remake = lambda t, ins: t.lm_map(sig, instructions=ins, lm=lm, module=module, on_error=on_error)
         return self._then(lambda: ops.LMMapOp(parsed, lm=lm, module=module, on_error=on_error, records=records),
-                          schema, "lm_map")
+                          schema, "lm_map", _spec("lm_map", parsed, remake))
 
     def lm_filter(self, sig: SigLike, *, instructions: str | None = None, lm=None,
                   module: type[dspy.Module] = dspy.Predict, on_error: str = "skip") -> Table:
@@ -125,8 +194,9 @@ class Table:
         parsed, records = self._row_inputs(sigs.parse(sig, instructions))
         sigs.bool_output(parsed)
         self.schema.require(sigs.inputs(parsed), "lm_filter")
+        remake = lambda t, ins: t.lm_filter(sig, instructions=ins, lm=lm, module=module, on_error=on_error)
         return self._then(lambda: ops.LMFilterOp(parsed, lm=lm, module=module, on_error=on_error, records=records),
-                          self.schema, "lm_filter")
+                          self.schema, "lm_filter", _spec("lm_filter", parsed, remake))
 
     def lm_extract(self, sig: SigLike, *, level: str | None = None, keep: tuple[str, ...] = (),
                    instructions: str | None = None, lm=None, module: type[dspy.Module] = dspy.Predict,
@@ -147,6 +217,8 @@ class Table:
             lambda: ops.LMExtractOp(parsed, level, list(keep), lm=lm, module=module, on_error=on_error,
                                     records=records),
             schema, "lm_extract",
+            _spec("lm_extract", parsed, lambda t, ins: t.lm_extract(sig, level=level, keep=keep, instructions=ins,
+                                                                   lm=lm, module=module, on_error=on_error)),
         )
 
     def _row_inputs(self, parsed):
@@ -165,15 +237,76 @@ class Table:
         """
         return runtime.stream_events(self._node, max_concurrency)
 
-    def collect(self, max_concurrency: int | None = None) -> list[Row]:
-        """Run the plan to completion and return the final rows, sorted by key."""
-        return runtime.run([self._node], max_concurrency)[0]
+    def collect(self, max_concurrency: int | None = None, lineage: bool = False) -> list[Row]:
+        """Run the plan to completion and return the final rows, sorted by key.
 
-    async def acollect(self, max_concurrency: int | None = None) -> list[Row]:
-        return (await runtime.run_async([self._node], max_concurrency))[0]
+        `lineage=True` records what each row was built from, for `row.inputs()`. It keeps
+        every intermediate row alive until the result is dropped, so it's off by default.
+        """
+        return runtime.run([self._node], max_concurrency, lineage)[0]
+
+    async def acollect(self, max_concurrency: int | None = None, lineage: bool = False) -> list[Row]:
+        return (await runtime.run_async([self._node], max_concurrency, lineage=lineage))[0]
 
     def to_pandas(self, max_concurrency: int | None = None):
         return rows_to_pandas(self.collect(max_concurrency))
+
+    # --- Tuning -------------------------------------------------------------------------
+
+    def optimize(self, labels, metric, *, optimizer: str = "gepa", budget: int = 60, val_frac: float = 0.3,
+                 seed: int = 0, reflection_lm=None, max_concurrency: int | None = None) -> Table:
+        """Tune this LM step's instructions against labeled rows, with GEPA.
+
+        `labels` is a DataFrame (or list of dicts) with this table's key column(s), e.g. `trial`,
+        plus the right answer. `metric` is an output column to match exactly (a bool, a label,
+        a number), or `fn(row, label) -> score` (or `(score, feedback)`) for anything else.
+        Returns the same step with the best instructions found; `.instructions` shows them and
+        `.optimize_report` compares scores on held-out labels before and after.
+
+        Only this step reruns for each candidate prompt, on the labeled examples GEPA asks
+        for; its input rows are read once. `budget` caps how many example runs GEPA makes.
+        """
+        from .optimize import optimize
+
+        return optimize(self, labels, metric, optimizer=optimizer, budget=budget, val_frac=val_frac,
+                        seed=seed, reflection_lm=reflection_lm, max_concurrency=max_concurrency)
+
+    # --- What-if ------------------------------------------------------------------------
+
+    def rerun(self, edit: dict) -> Table:
+        """This table as if some rows upstream had been different.
+
+        `edit` maps a row's key to new column values, or to another row's key to make it
+        look like that row: `overall.rerun(edit={("trial", "t1"): ("trial", "t2")})` or
+        `{("trial", "t1"): {"reward": 1.0}}`. A key is a `(level, id)` pair or a full key.
+        Each edit applies at the nearest table upstream (or this one) keyed by that level,
+        e.g. the trace summaries rather than the raw trials, and everything above it reruns.
+        LM calls whose inputs didn't change come from the cache, so only the work that
+        depends on the edit pays; `tp.last_run()` shows how much.
+
+        Editing to another row's key runs the plan up to that table once, to read the row.
+        """
+        node = self._node
+        by_level: dict[str, dict[Key, Any]] = {}
+        for key, value in edit.items():
+            key = _as_key(key, "edit key")
+            by_level.setdefault(key[-1][0], {})[key] = value
+        for level, edits in by_level.items():
+            target = _nearest(node, level)
+            if target is None:
+                raise ValueError(f"rerun: no table upstream is keyed by {level!r}")
+            copies = {k: _as_key(v, "edit value") for k, v in edits.items() if not isinstance(v, dict)}
+            if copies:
+                rows = runtime.run([target])[0]
+                for key, other in copies.items():
+                    match = [r for r in rows if r.key[-len(other):] == other]
+                    if not match:
+                        raise ValueError(f"rerun: no row with key {dict(other)} to copy from")
+                    edits[key] = dict(match[0].values)
+            frozen = {k: dict(v) for k, v in edits.items()}
+            edit_node = Node(lambda frozen=frozen: ops.EditOp(frozen), target, target.schema, "edit")
+            node = _replace_node(node, target, edit_node)
+        return Table(node)
 
 
 class GroupedTable:
@@ -183,6 +316,7 @@ class GroupedTable:
         levels = [n for n in names if n in schema.levels]
         depth = max((schema.levels.index(n) + 1 for n in levels), default=0)
         self._table = table
+        self._names = names
         self._hier = schema.levels[:depth]  # grouping by a level also keys by its ancestors
         self._extra = tuple(n for n in names if n not in schema.levels)
         self._key_names = [*self._hier, *self._extra]
@@ -191,7 +325,7 @@ class GroupedTable:
         depth = len(self._hier)
         self._constants = [c for c in schema.grain if schema.constant(c, depth) and c not in self._key_names]
 
-    def _then(self, make, columns: dict[str, Any] | None, label: str) -> Table:
+    def _then(self, make, columns: dict[str, Any] | None, label: str, spec: LMSpec | None = None) -> Table:
         child = self._table.schema
         carry = tuple(c for c in self._constants if columns is None or c not in columns)
         if columns is not None:
@@ -203,7 +337,7 @@ class GroupedTable:
             op.carry = carry
             return op
 
-        return self._table._then(build, schema, label)
+        return self._table._then(build, schema, label, spec)
 
     def reduce(self, fn: Callable[[list[Row]], dict[str, Any]], columns: dict[str, Any] | None = None,
                on_error: str = "raise") -> Table:
@@ -267,6 +401,9 @@ class GroupedTable:
                                    lm=lm, module=module, chunk_chars=chunk, on_error=on_error,
                                    emit_every=emit_every, constants=constants, record=record),
             sigs.outputs(parsed), "lm_reduce",
+            _spec("lm_reduce", parsed, lambda t, ins: GroupedTable(t, self._names).lm_reduce(
+                sig, emit=emit, instructions=ins, lm=lm, module=module, chunk_chars=chunk_chars,
+                on_error=on_error)),
         )
 
     def lm_fold(self, sig: str, *, init: dict[str, Any] | None = None, emit: str | every = "close",
@@ -305,6 +442,9 @@ class GroupedTable:
                                lm=lm, module=module, on_error=on_error, emit_every=emit_every,
                                constants=constants, record=record),
             dict(spec.outputs), "lm_fold",
+            LMSpec("lm_fold", instructions or "", tuple(spec.outputs),
+                   lambda t, ins: GroupedTable(t, self._names).lm_fold(
+                       sig, init=init, emit=emit, instructions=ins, lm=lm, module=module, on_error=on_error)),
         )
 
 
@@ -332,14 +472,58 @@ def _emit_every(emit: str | every) -> int | None:
     raise ValueError(f"emit must be 'close', 'update' or tp.every(n), not {emit!r}")
 
 
-def collect(*tables: Table, max_concurrency: int | None = None) -> list[list[Row]]:
+def collect(*tables: Table, max_concurrency: int | None = None, lineage: bool = False) -> list[list[Row]]:
     """Run several tables in one pass; shared upstream work runs once."""
-    return runtime.run([t._node for t in tables], max_concurrency)
+    return runtime.run([t._node for t in tables], max_concurrency, lineage)
 
 
-async def acollect(*tables: Table, max_concurrency: int | None = None) -> list[list[Row]]:
+async def acollect(*tables: Table, max_concurrency: int | None = None, lineage: bool = False) -> list[list[Row]]:
     """`collect` for code already inside an event loop, e.g. Jupyter: `await tp.acollect(a, b)`."""
-    return await runtime.run_async([t._node for t in tables], max_concurrency)
+    return await runtime.run_async([t._node for t in tables], max_concurrency, lineage=lineage)
+
+
+def _spec(op: str, parsed: type[dspy.Signature], remake: Callable[[Table, str], Table]) -> LMSpec:
+    return LMSpec(op, parsed.instructions, tuple(sigs.outputs(parsed)), remake)
+
+
+def _as_key(key: Any, what: str) -> Key:
+    """`("trial", "t1")` or a full key `(("task", "a"), ("trial", "t1"))`, as a full key."""
+    if isinstance(key, tuple) and len(key) == 2 and isinstance(key[0], str):
+        return (key,)
+    if isinstance(key, tuple) and key and all(isinstance(p, tuple) and len(p) == 2 for p in key):
+        return key
+    raise ValueError(f"rerun: {what} {key!r} should be a (level, id) pair or a tuple of them")
+
+
+def _nearest(node: Node, level: str) -> Node | None:
+    """The closest node at or above `node` whose rows are keyed down to `level`."""
+    frontier, seen = [node], set()
+    while frontier:
+        nxt = []
+        for n in frontier:
+            if id(n) in seen:
+                continue
+            seen.add(id(n))
+            if n.schema.levels and n.schema.levels[-1] == level:
+                return n
+            nxt += [p for p in (n.parent, *n.others) if p is not None]
+        frontier = nxt
+    return None
+
+
+def _replace_node(node: Node, old: Node, new: Node, memo: dict | None = None) -> Node:
+    """A copy of the plan above `node` with `old` swapped for `new`; untouched parts are shared."""
+    memo = {} if memo is None else memo
+    if node is old:
+        return new
+    if id(node) in memo:
+        return memo[id(node)]
+    parent = _replace_node(node.parent, old, new, memo) if node.parent is not None else None
+    others = tuple(_replace_node(o, old, new, memo) for o in node.others)
+    out = node if parent is node.parent and all(a is b for a, b in zip(others, node.others)) \
+        else replace(node, parent=parent, others=others)
+    memo[id(node)] = out
+    return out
 
 
 def rows_to_pandas(rows: list[Row]):
