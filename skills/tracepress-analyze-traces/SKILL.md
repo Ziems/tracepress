@@ -198,6 +198,24 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    df[(df.trial == "some-trial") & df.is_mistake]     # the steps behind a trial's failure
    ```
 
+   To see exactly what a conclusion was built from, collect with lineage and walk down. Each
+   `inputs()` returns the rows one level below: a task's runs, a run's steps.
+
+   ```python
+   top = overall.collect(lineage=True)[0]
+   for task in top.inputs():
+       print(task.task, task.common_failures)
+   task.inputs()[0].inputs()                          # a run's steps
+   ```
+
+   To test a hypothesis ("would this cause go away if run t1 had passed?"), rerun with an edit.
+   Only the reduces above the edited rows make new LM calls; check `tp.last_run()`:
+
+   ```python
+   what_if = overall.rerun(edit={("trial", "t1"): ("trial", "t2")})   # t1 as if it had gone like t2
+   what_if = overall.rerun(edit={("trial", "t1"): {"reward": 1.0}})   # or just change columns
+   ```
+
    To ask a new question without redoing the step-level work, feed results back in:
    `tp.from_rows(trial_rows).lm_map("summary, failure_mode -> category").collect()`.
    `examples/explore_results.ipynb` walks through all of this.
