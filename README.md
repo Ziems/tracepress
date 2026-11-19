@@ -117,6 +117,17 @@ what_if = overall.rerun(edit={("trial", "t1"): ("trial", "t2")})   # as if run t
 what_if.collect(); tp.last_run()          # e.g. 2 of 173 LM calls ran again
 ```
 
+If you have labels for some rows, tune a step's prompt against them with GEPA. Only that step
+reruns for each candidate prompt:
+
+```python
+labels = pd.read_csv("doom_loop_labels.csv")          # trial, doom_loop
+detector = src.steps.group_by("trial").lm_reduce("source, message, tool_calls -> doom_loop: bool")
+detector = detector.optimize(labels, metric="doom_loop")
+print(detector.optimize_report)                       # held-out score before and after
+detector.instructions                                 # the tuned prompt
+```
+
 ## Built-in Terminal-Bench taxonomies
 
 For Harbor jobs, the failure taxonomies from the

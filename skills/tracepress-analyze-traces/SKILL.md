@@ -160,6 +160,8 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    - `rerun(edit={("trial", "t1"): {"reward": 1.0}})` or `{("trial", "t1"): ("trial", "t2")}`: the
      table as if those rows had been different; only work above the edit makes new LM calls
    - `collect(lineage=True)` then `row.inputs()`: the rows a result was built from, down to steps
+   - `step.optimize(labels, metric="col")`: tune an LM step's instructions with GEPA against labeled
+     rows (a DataFrame with the step's key column and the answer); `.optimize_report` shows the gain
 
    How `lm_reduce` binds its inputs:
    - An input naming a **group key** (a hierarchy level, or an extra column passed to `group_by`)

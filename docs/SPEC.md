@@ -138,6 +138,22 @@ results are combined with the merge signature.
   matches no row fails the run. Unchanged LM calls hit DSPy's cache, so only dependent work
   pays.
 
+### Tuning a step's prompt
+
+- Every LM node records an `LMSpec` (`Node.spec`): its op, current instructions, outputs, and a
+  `remake(input_table, instructions)` that re-calls the same method. `table.instructions` reads it.
+- `table.optimize(labels, metric, optimizer="gepa", budget=60, val_frac=0.3, seed=0,
+  reflection_lm=None)` tunes the table's own LM step. Labels carry the table's key column(s)
+  (at least its deepest level) plus the answer. `metric` is an output column matched exactly
+  (strings case-insensitively), or `fn(row, label) -> score | (score, feedback)`.
+- The step's input rows are collected once. Each candidate runs only the rebuilt step over the
+  labeled examples GEPA picks, through a `RowsAdapter` that keeps the input table's schema (so
+  group constants and whole-row inputs bind as before). GEPA reflects on feedback such as
+  "Expected doom_loop=True, got False". The result is the same step with the best
+  instructions, plus `.optimize_report` (train and held-out scores before and after, candidates,
+  LM calls and cost of running the step; reflection calls aren't counted). GEPA's progress goes
+  to the `tracepress` logger at debug level.
+
 ## Implementation status
 
 Built and tested: the plan/runtime/event engine; `map`, `filter`, `select`, `explode`,

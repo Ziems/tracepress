@@ -17,6 +17,7 @@ classifiers = [
 ]
 dependencies = [
     "dspy>=3.4.1",
+    "gepa>=0.1.4",
     "pandas>=2.3.3",
     "python-dotenv>=1.2.4",
 ]

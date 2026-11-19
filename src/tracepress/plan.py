@@ -28,6 +28,17 @@ class Node:
     label: str
     pipeline: str | None = None  # set on the output nodes of built-in pipelines, for telemetry
     others: tuple[Node, ...] = ()  # further inputs, e.g. the right side of a join
+    spec: LMSpec | None = None  # set on LM nodes, so `optimize` can rebuild them with new instructions
+
+
+@dataclass(frozen=True)
+class LMSpec:
+    """How an LM node was made, so it can be rebuilt with different instructions."""
+
+    op: str  # "lm_map", "lm_filter", "lm_extract", "lm_reduce" or "lm_fold"
+    instructions: str  # what the node runs with now
+    outputs: tuple[str, ...]
+    remake: Callable[[Table, str], Table]  # (input table, instructions) -> the same node, rebuilt
 
 
 class Table:
@@ -42,8 +53,13 @@ class Table:
         cols = "?" if self.schema.open else ", ".join(self.schema.columns)
         return f"Table[{' > '.join(self.schema.levels)}]({cols})"
 
-    def _then(self, make, schema: Schema, label: str) -> Table:
-        return Table(Node(make, self._node, schema, label))
+    def _then(self, make, schema: Schema, label: str, spec: LMSpec | None = None) -> Table:
+        return Table(Node(make, self._node, schema, label, spec=spec))
+
+    @property
+    def instructions(self) -> str | None:
+        """The instructions this table's LM step runs with (None if it isn't an LM step)."""
+        return self._node.spec.instructions if self._node.spec else None
 
     # --- Plain Python operators ---------------------------------------------------------
 
@@ -168,8 +184,9 @@ class Table:
         parsed, records = self._row_inputs(sigs.parse(sig, instructions))
         self.schema.require(sigs.inputs(parsed), "lm_map")
         schema = self.schema.with_columns(sigs.outputs(parsed))
+        remake = lambda t, ins: t.lm_map(sig, instructions=ins, lm=lm, module=module, on_error=on_error)
         return self._then(lambda: ops.LMMapOp(parsed, lm=lm, module=module, on_error=on_error, records=records),
-                          schema, "lm_map")
+                          schema, "lm_map", _spec("lm_map", parsed, remake))
 
     def lm_filter(self, sig: SigLike, *, instructions: str | None = None, lm=None,
                   module: type[dspy.Module] = dspy.Predict, on_error: str = "skip") -> Table:
@@ -177,8 +194,9 @@ class Table:
         parsed, records = self._row_inputs(sigs.parse(sig, instructions))
         sigs.bool_output(parsed)
         self.schema.require(sigs.inputs(parsed), "lm_filter")
+        remake = lambda t, ins: t.lm_filter(sig, instructions=ins, lm=lm, module=module, on_error=on_error)
         return self._then(lambda: ops.LMFilterOp(parsed, lm=lm, module=module, on_error=on_error, records=records),
-                          self.schema, "lm_filter")
+                          self.schema, "lm_filter", _spec("lm_filter", parsed, remake))
 
     def lm_extract(self, sig: SigLike, *, level: str | None = None, keep: tuple[str, ...] = (),
                    instructions: str | None = None, lm=None, module: type[dspy.Module] = dspy.Predict,
@@ -199,6 +217,8 @@ class Table:
             lambda: ops.LMExtractOp(parsed, level, list(keep), lm=lm, module=module, on_error=on_error,
                                     records=records),
             schema, "lm_extract",
+            _spec("lm_extract", parsed, lambda t, ins: t.lm_extract(sig, level=level, keep=keep, instructions=ins,
+                                                                   lm=lm, module=module, on_error=on_error)),
         )
 
     def _row_inputs(self, parsed):
@@ -230,6 +250,26 @@ class Table:
 
     def to_pandas(self, max_concurrency: int | None = None):
         return rows_to_pandas(self.collect(max_concurrency))
+
+    # --- Tuning -------------------------------------------------------------------------
+
+    def optimize(self, labels, metric, *, optimizer: str = "gepa", budget: int = 60, val_frac: float = 0.3,
+                 seed: int = 0, reflection_lm=None, max_concurrency: int | None = None) -> Table:
+        """Tune this LM step's instructions against labeled rows, with GEPA.
+
+        `labels` is a DataFrame (or list of dicts) with this table's key column(s), e.g. `trial`,
+        plus the right answer. `metric` is an output column to match exactly (a bool, a label,
+        a number), or `fn(row, label) -> score` (or `(score, feedback)`) for anything else.
+        Returns the same step with the best instructions found; `.instructions` shows them and
+        `.optimize_report` compares scores on held-out labels before and after.
+
+        Only this step reruns for each candidate prompt, on the labeled examples GEPA asks
+        for; its input rows are read once. `budget` caps how many example runs GEPA makes.
+        """
+        from .optimize import optimize
+
+        return optimize(self, labels, metric, optimizer=optimizer, budget=budget, val_frac=val_frac,
+                        seed=seed, reflection_lm=reflection_lm, max_concurrency=max_concurrency)
 
     # --- What-if ------------------------------------------------------------------------
 
@@ -276,6 +316,7 @@ class GroupedTable:
         levels = [n for n in names if n in schema.levels]
         depth = max((schema.levels.index(n) + 1 for n in levels), default=0)
         self._table = table
+        self._names = names
         self._hier = schema.levels[:depth]  # grouping by a level also keys by its ancestors
         self._extra = tuple(n for n in names if n not in schema.levels)
         self._key_names = [*self._hier, *self._extra]
@@ -284,7 +325,7 @@ class GroupedTable:
         depth = len(self._hier)
         self._constants = [c for c in schema.grain if schema.constant(c, depth) and c not in self._key_names]
 
-    def _then(self, make, columns: dict[str, Any] | None, label: str) -> Table:
+    def _then(self, make, columns: dict[str, Any] | None, label: str, spec: LMSpec | None = None) -> Table:
         child = self._table.schema
         carry = tuple(c for c in self._constants if columns is None or c not in columns)
         if columns is not None:
@@ -296,7 +337,7 @@ class GroupedTable:
             op.carry = carry
             return op
 
-        return self._table._then(build, schema, label)
+        return self._table._then(build, schema, label, spec)
 
     def reduce(self, fn: Callable[[list[Row]], dict[str, Any]], columns: dict[str, Any] | None = None,
                on_error: str = "raise") -> Table:
@@ -360,6 +401,9 @@ class GroupedTable:
                                    lm=lm, module=module, chunk_chars=chunk, on_error=on_error,
                                    emit_every=emit_every, constants=constants, record=record),
             sigs.outputs(parsed), "lm_reduce",
+            _spec("lm_reduce", parsed, lambda t, ins: GroupedTable(t, self._names).lm_reduce(
+                sig, emit=emit, instructions=ins, lm=lm, module=module, chunk_chars=chunk_chars,
+                on_error=on_error)),
         )
 
     def lm_fold(self, sig: str, *, init: dict[str, Any] | None = None, emit: str | every = "close",
@@ -398,6 +442,9 @@ class GroupedTable:
                                lm=lm, module=module, on_error=on_error, emit_every=emit_every,
                                constants=constants, record=record),
             dict(spec.outputs), "lm_fold",
+            LMSpec("lm_fold", instructions or "", tuple(spec.outputs),
+                   lambda t, ins: GroupedTable(t, self._names).lm_fold(
+                       sig, init=init, emit=emit, instructions=ins, lm=lm, module=module, on_error=on_error)),
         )
 
 
@@ -433,6 +480,10 @@ def collect(*tables: Table, max_concurrency: int | None = None, lineage: bool = 
 async def acollect(*tables: Table, max_concurrency: int | None = None, lineage: bool = False) -> list[list[Row]]:
     """`collect` for code already inside an event loop, e.g. Jupyter: `await tp.acollect(a, b)`."""
     return await runtime.run_async([t._node for t in tables], max_concurrency, lineage=lineage)
+
+
+def _spec(op: str, parsed: type[dspy.Signature], remake: Callable[[Table, str], Table]) -> LMSpec:
+    return LMSpec(op, parsed.instructions, tuple(sigs.outputs(parsed)), remake)
 
 
 def _as_key(key: Any, what: str) -> Key:
