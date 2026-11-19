@@ -267,6 +267,19 @@ This project is inspired by similar work applying map reduce to agent traces.
 - [Harbor](https://github.com/harbor-framework/harbor), whose `harbor jobs summarize` command
   summarizes agent trajectories from evaluation runs.
 
+## Citation
+
+If you find this useful, feel free to cite:
+
+```bibtex
+@article{ziems2026tracescience,
+  author = {Ziems, Noah},
+  title  = {Hierarchical Map Reduce for Trace Science},
+  year   = {2026},
+  note   = {https://noahziems.com/trace-science},
+}
+```
+
 ## Development
 
 ```bash
