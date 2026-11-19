@@ -68,16 +68,28 @@ def _seconds(start: str | None, end: str | None) -> float | None:
     return (parse(end) - parse(start)).total_seconds()
 
 
+def _regraded_source(trial_dir: Path) -> str | None:
+    """A regraded trial's result has no source; its lock.json keeps the original trial's."""
+    try:
+        lock = json.loads((trial_dir / "lock.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return ((lock.get("source_trial") or {}).get("task") or {}).get("source")
+
+
 def trial_values(trial: Trial) -> dict[str, Any]:
     r = trial.result
     config = r.get("config") or {}
     agent = config.get("agent") or {}
     agent_result = r.get("agent_result") or {}
     exc = r.get("exception_info") or {}
+    # Regraded or imported jobs run a placeholder agent with no model_name; the model they
+    # were run with is still recorded in agent_info.
+    model_info = (r.get("agent_info") or {}).get("model_info") or {}
     return {
         "job_id": config.get("job_id"),
         "agent": agent.get("name"),
-        "model": agent.get("model_name"),
+        "model": agent.get("model_name") or model_info.get("name"),
         "agent_kwargs": agent.get("kwargs") or {},
         "reward": _reward(r),
         "exception_type": exc.get("exception_type"),
@@ -192,7 +204,7 @@ def read_harbor(path: str | Path, tasks: list[str] | None = None, limit: int | N
         if result is None:
             continue
         task = result.get("task_name") or result["trial_name"].rsplit("__", 1)[0]
-        dataset = result.get("source") or "local"
+        dataset = result.get("source") or _regraded_source(result_path.parent) or "local"
         if tasks and task not in tasks and task.rsplit("/", 1)[-1] not in tasks:
             continue
         found.append(Trial(result_path.parent, result, dataset, task))
