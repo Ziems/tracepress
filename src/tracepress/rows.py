@@ -36,7 +36,11 @@ class Row:
     _sources: tuple[Row, ...] | None = field(default=None, compare=False, repr=False)
 
     def __getattr__(self, name: str) -> Any:
-        # Only called when normal attribute lookup fails.
+        # Only called when normal attribute lookup fails. Dunders and the row's own fields
+        # aren't columns: while unpickling, `values` isn't set yet, and looking it up here
+        # would recurse.
+        if name.startswith("__") or name in ("key", "values", "final", "version", "_sources"):
+            raise AttributeError(name)
         try:
             return self.get(name)
         except KeyError:

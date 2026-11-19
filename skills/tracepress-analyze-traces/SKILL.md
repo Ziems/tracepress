@@ -162,6 +162,9 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    - `collect(lineage=True)` then `row.inputs()`: the rows a result was built from, down to steps
    - `step.optimize(labels, metric="col")`: tune an LM step's instructions with GEPA against labeled
      rows (a DataFrame with the step's key column and the answer); `.optimize_report` shows the gain
+   - `tracepress serve` + `tp.connect(addr)`: keep pipelines running on a live stream. Build them on
+     `client.source`, then `client.register(name=..., pipeline=...)`; any client can
+     `client.listen(name)`
 
    How `lm_reduce` binds its inputs:
    - An input naming a **group key** (a hierarchy level, or an extra column passed to `group_by`)

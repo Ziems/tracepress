@@ -188,6 +188,34 @@ Here's how one trial's note grew, from [examples/live_monitor.py](https://github
       recovered state matched, committed and replayed LSNs were ordered 1–10, …
 ```
 
+### Keep pipelines running on a server
+
+`tracepress serve` holds one live stream of traces and runs registered pipelines on it
+continuously. Any client can stream traces in or register a pipeline, and any client can
+listen. They don't have to be the same client, or on the same machine:
+
+```bash
+tracepress serve --port 7700 --lm openrouter:openai/gpt-6-luna
+```
+
+```python
+client = tp.connect("localhost:7700")
+client.stream(tp.watch.otlp())                      # or client.push(rows, table="steps")
+
+live = client.source                                # the server's stream, to build pipelines on
+frustration = live.steps.lm_map("source, message -> frustrated: bool, why")
+client.register(name="frustration", pipeline=frustration)
+
+# in another process, e.g. a Slack bot
+async for e in tp.connect("localhost:7700").listen("frustration"):
+    if e.row.frustrated:
+        slack.post(e.row.why)
+```
+
+A pipeline registered later catches up on the stream so far, and registering a name again
+replaces it. Registering ships the pipeline's code (pickled), so the server runs what clients
+send. It listens on localhost by default; any other `--host` needs `--token`.
+
 ## Your own coding sessions
 
 Claude Code and Codex keep every session on disk, so you can ask questions of your own

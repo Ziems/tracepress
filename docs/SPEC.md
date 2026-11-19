@@ -154,6 +154,26 @@ results are combined with the merge signature.
   LM calls and cost of running the step; reflection calls aren't counted). GEPA's progress goes
   to the `tracepress` logger at debug level.
 
+### Server (`tracepress serve`, `tp.connect`)
+
+- One process holds a `Hub`: per table, the events pushed so far (`--retain` caps them) and
+  subscribers. A `ServerSource` adapter (live, unbounded) reads it: history first, then new events.
+- Clients declare tables (pickled `Schema`s; `client.stream(adapter)` does it), push events as
+  JSON (`client.push`, or `client.stream` from any adapter in a background thread), and build
+  pipelines on `client.source`, a `RemoteSource` with the server's tables and no rows (collecting
+  it locally raises).
+- `client.register(name=, pipeline=)` cloudpickles the plan's `Node` graph. The server swaps
+  every `RemoteSource` source node for its `ServerSource` and runs the plan with
+  `runtime.stream_events` as a background task; re-registering a name replaces it. Rows and
+  closes go to listeners as JSON over a websocket (`client.listen(name, from_start=False)`
+  yields `ServerEvent(kind, row, prefix)`); `from_start` sends the newest version of each row so
+  far first. Unregistering, or the pipeline stopping, ends listeners' streams.
+- LM defaults come from the server (`--lm`, its environment and `.env`). Registering runs
+  pickled code, so the server binds to localhost by default and needs `--token` (checked as a
+  bearer token) for any other host.
+- Endpoints: `POST /tables`, `GET /tables`, `POST /push`, `POST /register`, `GET /pipelines`,
+  `DELETE /pipelines/{name}`, `GET /listen/{name}` (websocket), `GET /health`.
+
 ## Implementation status
 
 Built and tested: the plan/runtime/event engine; `map`, `filter`, `select`, `explode`,
