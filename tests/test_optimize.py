@@ -39,6 +39,8 @@ def test_optimize_finds_better_instructions(harbor_dir):
     report = tuned.optimize_report
     assert report.before == "Did the agent loop?" and report.after == tuned.instructions
     assert report.train_after == 1.0 and report.val_after >= report.val_before
+    assert report.history[0][0] == "Did the agent loop?" and report.history[-1][0] == tuned.instructions
+    assert report.candidates == len(report.history) and report.tried >= report.candidates
     assert {r.trial: r.doom_loop for r in tuned.collect()} == TRUTH  # the tuned step runs the new prompt
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -43,13 +44,17 @@ class OptimizeReport:
     train_after: float
     val_before: float
     val_after: float
-    candidates: int  # prompts GEPA tried, the starting one included
+    candidates: int  # prompts GEPA kept (each beat the one it came from), the starting one included
+    tried: int  # distinct prompts GEPA ran, rejected ones included
     lm_calls: int  # calls made running the step (cache hits excluded); GEPA's own reflection calls aren't counted
     cost_usd: float
+    seconds: float
+    history: list[tuple[str, float]] = field(default_factory=list)  # each kept prompt and its held-out score, in order
 
     def __str__(self) -> str:
         return (f"val {self.val_before:.2f} -> {self.val_after:.2f}, train {self.train_before:.2f} -> "
-                f"{self.train_after:.2f}, {self.candidates} candidates, {self.lm_calls} LM calls, ${self.cost_usd:.4f}")
+                f"{self.train_after:.2f}, kept {self.candidates} of {self.tried} prompts tried, "
+                f"{self.lm_calls} LM calls, ${self.cost_usd:.4f}, {self.seconds:.0f}s")
 
 
 @dataclass
@@ -80,6 +85,7 @@ class LabeledTask:
         if missing:
             raise ValueError(f"optimize: no rows for labeled {dict(zip(self.keys, missing[0]))}")
         self.calls, self.cost = 0, 0.0
+        self.tried: set[str] = set()
 
     def key(self, row: Row) -> tuple:
         return tuple(row.get(k, None) for k in self.keys)
@@ -88,6 +94,7 @@ class LabeledTask:
         return tuple(label[k] for k in self.keys)
 
     def evaluate(self, instructions: str, examples: list[int]) -> list[Scored]:
+        self.tried.add(instructions)
         rows = [r for i in examples for r in self.inputs[i]]
         source = RowsAdapter(rows, self.parent_schema).table("rows")
         out = runtime.run([self.spec.remake(source, instructions)._node], self.max_concurrency)[0]
@@ -179,6 +186,7 @@ def optimize(table: Table, labels, metric: Metric, *, optimizer: str = "gepa", b
 
     import gepa
 
+    start = time.monotonic()
     result = gepa.optimize(
         seed_candidate={COMPONENT: spec.instructions},
         trainset=train,
@@ -191,11 +199,14 @@ def optimize(table: Table, labels, metric: Metric, *, optimizer: str = "gepa", b
         logger=_Log(),
     )
     best = result.best_candidate[COMPONENT]
+    seconds = time.monotonic() - start
+    history = [(c[COMPONENT], float(v)) for c, v in zip(result.candidates, result.val_aggregate_scores)]
     report = OptimizeReport(
         before=spec.instructions, after=best,
         train_before=task.mean(spec.instructions, train), train_after=task.mean(best, train),
         val_before=task.mean(spec.instructions, val), val_after=task.mean(best, val),
-        candidates=len(result.candidates), lm_calls=task.calls, cost_usd=task.cost)
+        candidates=len(result.candidates), tried=len(task.tried), lm_calls=task.calls, cost_usd=task.cost,
+        seconds=seconds, history=history)
     from .plan import Table
 
     tuned = spec.remake(Table(table._node.parent), best)
