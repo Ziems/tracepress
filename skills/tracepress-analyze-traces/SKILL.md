@@ -179,6 +179,20 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 4. **Try it on a sliver first.** Run with `tp.read.harbor(path, limit=1)` (or one task), read the
    outputs, and tune the instructions. Then run the full set; unchanged prompts come from the cache.
 
+   If the user has labels for some rows (a CSV of trials marked doom loop or not, say), let GEPA
+   tune the step's instructions against them instead of guessing. Call it on the LM step itself:
+
+   ```python
+   detector = src.steps.group_by("trial").lm_reduce("source, message, tool_calls -> doom_loop: bool")
+   tuned = detector.optimize(labels, metric="doom_loop")   # labels: DataFrame with trial, doom_loop
+   print(tuned.optimize_report)                            # held-out score before and after
+   tuned.instructions                                      # show the user the tuned prompt
+   ```
+
+   Only that step reruns per candidate prompt, so it's cheap, but it needs enough labels to hold
+   some out: with a dozen, the held-out score is noise. Show the user the report and the new
+   instructions before using the tuned step. `examples/optimize_step_kinds.py` is a full example.
+
 5. **Run and check the stats.**
 
    ```python
