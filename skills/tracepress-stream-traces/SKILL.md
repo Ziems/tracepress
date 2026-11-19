@@ -25,8 +25,9 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 - In the TracePress repo: `uv sync`; run code with `uv run python ...`.
 - Anywhere else, check it's installed with `python -c "import tracepress"`. If that fails, install it
   from PyPI: `uv add tracepress` in a uv project, otherwise `pip install tracepress`.
-- The server (`tracepress serve`, `tp.connect`) needs tracepress 0.2.0 or newer. If it's missing,
-  upgrade: `uv add -U tracepress` or `pip install -U tracepress`.
+- If something in this skill isn't supported, check you're on the latest version
+  (`python -c "from importlib.metadata import version; print(version('tracepress'))"`) and upgrade:
+  `uv add -U tracepress` or `pip install -U tracepress`.
 - Configure a model before running LM operators; see Setup in the `tracepress-analyze-traces` skill.
 
 ## Steps
