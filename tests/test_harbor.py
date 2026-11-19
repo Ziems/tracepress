@@ -72,3 +72,39 @@ def test_atif_reader_jsonl(harbor_dir, tmp_path):
     assert [r.trajectory for r in src.table("trajectories").collect()] == ["alpha__1", "beta__1"]
     assert len(src.table("steps").collect()) == 6
     assert len(tp.read.atif(tmp_path / "bundles").table("trajectories").collect()) == 2
+
+
+def test_model_from_agent_info(tmp_path):
+    """A regraded job runs a placeholder agent with no model_name; agent_info still names the model."""
+    import json
+
+    from conftest import write_trial
+
+    trials = tmp_path / "job" / "trials"
+    trials.mkdir(parents=True)
+    write_trial(trials, "alpha", "alpha__1", 1.0)
+    result_path = trials / "alpha__1" / "result.json"
+    result = json.loads(result_path.read_text())
+    result["config"]["agent"] = {"name": "nop", "model_name": None}
+    result["agent_info"] = {"name": "nop", "model_info": {"name": "claude-opus-5-5", "provider": "anthropic"}}
+    result_path.write_text(json.dumps(result))
+    (row,) = tp.read.harbor(tmp_path / "job").table("trials").collect()
+    assert row.model == "claude-opus-5-5"
+
+
+def test_dataset_from_regrade_lock(tmp_path):
+    """A regraded trial's result has no source; lock.json keeps the original trial's."""
+    import json
+
+    from conftest import write_trial
+
+    trials = tmp_path / "job" / "trials"
+    trials.mkdir(parents=True)
+    write_trial(trials, "alpha", "alpha__1", 1.0)
+    result_path = trials / "alpha__1" / "result.json"
+    result = json.loads(result_path.read_text())
+    del result["source"]
+    result_path.write_text(json.dumps(result))
+    (trials / "alpha__1" / "lock.json").write_text(json.dumps({"source_trial": {"task": {"source": "bench/bench"}}}))
+    (row,) = tp.read.harbor(tmp_path / "job").table("trials").collect()
+    assert row.key[0] == ("dataset", "bench/bench")
