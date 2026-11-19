@@ -49,6 +49,8 @@ def whole_record(row: Row, columns: tuple[str, ...] | None) -> dict[str, Any]:
 
 
 class Operator:
+    lineage = False  # set by the runtime for `collect(lineage=True)`
+
     def __init__(self) -> None:
         self.outputs: list[asyncio.Queue] = []
         self.executor: Executor | None = None
@@ -157,7 +159,33 @@ class MapOp(Operator):
         self.fn = fn
 
     async def on_row(self, row: Row, updated: bool) -> None:
-        self.emit_row(Row(row.key, {**row.values, **self.fn(row)}, row.final, row.version), updated)
+        self.emit_row(Row(row.key, {**row.values, **self.fn(row)}, row.final, row.version, row._sources), updated)
+
+
+class EditOp(Operator):
+    """Changes the values of chosen rows, for `Table.rerun(edit=...)`.
+
+    `edits` maps a key suffix (e.g. `(("trial", "t1"),)`) to the values to set on the row
+    whose key ends with it. An edit that matches no row fails the run at the end.
+    """
+
+    def __init__(self, edits: dict[Key, dict[str, Any]]):
+        super().__init__()
+        self.edits = edits
+        self.seen: set[Key] = set()
+
+    async def on_row(self, row: Row, updated: bool) -> None:
+        for suffix, values in self.edits.items():
+            if row.key[-len(suffix):] == suffix:
+                self.seen.add(suffix)
+                row = Row(row.key, {**row.values, **values}, row.final, row.version, row._sources)
+                break
+        self.emit_row(row, updated)
+
+    async def on_end(self) -> None:
+        missing = [dict(k) for k in self.edits if k not in self.seen]
+        if missing:
+            raise ValueError(f"rerun: no row with key {missing[0]} to edit")
 
 
 class FilterOp(Operator):
@@ -177,7 +205,7 @@ class SelectOp(Operator):
 
     async def on_row(self, row: Row, updated: bool) -> None:
         values = {c: row.values[c] for c in self.columns if c in row.values}
-        self.emit_row(Row(row.key, values, row.final, row.version), updated)
+        self.emit_row(Row(row.key, values, row.final, row.version, row._sources), updated)
 
 
 def explode_rows(parent: Row, items: list, level: str, column: str, keep: list[str]) -> list[Row]:
@@ -187,7 +215,7 @@ def explode_rows(parent: Row, items: list, level: str, column: str, keep: list[s
         if hasattr(item, "model_dump"):
             item = item.model_dump()
         values = {**carried, **item} if isinstance(item, dict) else {**carried, column: item}
-        rows.append(Row((*parent.key, (level, i)), values, parent.final, parent.version))
+        rows.append(Row((*parent.key, (level, i)), values, parent.final, parent.version, parent._sources))
     return rows
 
 
@@ -249,7 +277,7 @@ class LMRowOp(AsyncOperator):
 class LMMapOp(LMRowOp):
     def handle(self, row, pred, updated):
         new = {name: pred[name] for name in self.sig.output_fields}
-        self.emit_row(Row(row.key, {**row.values, **new}, row.final, row.version), updated)
+        self.emit_row(Row(row.key, {**row.values, **new}, row.final, row.version, row._sources), updated)
 
 
 class LMFilterOp(LMRowOp):
@@ -382,7 +410,8 @@ class GroupOp(AsyncOperator):
             first = g.rows[g.order[0]]
             values = {**values, **{c: first.get(c, None) for c in self.carry if c not in values}}
         g.version += 1
-        self.emit_row(Row(gkey, values, final, g.version), updated=g.version > 1)
+        sources = tuple(g.rows[k] for k in g.order) if self.lineage else None
+        self.emit_row(Row(gkey, values, final, g.version, sources), updated=g.version > 1)
 
     async def step(self, gkey: Key, prev: dict | None, batch: list[Row]) -> dict[str, Any]:
         raise NotImplementedError
@@ -612,7 +641,7 @@ class JoinOp(Operator):
                     continue
                 name += self.suffix
             values[name] = value
-        return Row(row.key, values, row.final and right.final, row.version)
+        return Row(row.key, values, row.final and right.final, row.version, row._sources)
 
     def send(self, row: Row, updated: bool) -> None:
         self.joined.setdefault(self.left_match(row), {})[row.key] = row

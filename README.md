@@ -103,6 +103,20 @@ Here's an excerpt of its output on two tasks from the sample job: 10 trials, 173
 Every row keeps its key, so you can drill from any summary back to the exact steps behind it.
 Reruns come from the cache, so you only pay for prompts that changed.
 
+To see what a conclusion was built from, collect with lineage and walk down. To ask what it
+would have been if an input were different, rerun with an edit. Only the reduces above the
+edit make new LM calls:
+
+```python
+top = overall.collect(lineage=True)[0]
+for task in top.inputs():                 # the per-task rows behind the conclusion
+    print(task.task, task.common_failures)
+task.inputs()[0].inputs()                 # ...down to a run's steps
+
+what_if = overall.rerun(edit={("trial", "t1"): ("trial", "t2")})   # as if run t1 had gone like t2
+what_if.collect(); tp.last_run()          # e.g. 2 of 173 LM calls ran again
+```
+
 ## Built-in Terminal-Bench taxonomies
 
 For Harbor jobs, the failure taxonomies from the

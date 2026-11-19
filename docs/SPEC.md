@@ -123,6 +123,21 @@ results are combined with the merge signature.
   columns the left already holds once per matched key are skipped). Right, outer and
   many-to-many joins are not supported: they'd make rows whose key isn't the left row's.
 
+### Lineage and what-if reruns
+
+- `collect(lineage=True)` (also `tp.collect`, `acollect`) records what each row was built
+  from. `row.inputs()` returns a reduce row's children; row-by-row operators (maps, joins,
+  filters) pass their input's lineage through, so a per-task row's inputs are its trace
+  summaries and theirs are steps. Source rows have no inputs; joins follow their left side.
+  It's off by default because it keeps every intermediate row alive.
+- `table.rerun(edit={key: values_or_other_key})` returns the table as if some rows had been
+  different. A key is a `(level, id)` pair or a full key. Each edit is inserted (an `EditOp`)
+  right after the nearest node at or above the table whose rows are keyed down to that level,
+  and the plan above it is copied; untouched parts are shared. An edit to another row's key
+  copies that row's values, read by running the plan up to that node once. An edit that
+  matches no row fails the run. Unchanged LM calls hit DSPy's cache, so only dependent work
+  pays.
+
 ## Implementation status
 
 Built and tested: the plan/runtime/event engine; `map`, `filter`, `select`, `explode`,

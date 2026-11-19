@@ -157,6 +157,9 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    - `lm_extract("x -> items: list[str]", keep=(...))`: one new row per list element, one level deeper
    - `group_by(*names).lm_reduce(sig)`: one row per group; `group_by()` reduces the whole table
    - `group_by(*names).reduce(fn)`: Python reduce, `fn(rows) -> dict`
+   - `rerun(edit={("trial", "t1"): {"reward": 1.0}})` or `{("trial", "t1"): ("trial", "t2")}`: the
+     table as if those rows had been different; only work above the edit makes new LM calls
+   - `collect(lineage=True)` then `row.inputs()`: the rows a result was built from, down to steps
 
    How `lm_reduce` binds its inputs:
    - An input naming a **group key** (a hierarchy level, or an extra column passed to `group_by`)

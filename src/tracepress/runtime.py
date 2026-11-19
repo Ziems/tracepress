@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,8 @@ class SourceOp(Operator):
 
     async def produce(self) -> None:
         async for event in self.adapter.events(self.table):
+            if self.lineage and isinstance(event, (RowAdded, RowUpdated)) and event.row._sources is None:
+                event = type(event)(replace(event.row, _sources=()))  # a source row: lineage starts here
             self.emit(event)
         self.emit(END)
 
@@ -65,7 +68,8 @@ class QueueSink:
         return None
 
 
-async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks: list | None = None) -> list:
+async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks: list | None = None,
+                    lineage: bool = False) -> list:
     global last_run
     executor = Executor(max_concurrency)
     ops: dict[int, Operator] = {}
@@ -78,6 +82,7 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
             return op, op.live
         op = node.make()
         op.executor = executor
+        op.lineage = lineage
         op.label = node.label
         ops[id(node)] = op
         if node.parent is None:
@@ -143,9 +148,9 @@ async def stream_events(node: Node, max_concurrency: int | None = None) -> Async
         await asyncio.gather(run, return_exceptions=True)
 
 
-def run(nodes: list[Node], max_concurrency: int | None = None) -> list[list[Row]]:
+def run(nodes: list[Node], max_concurrency: int | None = None, lineage: bool = False) -> list[list[Row]]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(run_async(nodes, max_concurrency))
+        return asyncio.run(run_async(nodes, max_concurrency, lineage=lineage))
     raise RuntimeError("collect() can't run inside an event loop (e.g. Jupyter); use `await table.acollect()`")

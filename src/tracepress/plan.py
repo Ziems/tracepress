@@ -15,7 +15,7 @@ from . import lm as lm_config
 from . import operators as ops
 from . import runtime
 from . import signatures as sigs
-from .rows import Row
+from .rows import Key, Row
 from .schema import Schema
 from .signatures import SigLike
 
@@ -217,15 +217,56 @@ class Table:
         """
         return runtime.stream_events(self._node, max_concurrency)
 
-    def collect(self, max_concurrency: int | None = None) -> list[Row]:
-        """Run the plan to completion and return the final rows, sorted by key."""
-        return runtime.run([self._node], max_concurrency)[0]
+    def collect(self, max_concurrency: int | None = None, lineage: bool = False) -> list[Row]:
+        """Run the plan to completion and return the final rows, sorted by key.
 
-    async def acollect(self, max_concurrency: int | None = None) -> list[Row]:
-        return (await runtime.run_async([self._node], max_concurrency))[0]
+        `lineage=True` records what each row was built from, for `row.inputs()`. It keeps
+        every intermediate row alive until the result is dropped, so it's off by default.
+        """
+        return runtime.run([self._node], max_concurrency, lineage)[0]
+
+    async def acollect(self, max_concurrency: int | None = None, lineage: bool = False) -> list[Row]:
+        return (await runtime.run_async([self._node], max_concurrency, lineage=lineage))[0]
 
     def to_pandas(self, max_concurrency: int | None = None):
         return rows_to_pandas(self.collect(max_concurrency))
+
+    # --- What-if ------------------------------------------------------------------------
+
+    def rerun(self, edit: dict) -> Table:
+        """This table as if some rows upstream had been different.
+
+        `edit` maps a row's key to new column values, or to another row's key to make it
+        look like that row: `overall.rerun(edit={("trial", "t1"): ("trial", "t2")})` or
+        `{("trial", "t1"): {"reward": 1.0}}`. A key is a `(level, id)` pair or a full key.
+        Each edit applies at the nearest table upstream (or this one) keyed by that level,
+        e.g. the trace summaries rather than the raw trials, and everything above it reruns.
+        LM calls whose inputs didn't change come from the cache, so only the work that
+        depends on the edit pays; `tp.last_run()` shows how much.
+
+        Editing to another row's key runs the plan up to that table once, to read the row.
+        """
+        node = self._node
+        by_level: dict[str, dict[Key, Any]] = {}
+        for key, value in edit.items():
+            key = _as_key(key, "edit key")
+            by_level.setdefault(key[-1][0], {})[key] = value
+        for level, edits in by_level.items():
+            target = _nearest(node, level)
+            if target is None:
+                raise ValueError(f"rerun: no table upstream is keyed by {level!r}")
+            copies = {k: _as_key(v, "edit value") for k, v in edits.items() if not isinstance(v, dict)}
+            if copies:
+                rows = runtime.run([target])[0]
+                for key, other in copies.items():
+                    match = [r for r in rows if r.key[-len(other):] == other]
+                    if not match:
+                        raise ValueError(f"rerun: no row with key {dict(other)} to copy from")
+                    edits[key] = dict(match[0].values)
+            frozen = {k: dict(v) for k, v in edits.items()}
+            edit_node = Node(lambda frozen=frozen: ops.EditOp(frozen), target, target.schema, "edit")
+            node = _replace_node(node, target, edit_node)
+        return Table(node)
 
 
 class GroupedTable:
@@ -384,14 +425,54 @@ def _emit_every(emit: str | every) -> int | None:
     raise ValueError(f"emit must be 'close', 'update' or tp.every(n), not {emit!r}")
 
 
-def collect(*tables: Table, max_concurrency: int | None = None) -> list[list[Row]]:
+def collect(*tables: Table, max_concurrency: int | None = None, lineage: bool = False) -> list[list[Row]]:
     """Run several tables in one pass; shared upstream work runs once."""
-    return runtime.run([t._node for t in tables], max_concurrency)
+    return runtime.run([t._node for t in tables], max_concurrency, lineage)
 
 
-async def acollect(*tables: Table, max_concurrency: int | None = None) -> list[list[Row]]:
+async def acollect(*tables: Table, max_concurrency: int | None = None, lineage: bool = False) -> list[list[Row]]:
     """`collect` for code already inside an event loop, e.g. Jupyter: `await tp.acollect(a, b)`."""
-    return await runtime.run_async([t._node for t in tables], max_concurrency)
+    return await runtime.run_async([t._node for t in tables], max_concurrency, lineage=lineage)
+
+
+def _as_key(key: Any, what: str) -> Key:
+    """`("trial", "t1")` or a full key `(("task", "a"), ("trial", "t1"))`, as a full key."""
+    if isinstance(key, tuple) and len(key) == 2 and isinstance(key[0], str):
+        return (key,)
+    if isinstance(key, tuple) and key and all(isinstance(p, tuple) and len(p) == 2 for p in key):
+        return key
+    raise ValueError(f"rerun: {what} {key!r} should be a (level, id) pair or a tuple of them")
+
+
+def _nearest(node: Node, level: str) -> Node | None:
+    """The closest node at or above `node` whose rows are keyed down to `level`."""
+    frontier, seen = [node], set()
+    while frontier:
+        nxt = []
+        for n in frontier:
+            if id(n) in seen:
+                continue
+            seen.add(id(n))
+            if n.schema.levels and n.schema.levels[-1] == level:
+                return n
+            nxt += [p for p in (n.parent, *n.others) if p is not None]
+        frontier = nxt
+    return None
+
+
+def _replace_node(node: Node, old: Node, new: Node, memo: dict | None = None) -> Node:
+    """A copy of the plan above `node` with `old` swapped for `new`; untouched parts are shared."""
+    memo = {} if memo is None else memo
+    if node is old:
+        return new
+    if id(node) in memo:
+        return memo[id(node)]
+    parent = _replace_node(node.parent, old, new, memo) if node.parent is not None else None
+    others = tuple(_replace_node(o, old, new, memo) for o in node.others)
+    out = node if parent is node.parent and all(a is b for a, b in zip(others, node.others)) \
+        else replace(node, parent=parent, others=others)
+    memo[id(node)] = out
+    return out
 
 
 def rows_to_pandas(rows: list[Row]):
