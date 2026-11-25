@@ -170,7 +170,9 @@ results are combined with the merge signature.
   far first. Unregistering, or the pipeline stopping, ends listeners' streams.
 - LM defaults come from the server (`--lm`, its environment and `.env`). Registering runs
   pickled code, so the server binds to localhost by default and needs `--token` (checked as a
-  bearer token) for any other host.
+  bearer token) for any other host. It refuses any request with an `Origin` header, which
+  browsers send and clients don't, so a web page can't reach it, and takes pickles only as
+  `application/octet-stream`.
 - Endpoints: `POST /tables`, `GET /tables`, `POST /push`, `POST /register`, `GET /pipelines`,
   `DELETE /pipelines/{name}`, `GET /listen/{name}` (websocket), `GET /health`.
 
