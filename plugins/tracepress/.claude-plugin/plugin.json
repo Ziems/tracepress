@@ -1,6 +1,8 @@
 {
   "name": "tracepress",
+  "version": "0.2.0",
   "description": "Skills for building and running TracePress pipelines: LLM-powered map/reduce over agent traces to find failure modes, summarize and compare runs, watch agents live, and add new trace formats.",
+  "icon": "./assets/icon.svg",
   "author": {
     "name": "Noah Ziems",
     "url": "https://github.com/Ziems"
@@ -8,5 +10,14 @@
   "homepage": "https://github.com/Ziems/tracepress",
   "repository": "https://github.com/Ziems/tracepress",
   "license": "Apache-2.0",
-  "keywords": ["agents", "traces", "llm", "dspy", "evaluation", "observability", "harbor", "terminal-bench"]
+  "keywords": [
+    "agents",
+    "traces",
+    "llm",
+    "dspy",
+    "evaluation",
+    "observability",
+    "harbor",
+    "terminal-bench"
+  ]
 }
