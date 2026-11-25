@@ -1,4 +1,7 @@
-"""Anonymous usage telemetry: one PostHog event per run, built from an allowlist.
+"""Anonymous usage telemetry: PostHog events built from an allowlist.
+
+Events: `run_completed` (one per run), `optimize_completed` (one per `optimize()`; the runs
+it makes inside are not reported on their own), `server_started` and `pipeline_registered`.
 
 What is sent: library and Python versions, the OS name, run outcome and duration, call,
 cache, token and cost counts, which gateways and models were used (no Portkey slugs,
@@ -24,6 +27,7 @@ import sys
 import threading
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -47,14 +51,32 @@ NOTICE = (
 )
 
 # Plan node labels (see plan.py); anything else is reported as "other".
-OPS = {"map", "filter", "select", "explode", "reduce", "lm_map", "lm_filter", "lm_extract", "lm_reduce", "lm_fold", "join"}
+OPS = {"map", "filter", "select", "explode", "reduce", "lm_map", "lm_filter", "lm_extract", "lm_reduce", "lm_fold", "join",
+       "edit"}  # edit: the node `Table.rerun` inserts
 SOURCES = {
     "HarborAdapter": "harbor", "ATIFAdapter": "atif", "RowsAdapter": "rows", "ReplayAdapter": "replay",
     "ClaudeCodeAdapter": "claude_code", "CodexAdapter": "codex", "OTelAdapter": "otel", "OTLPReceiver": "otlp",
+    "ServerSource": "server",
 }
 PUBLIC_ERROR_MODULES = ("builtins", "asyncio", "concurrent", "tracepress", "dspy", "litellm", "pydantic", "json")
 
 _pending: list[threading.Thread] = []
+_quiet = 0
+_quiet_lock = threading.Lock()
+
+
+@contextmanager
+def quiet():
+    """Runs inside don't send their own `run_completed`: `optimize()` sends one event for the
+    whole search instead of one per candidate prompt."""
+    global _quiet
+    with _quiet_lock:
+        _quiet += 1
+    try:
+        yield
+    finally:
+        with _quiet_lock:
+            _quiet -= 1
 
 
 def _truthy(value: str | None) -> bool:
@@ -151,12 +173,28 @@ def _count(names) -> dict[str, int]:
     return out
 
 
+def _common() -> dict[str, Any]:
+    """Properties every event carries."""
+    return {
+        "tracepress_version": _version("tracepress"),
+        "dspy_version": _version("dspy"),
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "os": platform.system(),
+        "$lib": "tracepress",
+        "$process_person_profile": False,
+        "$geoip_disable": True,
+    }
+
+
+def _op_counts(plan: list[Node]) -> dict[str, int]:
+    return _count(n.label if n.label in OPS else "other" for n in plan if n.parent is not None)
+
+
 def payload(stats: RunStats, nodes: list[Node], operators: dict[int, Any] | None = None,
-            error: BaseException | None = None) -> dict[str, Any]:
+            error: BaseException | None = None, lineage: bool = False) -> dict[str, Any]:
     """The event properties for a run: exactly what `report` would send."""
     operators = operators or {}
     plan = _walk(nodes)
-    ops = [n.label if n.label in OPS else "other" for n in plan if n.parent is not None]
     built = [operators[id(n)] for n in plan if id(n) in operators]
     sources = sorted({k for op in built for k in _source_kinds(op)})
     models = sorted(
@@ -167,10 +205,7 @@ def payload(stats: RunStats, nodes: list[Node], operators: dict[int, Any] | None
     )
     latency = stats.latency()
     return {
-        "tracepress_version": _version("tracepress"),
-        "dspy_version": _version("dspy"),
-        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-        "os": platform.system(),
+        **_common(),
         "ok": error is None,
         "error_type": _error_type(error),
         "duration_s": round(stats.seconds, 3),
@@ -188,33 +223,67 @@ def payload(stats: RunStats, nodes: list[Node], operators: dict[int, Any] | None
         "models": models,
         "primary_model": f"{models[0]['gateway']}:{models[0]['model']}" if models else None,
         "llm_calls_by_op": {op: n for op, n in stats.by_op.items() if op in OPS},
-        "ops": _count(ops),
+        "ops": _op_counts(plan),
         "n_outputs": len(nodes),
         "live": any(getattr(op, "live", False) for op in built),
         "emit_modes": sorted({m for m in map(_emit_mode, built) if m}),
         "sources": sources,
         "pipelines": sorted({n.pipeline for n in plan if n.pipeline}),
-        "$lib": "tracepress",
-        "$process_person_profile": False,
-        "$geoip_disable": True,
+        "lineage": lineage,
     }
 
 
 def report(stats: RunStats, nodes: list[Node], operators: dict[int, Any] | None = None,
-           error: BaseException | None = None) -> None:
+           error: BaseException | None = None, lineage: bool = False) -> None:
     """Send (or, in debug mode, print) the run's event. Never raises."""
+    if _quiet:
+        return
+    _emit(EVENT, lambda: payload(stats, nodes, operators, error, lineage))
+
+
+def report_optimize(*, optimizer: str, step_op: str, metric: str, n_labels: int, n_val: int, budget: int,
+                    result: Any = None, seconds: float, error: BaseException | None = None) -> None:
+    """One event for a whole `optimize()`: what was tuned and what it cost, never the prompts."""
+
+    def properties() -> dict[str, Any]:
+        out = {**_common(), "ok": error is None, "error_type": _error_type(error), "optimizer": optimizer,
+               "step_op": step_op if step_op in OPS else "other", "metric": metric, "n_labels": n_labels,
+               "n_val": n_val, "budget": budget, "duration_s": round(seconds, 3)}
+        if result is not None:
+            out.update({"prompts_tried": result.tried, "prompts_kept": result.candidates,
+                        "lm_calls": result.lm_calls, "cost_usd": round(result.cost_usd, 6),
+                        "val_before": round(result.val_before, 4), "val_after": round(result.val_after, 4)})
+        return out
+
+    _emit("optimize_completed", properties)
+
+
+def report_server_started(*, local: bool, token: bool, retain: bool, default_lm: bool) -> None:
+    """A TracePress server started: where it listens (local or not) and how it's set up, never the address."""
+    _emit("server_started", lambda: {**_common(), "local": local, "token": token, "retain": retain,
+                                     "default_lm": default_lm})
+
+
+def report_pipeline_registered(node: Node, *, replaced: bool) -> None:
+    """A client registered a pipeline on a server: its shape, counted when it starts, not when it ends."""
+    _emit("pipeline_registered", lambda: {**_common(), "ops": _op_counts(_walk([node])), "replaced": replaced,
+                                          "pipelines": sorted({n.pipeline for n in _walk([node]) if n.pipeline})})
+
+
+def _emit(event: str, properties) -> None:
+    """Build and send (or print, in debug mode) one event. Never raises."""
     try:
         current = mode()
         if current == "off":
             return
-        properties = payload(stats, nodes, operators, error)
+        props = properties()
         if current == "debug":
-            print(f"[tracepress telemetry, not sent] {json.dumps(properties)}", file=sys.stderr)
+            print(f"[tracepress telemetry, not sent] {event} {json.dumps(props)}", file=sys.stderr)
             return
         distinct_id = install_id()
         if distinct_id is None:
             return
-        body = {"api_key": POSTHOG_API_KEY, "event": EVENT, "distinct_id": distinct_id, "properties": properties}
+        body = {"api_key": POSTHOG_API_KEY, "event": event, "distinct_id": distinct_id, "properties": props}
         thread = threading.Thread(target=_send, args=(body,), daemon=True)
         _pending.append(thread)
         thread.start()

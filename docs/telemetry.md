@@ -1,8 +1,17 @@
 # Telemetry
 
-TracePress sends one anonymous usage event per run to PostHog. It helps us see which models,
-operators and pipelines people use, and what runs cost. The first time it sends, it prints a
+TracePress sends anonymous usage events to PostHog. They help us see which models, operators,
+pipelines and features people use, and what runs cost. The first time it sends, it prints a
 one-time notice.
+
+## Events
+
+- `run_completed`: one per run.
+- `optimize_completed`: one per `table.optimize(...)`. The runs it makes while trying prompts
+  don't send their own events.
+- `server_started`: when `tracepress serve` (or `serve_in_thread`) starts.
+- `pipeline_registered`: each time a client registers a pipeline on a server. A registered
+  pipeline also sends its `run_completed` when it stops.
 
 ## What is sent
 
@@ -12,8 +21,16 @@ one-time notice.
 - Duration, and counts of LM calls, cache hits, errors, retries, tokens and estimated cost.
 - For each model, the gateway and the model name, e.g. `openrouter` + `openai/gpt-6-luna`.
   Portkey provider slugs, endpoints and fine-tune ids are stripped.
-- How many of each operator the plan has (`lm_map`, `filter`, …), the kinds of sources
-  (`harbor`, `atif`, …), and which built-in pipelines ran.
+- How many of each operator the plan has (`lm_map`, `filter`, `edit` for a `rerun`, …), the
+  kinds of sources (`harbor`, `atif`, `server`, …), which built-in pipelines ran, and whether
+  the run recorded lineage.
+- For `optimize`: the optimizer, which kind of LM step was tuned, whether the metric is a
+  column or a function, how many labels and held-out labels, the budget, how many prompts it
+  tried and kept, LM calls, cost, duration and the held-out score before and after. Never the
+  prompts.
+- For the server: whether it listens only on this machine, whether it uses a token, keeps a
+  limited history or has a default model, and each registered pipeline's operator counts.
+  Never the address or the pipeline's code.
 - A random install id, kept in `~/.config/tracepress/telemetry.json`. It isn't derived from
   your machine; delete the file to reset it.
 
