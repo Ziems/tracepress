@@ -155,6 +155,31 @@ def test_join_waits_for_late_matches():
     assert [(r.trial, r.n, r.r) for r in counts] == [("t1", 2, 1.0), ("t2", 2, 0.0), ("t3", 2, None)]
 
 
+class LiveSteps(Adapter):
+    """One trial's steps, arriving over time on a live stream, then its close."""
+
+    levels = ("trial", "step")
+    bounded = False
+
+    def tables(self):
+        return {"steps": Schema(self.levels, {"msg": str})}
+
+    async def events(self, table):
+        for i in (1, 2, 3):
+            yield RowAdded(Row((("trial", "t1"), ("step", i)), {"msg": f"t1-{i}"}))
+            await asyncio.sleep(0.01)
+        yield Closed((("trial", "t1"),))
+
+
+def test_join_onto_a_provisional_row_waits_for_its_final_version():
+    """Steps joined to their trial's running summary get the final summary before the trial closes."""
+    lm = FuncLM(lambda fields: {"summary": "partial" if "current" in fields else "full"})
+    steps = LiveSteps().steps
+    per_trial = steps.group_by("trial").lm_reduce("msg -> summary", emit="update", lm=lm)
+    joined = steps.join(per_trial, on="trial", columns=["summary"])
+    assert [(r.msg, r.summary) for r in joined.collect()] == [("t1-1", "full"), ("t1-2", "full"), ("t1-3", "full")]
+
+
 def test_join_stops_cleanly_when_a_run_fails():
     """A billing error downstream of a join (still waiting on its right side) ends the run."""
     import dspy
