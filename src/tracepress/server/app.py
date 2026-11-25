@@ -172,20 +172,22 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
         return web.json_response({"events": sum(map(len, by_table.values()))})
 
     async def stop(name: str) -> None:
-        old = pipelines.pop(name, None)
-        if old is not None and old.task is not None:
-            old.task.cancel()
-            await asyncio.gather(old.task, return_exceptions=True)
+        await end(pipelines.pop(name, None))
+
+    async def end(p: Pipeline | None) -> None:
+        if p is not None and p.task is not None:
+            p.task.cancel()
+            await asyncio.gather(p.task, return_exceptions=True)
 
     async def register(request):
         spec = pickle.loads(await request.read())  # runs the client's code: see the module docstring
         name = spec["name"]
-        replaced = name in pipelines
-        await stop(name)  # registering a name again replaces it
         p = Pipeline(name, rebind(spec["node"], source))
-        telemetry.report_pipeline_registered(p.node, replaced=replaced)
         p.task = asyncio.ensure_future(p.run())
-        pipelines[name] = p
+        # Swapped in before any await, so a registration that overlaps this one replaces this one.
+        old, pipelines[name] = pipelines.get(name), p
+        telemetry.report_pipeline_registered(p.node, replaced=old is not None)
+        await end(old)  # registering a name again replaces it
         return web.json_response(p.info())
 
     async def unregister(request):
