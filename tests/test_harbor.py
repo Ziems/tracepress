@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import tracepress as tp
@@ -72,6 +74,38 @@ def test_atif_reader_jsonl(harbor_dir, tmp_path):
     assert [r.trajectory for r in src.table("trajectories").collect()] == ["alpha__1", "beta__1"]
     assert len(src.table("steps").collect()) == 6
     assert len(tp.read.atif(tmp_path / "bundles").table("trajectories").collect()) == 2
+
+
+def test_atif_jsonl_trajectories_without_session_ids_stay_apart(tmp_path):
+    bundle = tmp_path / "bundle.jsonl"
+    bundle.write_text(
+        "".join(
+            json.dumps({"steps": [{"step_id": 1, "source": "user", "message": f"task {i}"}]}) + "\n" for i in range(3)
+        )
+    )
+    src = tp.read.atif(bundle)
+    assert [r.trajectory for r in src.table("trajectories").collect()] == [f"{bundle}:{i}" for i in (1, 2, 3)]
+    assert [r.message for r in src.table("steps").collect()] == ["task 0", "task 1", "task 2"]
+
+
+def test_atif_observation_keeps_every_result_without_a_call_id(tmp_path):
+    path = tmp_path / "trajectory.json"
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": "s",
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "source": "agent",
+                        "observation": {"results": [{"content": "output of ls"}, {"content": "output of pwd"}]},
+                    }
+                ],
+            }
+        )
+    )
+    (step,) = tp.read.atif(path).table("steps").collect()
+    assert step.observation == "output of ls\noutput of pwd"
 
 
 def test_model_from_agent_info(tmp_path):
