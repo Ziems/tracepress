@@ -109,6 +109,34 @@ def test_unregister_ends_listeners(server):
     assert client.pipelines() == []
 
 
+SEEN: list = []
+
+
+def record_step(row):
+    SEEN.append(row.step)
+    return {}
+
+
+def test_registering_a_name_twice_at_once_leaves_one_pipeline_running(server):
+    """Each registration replaces the last, even when they overlap: no replaced pipeline keeps running."""
+    import threading
+    import time
+
+    client = tp.connect(server.address)
+    client.declare({"steps": STEPS})
+    pipeline = client.source.steps.map(record_step, columns={})
+    client.register("p", pipeline)
+    racers = [threading.Thread(target=client.register, args=("p", pipeline)) for _ in range(2)]
+    for t in racers:
+        t.start()
+    for t in racers:
+        t.join()
+    SEEN.clear()
+    client.push([step("a", 1)], table="steps")
+    time.sleep(0.5)
+    assert SEEN == [1]
+
+
 def test_source_only_runs_on_the_server(server):
     client = tp.connect(server.address)
     client.declare({"steps": STEPS})
