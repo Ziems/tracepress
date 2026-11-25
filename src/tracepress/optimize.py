@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from . import runtime
+from . import runtime, telemetry
 from .adapters.base import RowsAdapter
 from .lm import resolve_lm
 from .rows import Row
@@ -177,36 +177,48 @@ def optimize(table: Table, labels, metric: Metric, *, optimizer: str = "gepa", b
             raise ValueError(f"optimize: labels have no {metric!r} column")
         if metric not in spec.outputs:
             raise ValueError(f"optimize: {metric!r} isn't an output of this step (outputs: {list(spec.outputs)})")
-    task = LabeledTask(table, records, metric, max_concurrency)
+    # The runs GEPA makes don't report one by one; the whole search sends one event.
+    clock, report, error, n_val = time.monotonic(), None, None, 0
+    try:
+        with telemetry.quiet():
+            task = LabeledTask(table, records, metric, max_concurrency)
 
-    ids = list(range(len(records)))
-    random.Random(seed).shuffle(ids)
-    n_val = max(1, round(len(ids) * val_frac)) if len(ids) > 1 else 0
-    val, train = sorted(ids[:n_val]), sorted(ids[n_val:])
+            ids = list(range(len(records)))
+            random.Random(seed).shuffle(ids)
+            n_val = max(1, round(len(ids) * val_frac)) if len(ids) > 1 else 0
+            val, train = sorted(ids[:n_val]), sorted(ids[n_val:])
 
-    import gepa
+            import gepa
 
-    start = time.monotonic()
-    result = gepa.optimize(
-        seed_candidate={COMPONENT: spec.instructions},
-        trainset=train,
-        valset=val or train,
-        adapter=GEPAAdapter(task),
-        reflection_lm=lm_text(resolve_lm(reflection_lm)),
-        max_metric_calls=budget,
-        seed=seed,
-        display_progress_bar=False,
-        logger=_Log(),
-    )
-    best = result.best_candidate[COMPONENT]
-    seconds = time.monotonic() - start
-    history = [(c[COMPONENT], float(v)) for c, v in zip(result.candidates, result.val_aggregate_scores)]
-    report = OptimizeReport(
-        before=spec.instructions, after=best,
-        train_before=task.mean(spec.instructions, train), train_after=task.mean(best, train),
-        val_before=task.mean(spec.instructions, val), val_after=task.mean(best, val),
-        candidates=len(result.candidates), tried=len(task.tried), lm_calls=task.calls, cost_usd=task.cost,
-        seconds=seconds, history=history)
+            start = time.monotonic()
+            result = gepa.optimize(
+                seed_candidate={COMPONENT: spec.instructions},
+                trainset=train,
+                valset=val or train,
+                adapter=GEPAAdapter(task),
+                reflection_lm=lm_text(resolve_lm(reflection_lm)),
+                max_metric_calls=budget,
+                seed=seed,
+                display_progress_bar=False,
+                logger=_Log(),
+            )
+            best = result.best_candidate[COMPONENT]
+            seconds = time.monotonic() - start
+            history = [(c[COMPONENT], float(v)) for c, v in zip(result.candidates, result.val_aggregate_scores)]
+            report = OptimizeReport(
+                before=spec.instructions, after=best,
+                train_before=task.mean(spec.instructions, train), train_after=task.mean(best, train),
+                val_before=task.mean(spec.instructions, val), val_after=task.mean(best, val),
+                candidates=len(result.candidates), tried=len(task.tried), lm_calls=task.calls, cost_usd=task.cost,
+                seconds=seconds, history=history)
+    except BaseException as e:
+        error = e
+        raise
+    finally:
+        telemetry.report_optimize(
+            optimizer=optimizer, step_op=spec.op, metric="column" if isinstance(metric, str) else "callable",
+            n_labels=len(records), n_val=n_val, budget=budget, result=report,
+            seconds=time.monotonic() - clock, error=error)
     from .plan import Table
 
     tuned = spec.remake(Table(table._node.parent), best)

@@ -10,6 +10,7 @@ server listens on localhost by default and needs a token for anything else.
 from __future__ import annotations
 
 import asyncio
+import os
 import logging
 import pickle
 import threading
@@ -20,7 +21,8 @@ from typing import Any
 
 from aiohttp import web
 
-from .. import runtime
+from .. import runtime, telemetry
+from .. import lm as lm_config
 from ..adapters.base import Adapter
 from ..rows import Event, RowAdded, RowUpdated, sort_key
 from ..schema import Schema
@@ -178,8 +180,10 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
     async def register(request):
         spec = pickle.loads(await request.read())  # runs the client's code: see the module docstring
         name = spec["name"]
+        replaced = name in pipelines
         await stop(name)  # registering a name again replaces it
         p = Pipeline(name, rebind(spec["node"], source))
+        telemetry.report_pipeline_registered(p.node, replaced=replaced)
         p.task = asyncio.ensure_future(p.run())
         pipelines[name] = p
         return web.json_response(p.info())
@@ -239,9 +243,15 @@ def check_host(host: str, token: str | None) -> None:
         raise ValueError(f"serving on {host!r} lets anyone who can reach it run code here; pass a token")
 
 
+def _report_started(host: str, token: str | None, retain: int | None) -> None:
+    telemetry.report_server_started(local=host in LOCAL_HOSTS, token=token is not None, retain=retain is not None,
+                                    default_lm=lm_config.config().lm is not None or bool(os.environ.get("TRACEPRESS_LM")))
+
+
 def serve(host: str = "127.0.0.1", port: int = 7700, token: str | None = None, retain: int | None = None) -> None:
     """Run the server until interrupted."""
     check_host(host, token)
+    _report_started(host, token, retain)
     web.run_app(make_app(token, retain), host=host, port=port, print=lambda msg: log.warning(msg))
 
 
@@ -259,6 +269,7 @@ class Running:
         self._ready.wait(10)
         if not self.address:
             raise RuntimeError("the server didn't start")
+        _report_started(host, token, retain)
 
     def _main(self, host, port, token, retain):
         asyncio.set_event_loop(self._loop)

@@ -163,3 +163,61 @@ def test_send_never_raises(monkeypatch):
     monkeypatch.setattr(telemetry, "payload", lambda *a: 1 / 0)
     monkeypatch.setattr(telemetry, "mode", lambda: "on")
     telemetry.report(RunStats(), [])
+
+
+def _events(sent, name):
+    return [e["properties"] for e in sent if e["event"] == name]
+
+
+def test_rerun_and_lineage_are_counted(sent, harbor_dir):
+    src = tp.read.harbor(harbor_dir)
+    per_task = src.trials.group_by("task").reduce(lambda rs: {"n": len(rs)}, columns={"n": int})
+    per_task.rerun(edit={("trial", "alpha__2"): {"reward": 1.0}}).collect(lineage=True)
+    _wait()
+    (props,) = _events(sent, "run_completed")
+    assert props["ops"]["edit"] == 1 and "other" not in props["ops"]
+    assert props["lineage"] is True
+
+
+def test_optimize_sends_one_event_for_the_whole_search(sent, harbor_dir):
+    import pandas as pd
+    from test_optimize import TRUTH, InstructionLM, Reflector, detector
+
+    labels = pd.DataFrame({"trial": list(TRUTH), "doom_loop": list(TRUTH.values())})
+    tuned = detector(tp.read.harbor(harbor_dir), InstructionLM(lambda f: {})).optimize(
+        labels, metric="doom_loop", budget=20, reflection_lm=Reflector())
+    _wait()
+    assert _events(sent, "run_completed") == []  # GEPA's runs inside don't report one by one
+    (props,) = _events(sent, "optimize_completed")
+    report = tuned.optimize_report
+    assert props["ok"] and props["optimizer"] == "gepa" and props["step_op"] == "lm_reduce"
+    assert props["metric"] == "column" and props["n_labels"] == 3 and props["budget"] == 20
+    assert props["prompts_tried"] == report.tried and props["prompts_kept"] == report.candidates
+    assert props["lm_calls"] == report.lm_calls and props["val_after"] == round(report.val_after, 4)
+    assert "GOOD" not in json.dumps(props) and "loop" not in json.dumps(props)  # never the prompts
+    tuned.collect()
+    _wait()
+    assert len(_events(sent, "run_completed")) == 1  # runs after it report as usual
+
+
+def test_server_reports_start_registration_and_its_source(sent):
+    from test_server import STEPS, echo
+
+    from tracepress.server.app import serve_in_thread
+
+    srv = serve_in_thread()
+    try:
+        client = tp.connect(srv.address)
+        client.declare({"steps": STEPS})
+        summaries = client.source.steps.lm_map("message -> summary", lm=echo(summary="s"))
+        client.register(name="summaries", pipeline=summaries)
+        client.register(name="summaries", pipeline=summaries)  # again: replaces it
+    finally:
+        srv.stop()
+    _wait()
+    (started,) = _events(sent, "server_started")
+    assert started["local"] and not started["token"] and not started["retain"]
+    first, second = _events(sent, "pipeline_registered")
+    assert first["ops"] == {"lm_map": 1} and not first["replaced"] and second["replaced"]
+    runs = _events(sent, "run_completed")
+    assert runs and all(r["sources"] == ["server"] for r in runs)  # each pipeline reports when it stops

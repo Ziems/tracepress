@@ -130,7 +130,7 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
             task.cancel()
         executor.stats.conclude(error)
         last_run = executor.stats
-        telemetry.report(executor.stats, nodes, ops, error)
+        telemetry.report(executor.stats, nodes, ops, error, lineage)
         await asyncio.gather(*tasks, *spawned, return_exceptions=True)  # sources release what they hold
     return [sink.result() for sink in sinks]
 
