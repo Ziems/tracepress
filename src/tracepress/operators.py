@@ -628,6 +628,13 @@ class JoinOp(Operator):
             return False  # a column join can't know a value is missing until the right side ends
         return match in self.right or any(is_prefix(p, match) for p in self.right_closed)
 
+    def settled(self, match: Any) -> bool:
+        """Whether the right row for `match` can no longer change, so rows joined to it are done."""
+        if self.right_done.is_set():
+            return True
+        right = self.right.get(match)
+        return (right is not None and right.final) or any(is_prefix(p, match) for p in self.right_closed)
+
     def merge(self, row: Row) -> Row | None:
         right = self.right.get(self.left_match(row))
         if right is None:
@@ -661,7 +668,10 @@ class JoinOp(Operator):
         self.release()
 
     def blocked(self, prefix: Key) -> bool:
-        return any(is_prefix(prefix, row.key) for rows in self.waiting.values() for row, _ in rows)
+        """Whether rows under `prefix` are still waiting for a match, or joined to one that can still change."""
+        waiting = (row.key for rows in self.waiting.values() for row, _ in rows)
+        unsettled = (key for match, rows in self.joined.items() if not self.settled(match) for key in rows)
+        return any(is_prefix(prefix, key) for key in (*waiting, *unsettled))
 
     def release(self) -> None:
         still = []
