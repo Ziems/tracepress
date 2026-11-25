@@ -401,7 +401,9 @@ GenAI span events, or as a last resort `input.value` / `output.value`.
 Live closure: steps stream as they complete (all calls answered, or the same agent made its
 next LLM call). A trace closes `settle` seconds (default 2) after its root span arrives, or
 after `idle_timeout` (default 300) seconds of silence, and only then are its `traces` and
-`spans` rows emitted. Spans for an already closed trace are dropped. Live spans arrive in
+`spans` rows emitted. Spans for a trace closed less than `idle_timeout` seconds ago are
+dropped; the receiver then forgets the trace, so a span later than that starts it anew and
+it closes again as a second `traces` row with the same key. Live spans arrive in
 end order, so an enclosing agent span arrives after its steps; `agent_name` is then only
 set when the LLM span carries `gen_ai.agent.name` itself.
 
@@ -495,14 +497,13 @@ server. Stopping closes open exporter connections, which would otherwise hold it
 |---|---|---|
 | Row | `Row.final`, `Row.version` | provisional -> final; consumers keep the newest version |
 | Group | `GroupOp.groups` | open -> finishing (popped) -> emitted; `dirty` / `invalidated_at` rewind its fold |
-| OTLP trace | `_Trace`, `OTLPReceiver.closed` | open -> root seen -> closed (late spans dropped) |
+| OTLP trace | `_Trace`, `OTLPReceiver.closed` | open -> root seen -> closed (late spans dropped) -> forgotten after `idle_timeout` |
 | Agent step | `TraceSteps` (`_open`, `_done`, `released`) | waiting on calls -> ready -> released, in order |
 | LM call | `Executor.call`, `_predict` | linear retries, then adapter fallbacks, then the bare-text answer |
 | Telemetry | `telemetry.mode()` | off / debug / on, from settings in precedence order |
 
 Known limits: a row arriving after its group closed reopens the group, because `Closed` is trusted
-rather than enforced (enforcing it means remembering every closed key). For the same reason,
-`OTLPReceiver.closed` keeps one id per closed trace for the receiver's lifetime.
+rather than enforced (enforcing it means remembering every closed key).
 
 ### Execution and LM calls
 

@@ -351,3 +351,39 @@ def test_receiver_can_start_after_the_port_was_taken():
         await live.stop()
 
     asyncio.run(run())
+
+
+def test_receiver_forgets_closed_traces_after_idle_timeout():
+    from tracepress.adapters.otel import spans_from_otlp
+
+    async def run():
+        live = tp.watch.otlp(port=0, settle=0.01, idle_timeout=0.2)
+        await live.start()
+        live.receive(list(spans_from_otlp(request(semconv_trace()))))
+        await asyncio.sleep(0.1)
+        live.receive(list(spans_from_otlp(request(semconv_trace()[1:2]))))
+        assert "a" * 32 in live.closed and not live.open  # a late span is still dropped
+        await asyncio.sleep(0.4)
+        assert not live.closed
+        await live.stop()
+
+    asyncio.run(run())
+
+
+def test_sweep_waits_between_passes_when_settle_is_zero(monkeypatch):
+    delays, real_sleep = [], asyncio.sleep
+
+    async def sleep(delay, *args):
+        delays.append(delay)
+        return await real_sleep(delay, *args)
+
+    async def run():
+        live = tp.watch.otlp(port=0, settle=0)
+        await live.start()
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+        await real_sleep(0.05)
+        monkeypatch.undo()
+        await live.stop()
+
+    asyncio.run(run())
+    assert delays and min(delays) > 0
