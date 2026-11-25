@@ -27,14 +27,14 @@ os.environ["OPENROUTER_API_KEY"] = "sk-or-..."
 tp.configure(lm="openrouter:openai/gpt-6-luna")
 ```
 
-You can also use Portkey, any litellm model, or a model you host locally (Ollama, vLLM, or any
+You can also use Portkey, any model DSPy supports, or a model you host locally (Ollama, vLLM, or any
 OpenAI-compatible server); see [docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md).
 
 **Use Jev wherever a classification is all you need.** For a stage whose answer is a yes/no, a
 pick from fixed options, or a score, TypeSafe's Jev is the recommended model: it's far cheaper
 and faster than a generative model, and on the Who&When Pro failure-attribution benchmark it
 matched GPT-6-luna's accuracy at about a third of the cost and in seconds instead of minutes.
-Install `tracepress[jev]`, set `TYPESAFE_API_KEY`, and pass `lm="typesafe:jev-latest"` to those
+Set `TYPESAFE_API_KEY` and pass `lm="typesafe:jev-latest"` to those
 operators. Keep a generative model for stages that write text. See
 [docs/models.md](https://github.com/Ziems/tracepress/blob/main/docs/models.md#jev).
 

@@ -239,7 +239,7 @@ Decisions made while building:
   `lm=`, or `TRACEPRESS_LM`, and a run without one fails before any call. Model strings are
   `provider:model` (`openrouter:openai/gpt-6-luna`, the suggested one,
   `portkey:<provider slug>/<model>`, or `typesafe:jev-latest` for decision-only stages). A string without a provider prefix is passed to
-  litellm as is. Keys are read from the environment or `.env`.
+  `dspy.LM` as is. Keys are read from the environment or `.env`.
 - **Telemetry:** one anonymous PostHog event per run (`telemetry.py`), on by default. It's
   built from an allowlist of counts, versions, gateway and model names, operator labels,
   source kinds and built-in pipeline names, and never includes data, prompt text or names

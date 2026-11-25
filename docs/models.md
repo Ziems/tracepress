@@ -23,13 +23,13 @@ Model strings have the form `provider:model`.
 | `openrouter:openai/gpt-6-luna` | OpenRouter | `OPENROUTER_API_KEY` |
 | `portkey:openai-prod/gpt-5` | Portkey's gateway, model `@openai-prod/gpt-5` from your Model Catalog | `PORTKEY_API_KEY` |
 | `typesafe:jev-latest` | TypeSafe's Jev, recommended for classification-only stages (see [Jev](#jev)) | `TYPESAFE_API_KEY` |
-| `anthropic/claude-opus-5` (no `provider:`) | litellm, as is | that provider's usual key |
+| `anthropic/claude-opus-5` (no `provider:`) | DSPy, as is | that provider's usual key |
 
 - **Portkey:** the part before the `/` is your Model Catalog provider slug. Writing
   `portkey:@openai-prod/gpt-5` means the same thing. Set `PORTKEY_BASE_URL` to use a
   self-hosted gateway.
 - **Colons in model names:** a colon after a `/` is part of the model name, so strings like
-  `ollama_chat/llama3:8b` pass straight through to litellm.
+  `ollama_chat/llama3:8b` pass straight through to DSPy.
 - **Other setups:** pass a `dspy.LM` object directly.
 
 Keys are read from the environment, or from a `.env` file in the working directory.
@@ -47,11 +47,8 @@ output to parse. On the Who&When Pro failure-attribution benchmark, one Jev call
 matched a GPT-6-luna judge's accuracy for about a third of the cost ($0.34 vs. $1.06 per 1,000
 traces) in about 7 seconds per 1,000 traces instead of 3.5 minutes.
 
-Install the extra and use it in any operator whose signature's outputs are all decisions:
-
-```bash
-pip install "tracepress[jev]"
-```
+DSPy supports Jev natively, so there's nothing extra to install. Use it in any operator whose
+signature's outputs are all decisions:
 
 ```python
 from typing import Annotated, Literal
@@ -79,7 +76,7 @@ on Jev; Jev's probabilities say how sure it is.
 
 Any locally hosted model works, so your traces never leave your machine.
 
-- **Ollama:** use its litellm string, e.g. `tp.configure(lm="ollama_chat/llama3.1")`. It talks to
+- **Ollama:** use its DSPy model string, e.g. `tp.configure(lm="ollama_chat/llama3.1")`. It talks to
   Ollama on `localhost:11434` by default.
 - **vLLM, llama.cpp, LM Studio, or any other OpenAI-compatible server:** point a `dspy.LM` at it:
 
@@ -107,9 +104,10 @@ RunStats(calls=186, cached=7, errors=0, fallbacks=0, timeouts=0, prompt_tokens=1
 per-call percentiles. `status` is `running`, `completed`, `failed` or `cancelled`, and `error`
 holds what ended a run that didn't complete. During a live run, `tp.last_run()` shows the totals so far.
 
-Cost is estimated from token counts. Prices come from litellm's price table, plus a built-in
-entry for the suggested model. Add your own prices, in USD per million input and output tokens,
-keyed by the litellm model name:
+Cost is estimated from token counts. Prices come from the price table bundled with DSPy, plus
+built-in entries for the suggested model and Jev. When a provider reports a call's cost (OpenRouter
+does for models with no listed price), that's used instead. Add your own prices, in USD per
+million input and output tokens, keyed by the model name:
 
 ```python
 tp.configure(prices={"openai/my-model": (0.50, 2.00)})

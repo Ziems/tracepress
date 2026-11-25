@@ -12,10 +12,10 @@ TRUTH = {"alpha__1": True, "alpha__2": False, "beta__1": True}
 class InstructionLM(FuncLM):
     """Answers correctly only when its instructions say GOOD; otherwise always False."""
 
-    def forward(self, prompt=None, messages=None, **kwargs):
-        good = "GOOD" in messages[0]["content"]
+    def _answer(self, request):
+        good = "GOOD" in str(request.system)
         self.fn = lambda fields: {"doom_loop": str(TRUTH[fields["trial"].strip()] if good else False)}
-        return super().forward(prompt=prompt, messages=messages, **kwargs)
+        return super()._answer(request)
 
 
 class Reflector:

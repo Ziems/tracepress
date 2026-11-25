@@ -34,8 +34,8 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 - Model strings are `provider:model`:
   - `openrouter:<model>` needs `OPENROUTER_API_KEY`.
   - `portkey:<provider slug>/<model>` (Portkey Model Catalog) needs `PORTKEY_API_KEY`.
-  - `typesafe:jev-latest` (TypeSafe's Jev) needs `TYPESAFE_API_KEY` and `tracepress[jev]`.
-  - A plain litellm string, with no `provider:` prefix, also works.
+  - `typesafe:jev-latest` (TypeSafe's Jev) needs `TYPESAFE_API_KEY`.
+  - A plain DSPy model string, with no `provider:` prefix, also works.
 - **Strongly prefer Jev for every stage where classification alone is enough.** Whenever a
   stage's job is to classify, flag, pick or score (did this step fail? which agent? which error
   mode? how severe?), recommend `lm="typesafe:jev-latest"` for it by default. It's far cheaper
