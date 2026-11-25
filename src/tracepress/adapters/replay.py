@@ -42,27 +42,44 @@ class ReplayAdapter(Adapter):
         self.shuffle_within = shuffle_within
         self.duplicates = duplicates
         self.time_columns = time_columns
+        # Every table of one run plays on one clock: (earliest event time, loop time it plays at).
+        self._origin: asyncio.Future | None = None
+        self._playing = 0
 
     def tables(self) -> dict[str, Schema]:
         return self.source.tables()
 
     async def events(self, table: str) -> AsyncIterator[Event]:
-        timeline = await self.timeline(table)
-        rng = random.Random(self.seed)
-        timeline = self._shuffle(timeline, rng)
-        start = timeline[0][0] if timeline else 0.0
-        clock = asyncio.get_running_loop().time()
-        for t, event in timeline:
+        self._playing += 1
+        try:
+            timeline = await self.timeline(table)
+            rng = random.Random(self.seed)
+            timeline = self._shuffle(timeline, rng)
             if self.speed:
-                delay = clock + (t - start) / self.speed - asyncio.get_running_loop().time()
-                await asyncio.sleep(max(delay, 0))
-            else:
-                await asyncio.sleep(0)  # let downstream operators run between events
-            if isinstance(event, Closed) and rng.random() < self.drop_closes:
-                continue
-            yield event
-            if isinstance(event, RowAdded) and rng.random() < self.duplicates:
+                if self._origin is None:
+                    self._origin = asyncio.ensure_future(self._start())
+                start, clock = await self._origin
+            for t, event in timeline:
+                if self.speed:
+                    delay = clock + (t - start) / self.speed - asyncio.get_running_loop().time()
+                    await asyncio.sleep(max(delay, 0))
+                else:
+                    await asyncio.sleep(0)  # let downstream operators run between events
+                if isinstance(event, Closed) and rng.random() < self.drop_closes:
+                    continue
                 yield event
+                if isinstance(event, RowAdded) and rng.random() < self.duplicates:
+                    yield event
+        finally:
+            self._playing -= 1
+            if not self._playing:
+                self._origin = None
+
+    async def _start(self) -> tuple[float, float]:
+        """The earliest event time across every table, and the loop time it plays at."""
+        firsts = [timeline[0][0] for name in self.tables() if (timeline := await self.timeline(name))]
+        firsts = [t for t in firsts if t != float("-inf")]
+        return min(firsts, default=0.0), asyncio.get_running_loop().time()
 
     async def timeline(self, table: str) -> list[tuple[float, Event]]:
         """Every event with the time it should happen, in replay order.
@@ -72,18 +89,22 @@ class ReplayAdapter(Adapter):
         no rows under it (e.g. a crashed trial with no steps) keeps its position relative
         to the source's preceding row.
         """
-        rows: list[tuple[float, int, Row]] = []
-        closes: list[tuple[Key, float]] = []
-        last = float("-inf")
+        read: list[tuple[float | None, Row]] = []
+        closes: list[tuple[Key, int]] = []  # each close with the number of rows before it
         async for event in self.source.events(table):
             if isinstance(event, Closed):
-                closes.append((event.prefix, last))
-                continue
-            t = _time(event.row, self.time_columns)
-            if t is None:
-                t = last if last != float("-inf") else 0.0
+                closes.append((event.prefix, len(read)))
+            else:
+                read.append((_time(event.row, self.time_columns), event.row))
+
+        # An untimed row happens with the latest row before it; rows before any timed one, with the first.
+        # A table with no times at all plays at once.
+        last = next((t for t, _ in read if t is not None), float("-inf"))
+        rows: list[tuple[float, int, Row]] = []
+        for t, row in read:
+            t = last if t is None else t
             last = max(last, t)
-            rows.append((t, len(rows), event.row))
+            rows.append((t, len(rows), row))
 
         latest: dict[Key, float] = {}
         for t, _, row in rows:
@@ -91,10 +112,15 @@ class ReplayAdapter(Adapter):
                 prefix = row.key[:i]
                 latest[prefix] = max(latest.get(prefix, t), t)
 
+        at = {prefix: latest.get(prefix, rows[n - 1][0] if n else float("-inf")) for prefix, n in closes}
+        for prefix in sorted(at, key=len, reverse=True):  # a close never comes before the closes under it
+            parent = next((prefix[:i] for i in range(len(prefix) - 1, -1, -1) if prefix[:i] in at), None)
+            if parent is not None:
+                at[parent] = max(at[parent], at[prefix])
+
         ordered: list[tuple[tuple, Event]] = [((t, 0, 0, seq), RowAdded(row)) for t, seq, row in rows]
-        for seq, (prefix, fallback) in enumerate(closes):
-            t = latest.get(prefix, fallback)
-            ordered.append(((t, 1, -len(prefix), seq), Closed(prefix)))
+        for seq, (prefix, _) in enumerate(closes):
+            ordered.append(((at[prefix], 1, -len(prefix), seq), Closed(prefix)))
         ordered.sort(key=lambda item: item[0])
         return [(sort_key[0], event) for sort_key, event in ordered]
 
