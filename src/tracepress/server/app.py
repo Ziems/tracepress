@@ -10,6 +10,7 @@ server listens on localhost by default and needs a token for anything else.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
 import logging
 import pickle
@@ -144,16 +145,30 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
     pipelines: dict[str, Pipeline] = {}
 
     @web.middleware
+    async def no_browsers(request, handler):
+        # Browsers send Origin on every cross-site POST and websocket; clients never do. A web page
+        # open in the user's browser must not reach /register, which runs what it's sent.
+        if "Origin" in request.headers:
+            raise web.HTTPForbidden(text="requests from web pages aren't accepted")
+        return await handler(request)
+
+    @web.middleware
     async def auth(request, handler):
-        if token is not None and request.headers.get("Authorization") != f"Bearer {token}":
+        given = request.headers.get("Authorization", "")
+        if token is not None and not hmac.compare_digest(given.encode(), f"Bearer {token}".encode()):
             raise web.HTTPUnauthorized(text="missing or wrong token")
         return await handler(request)
+
+    async def unpickle(request) -> Any:
+        if request.content_type != "application/octet-stream":
+            raise web.HTTPUnsupportedMediaType(text="send pickles as application/octet-stream")
+        return pickle.loads(await request.read())
 
     async def health(request):
         return web.json_response({"ok": True})
 
     async def put_tables(request):
-        hub.declare(pickle.loads(await request.read()))
+        hub.declare(await unpickle(request))
         return web.json_response({"tables": sorted(hub.schemas)})
 
     async def get_tables(request):
@@ -178,7 +193,7 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
             await asyncio.gather(old.task, return_exceptions=True)
 
     async def register(request):
-        spec = pickle.loads(await request.read())  # runs the client's code: see the module docstring
+        spec = await unpickle(request)  # runs the client's code: see the module docstring
         name = spec["name"]
         replaced = name in pipelines
         await stop(name)  # registering a name again replaces it
@@ -225,7 +240,7 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
         for name in list(pipelines):
             await stop(name)
 
-    app = web.Application(middlewares=[auth], client_max_size=256 * 1024 * 1024)
+    app = web.Application(middlewares=[no_browsers, auth], client_max_size=256 * 1024 * 1024)
     app.add_routes([
         web.get("/health", health),
         web.post("/tables", put_tables), web.get("/tables", get_tables),

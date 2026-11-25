@@ -130,6 +130,47 @@ def test_tokens(server):
         guarded.stop()
 
 
+class Marker:
+    """Unpickling this records that the server ran it."""
+
+    ran = False
+
+    def __reduce__(self):
+        return (setattr, (Marker, "ran", True))
+
+
+def test_web_pages_cant_reach_the_server(server):
+    """A page in the user's browser can POST to localhost; the server must not unpickle what it sends."""
+    import pickle
+    import urllib.error
+    import urllib.request
+
+    import aiohttp
+
+    def post(headers):
+        req = urllib.request.Request(f"http://{server.address}/register", data=pickle.dumps(Marker()),
+                                     method="POST", headers=headers)
+        try:
+            urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    assert post({"Content-Type": "text/plain", "Origin": "https://example.com"}) == 403
+    assert post({"Content-Type": "text/plain"}) == 415
+    assert not Marker.ran
+
+    client = tp.connect(server.address)
+    client.declare({"steps": STEPS})
+    client.register("p", client.source.steps)
+
+    async def listen_from_a_page():
+        async with aiohttp.ClientSession() as session:
+            with pytest.raises(aiohttp.WSServerHandshakeError, match="403"):
+                await session.ws_connect(f"ws://{server.address}/listen/p", origin="https://example.com")
+
+    asyncio.run(listen_from_a_page())
+
+
 def test_stream_an_adapter(server, harbor_dir):
     client = tp.connect(server.address)
     src = tp.read.harbor(harbor_dir)
