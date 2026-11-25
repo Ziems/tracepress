@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "tracepress",
-      "source": "./",
+      "source": "./plugins/tracepress",
       "description": "Skills for building and running TracePress pipelines: LLM-powered map/reduce over agent traces to find failure modes, summarize and compare runs, watch agents live, and add new trace formats.",
       "category": "development"
     }
