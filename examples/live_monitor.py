@@ -41,7 +41,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("path")
     parser.add_argument("--lm", default="openrouter:openai/gpt-6-luna",
-                        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a litellm model string")
+                        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a plain DSPy model string")
     parser.add_argument("--tasks", nargs="*")
     parser.add_argument("--limit", type=int, default=2)
     parser.add_argument("--speed", type=float, help="replay speed multiplier (default: as fast as possible)")

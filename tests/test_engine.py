@@ -4,6 +4,7 @@ import pandas as pd
 import dspy
 import pytest
 from dspy.utils import DummyLM
+from fakes import FuncLM
 
 import tracepress as tp
 from tracepress.rows import Row
@@ -128,17 +129,14 @@ def test_lm_reduce_tree_merges_large_groups():
 
 
 def test_lm_errors_are_skipped_by_default():
-    class Broken(DummyLM):
-        def forward(self, *args, **kwargs):
+    class Broken(FuncLM):
+        async def _aanswer(self, request):
             raise RuntimeError("provider down")
 
-        async def aforward(self, *args, **kwargs):
-            raise RuntimeError("provider down")
-
-    lm = Broken([])
+    lm = Broken(lambda f: {})
     assert rows_table().lm_map("summary -> topic", lm=lm).collect() == []
     assert tp.last_run().errors == 6
-    with pytest.raises(RuntimeError):
+    with pytest.raises(dspy.LMUnexpectedError, match="provider down"):  # DSPy wraps provider errors
         rows_table().lm_map("summary -> topic", lm=lm, on_error="raise").collect()
 
 
@@ -161,10 +159,11 @@ def test_pandas_columns():
 def test_unparseable_response_falls_back_to_next_adapter():
     import dspy
 
-    # DummyLM answers in the chat format, which the XML adapter can't parse.
+    # This LM answers in the chat format, which the XML adapter can't parse.
     tp.configure(adapter=dspy.XMLAdapter(), fallback_adapters=[dspy.ChatAdapter()])
     try:
-        rows = rows_table().lm_map("summary -> topic", lm=DummyLM([{"topic": "t"}] * 30)).collect()
+        lm = DummyLM([{"topic": "t"}] * 30, adapter=dspy.ChatAdapter())
+        rows = rows_table().lm_map("summary -> topic", lm=lm).collect()
     finally:
         tp.configure(fallback_adapters=[dspy.XMLAdapter()])
     assert [r.topic for r in rows] == ["t"] * 6
@@ -201,16 +200,16 @@ def test_map_rejects_columns_shadowing_key_levels():
 
 
 def test_billing_errors_stop_the_run_instead_of_skipping_rows():
-    class OutOfCredits(DummyLM):
+    class OutOfCredits(FuncLM):
         calls = 0
 
-        async def aforward(self, *args, **kwargs):
+        async def _aanswer(self, request):
             OutOfCredits.calls += 1
             raise dspy.LMBillingError("exceeds your available credits (402)", model="m")
 
     rows = [Row((("trial", i),), {"summary": f"trial {i}"}) for i in range(200)]
     with pytest.raises(dspy.LMBillingError):
-        tp.from_rows(rows).lm_map("summary -> topic", lm=OutOfCredits([])).collect(max_concurrency=4)
+        tp.from_rows(rows).lm_map("summary -> topic", lm=OutOfCredits(lambda f: {})).collect(max_concurrency=4)
     # Only the calls already in flight ran; the other rows were never tried.
     assert OutOfCredits.calls <= 8
 
@@ -218,25 +217,28 @@ def test_billing_errors_stop_the_run_instead_of_skipping_rows():
 # --- Run lifecycle ------------------------------------------------------------------------
 
 
-class OutOfCredits(DummyLM):
-    async def aforward(self, *args, **kwargs):
+class OutOfCredits(FuncLM):
+    def __init__(self):
+        super().__init__(lambda f: {})
+
+    async def _aanswer(self, request):
         raise dspy.LMBillingError("exceeds your available credits (402)", model="m")
 
 
-class CountingLM(DummyLM):
+class CountingLM(FuncLM):
     """Counts calls started. The first takes `first` seconds and fails if `fail`; the rest are slow."""
 
     def __init__(self, first=0.01, fail=False):
-        super().__init__([{"topic": "t"}] * 100)
+        super().__init__(lambda f: {"topic": "t"})
         self.first, self.fail, self.started = first, fail, 0
 
-    async def aforward(self, *args, **kwargs):
+    async def _aanswer(self, request):
         self.started += 1
         n = self.started
         await asyncio.sleep(self.first if n == 1 else 0.05)
         if self.fail and n == 1:
             raise dspy.LMBillingError("exceeds your available credits (402)", model="m")
-        return await super().aforward(*args, **kwargs)
+        return self._answer(request)
 
 
 def many_rows(n=30):
@@ -250,7 +252,7 @@ def test_last_run_says_how_the_run_ended():
     assert "status" not in repr(stats)  # only a run that didn't complete draws attention to it
 
     with pytest.raises(dspy.LMBillingError):
-        rows_table().lm_map("summary -> topic", lm=OutOfCredits([])).collect()
+        rows_table().lm_map("summary -> topic", lm=OutOfCredits()).collect()
     stats = tp.last_run()
     assert stats.status == "failed" and isinstance(stats.error, dspy.LMBillingError)
     assert "status=failed (LMBillingError)" in repr(stats)
@@ -274,7 +276,7 @@ def test_last_run_is_readable_while_the_run_is_going():
 
 def test_events_raises_the_runs_error_instead_of_hanging():
     async def run():
-        table = rows_table().lm_map("summary -> topic", lm=OutOfCredits([]), on_error="raise")
+        table = rows_table().lm_map("summary -> topic", lm=OutOfCredits(), on_error="raise")
         return [e async for e in table.events()]
 
     with pytest.raises(dspy.LMBillingError):

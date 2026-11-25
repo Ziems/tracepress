@@ -39,9 +39,9 @@ def test_openrouter_asks_for_cost_only_when_the_price_is_unknown(monkeypatch):
 def test_typesafe_prefix_builds_a_decision_client(monkeypatch):
     monkeypatch.setenv("TYPESAFE_API_KEY", "ts-test")
     lm = lm_config.make_lm("typesafe:jev-latest")
-    assert lm.supports_decision_requests and lm.model == "jev-latest"
+    assert lm.supports_decision_requests and lm.model == "typesafe:jev-latest"
     assert lm_config.model_label(lm) == ("typesafe", "jev-latest")
-    assert lm_config.resolve_lm(lm) is lm  # not a dspy.BaseLM, but still an LM
+    assert lm_config.call_cost(lm.model, 1_000_000, 0) == 0.042
 
 
 def test_portkey_prefix_targets_the_gateway_with_a_provider_slug(monkeypatch):

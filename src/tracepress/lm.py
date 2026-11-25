@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,19 +26,19 @@ SUGGESTED_LM = "openrouter:openai/gpt-6-luna"
 
 PORTKEY_BASE_URL = "https://api.portkey.ai/v1"
 
-# USD per million (input, output) tokens, for models litellm has no price for. Extend
-# with `tp.configure(prices={...})`, keyed by the litellm model name (`lm.model`).
+# USD per million (input, output) tokens, for models DSPy's price table doesn't cover.
+# Extend with `tp.configure(prices={...})`, keyed by the model name (`lm.model`).
 PRICES = {
     "openrouter/openai/gpt-6-luna": (0.10, 0.50),
     # typesafe.ai lists $42 per billion input tokens; it lists no output price, so this assumes
     # the same. Jev's outputs are a few tokens per decision, so the assumption barely matters.
-    "jev-latest": (0.042, 0.042),
+    "typesafe:jev-latest": (0.042, 0.042),
 }
 
 
 @dataclass
 class Config:
-    # A `provider:model` string (see `resolve_lm`), a plain litellm model string, or a
+    # A `provider:model` string (see `resolve_lm`), a plain DSPy model string, or a
     # dspy.LM. None means "read TRACEPRESS_LM", and fail if that isn't set either.
     lm: str | dspy.LM | None = None
     # How prompts and structured outputs are formatted. JSON parses more reliably than
@@ -103,7 +104,7 @@ def _require_env(name: str, spec: str) -> str:
 
 def _openrouter(model: str, spec: str) -> dspy.LM:
     _require_env("OPENROUTER_API_KEY", spec)
-    # For models with no known price (e.g. ones newer than litellm's price list), ask
+    # For models with no known price (e.g. ones newer than DSPy's price table), ask
     # OpenRouter to report each call's cost. Only for those: the flag changes the request,
     # so adding it to priced models would miss every response already cached for them.
     kwargs = {} if call_cost(f"openrouter/{model}", 1, 1) else {"extra_body": {"usage": {"include": True}}}
@@ -128,13 +129,11 @@ def _portkey(model: str, spec: str) -> dspy.LM:
 
 
 
-def _typesafe(model: str, spec: str) -> Any:
+def _typesafe(model: str, spec: str) -> dspy.LM:
     # TypeSafe's System One models (Jev) answer decision outputs (Noul, Score, Choice) with
-    # probabilities instead of generating text. Needs `pip install "tracepress[jev]"`.
+    # probabilities instead of generating text. DSPy routes `typesafe:` models natively.
     _require_env("TYPESAFE_API_KEY", spec)
-    from dspy.experimental import TypeSafe
-
-    return _labeled(TypeSafe(model), "typesafe", model)
+    return _labeled(dspy.LM(f"typesafe:{model}"), "typesafe", model)
 
 
 PROVIDERS = {"openrouter": _openrouter, "portkey": _portkey, "typesafe": _typesafe}
@@ -145,7 +144,7 @@ def make_lm(spec: str) -> dspy.LM:
 
     `provider:model` routes through a known gateway: `openrouter:openai/gpt-6-luna`,
     `portkey:<provider slug>/<model>`, or `typesafe:jev-latest` (decision outputs only).
-    Anything else is a plain litellm model string,
+    Anything else is a plain DSPy model string,
     passed through as is (`anthropic/claude-...`, `ollama_chat/llama3:8b`).
     """
     _load_env()
@@ -153,7 +152,7 @@ def make_lm(spec: str) -> dspy.LM:
     if sep and "/" not in prefix:
         if prefix not in PROVIDERS:
             raise ValueError(f"unknown LM provider {prefix!r} in {spec!r}; known: {', '.join(PROVIDERS)}. "
-                             "Plain litellm model strings (no 'provider:') also work.")
+                             "Plain DSPy model strings (no 'provider:') also work.")
         if not model:
             raise ValueError(f"{spec!r} names no model")
         return PROVIDERS[prefix](model, spec)
@@ -198,7 +197,7 @@ def resolve_lm(lm: str | dspy.LM | None) -> dspy.LM:
             "No LM configured. Pick one with tp.configure(lm=...), an operator's lm=, or the "
             f'TRACEPRESS_LM environment variable, e.g. tp.configure(lm="{SUGGESTED_LM}").'
         )
-    if not isinstance(lm, str):  # a dspy.LM, or another client such as TypeSafe's System One
+    if not isinstance(lm, str):  # a dspy.LM or another dspy.BaseLM
         return lm
     if lm not in _lm_cache:
         _lm_cache[lm] = make_lm(lm)
@@ -206,20 +205,29 @@ def resolve_lm(lm: str | dspy.LM | None) -> dspy.LM:
 
 
 def call_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
-    """USD for one call, from `Config.prices` or litellm's price table; None if unknown."""
+    """USD for one call, from `Config.prices` or DSPy's price table; None if unknown."""
     if not prompt_tokens and not completion_tokens:
         return 0.0
-    price = _config.prices.get(model)
-    if price is not None:
-        return (prompt_tokens * price[0] + completion_tokens * price[1]) / 1e6
-    try:
-        import litellm
+    price = _config.prices.get(model) or _table_price(model)
+    if price is None:
+        return None
+    return (prompt_tokens * price[0] + completion_tokens * price[1]) / 1e6 or None
 
-        cost = sum(litellm.cost_per_token(model=model, prompt_tokens=prompt_tokens,
-                                          completion_tokens=completion_tokens))
+
+def _table_price(model: str) -> tuple[float, float] | None:
+    """USD per million (input, output) tokens from DSPy's bundled price table, if listed."""
+    try:
+        from dspy.clients.model_metadata import model_info, rate
+
+        match = re.match(r"([\w-]+)[/:](.+)", model)
+        provider, name = match.groups() if match else ("openai", model)  # bare names are OpenAI's
+        info = model_info(provider, name)
+        prices = rate(info, "input_cost_per_token"), rate(info, "output_cost_per_token")
     except Exception:
         return None
-    return cost or None  # litellm answers 0 for models it has no price for
+    if prices[0] is None and prices[1] is None:
+        return None
+    return (prices[0] or 0.0) * 1e6, (prices[1] or 0.0) * 1e6
 
 
 @dataclass
