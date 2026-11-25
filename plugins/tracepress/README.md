@@ -17,12 +17,9 @@ The `tracepress` package sends anonymous usage events to PostHog: one per finish
 `optimize`, and one when a server starts or registers a pipeline, with versions, durations, LM
 call and token counts, cost, model names and how many of each operator ran. It never sends your
 data, prompts, signatures, column or task names, file paths, hostnames, API keys or error
-messages. It prints a notice the first time it sends.
+messages.
 
 Turn it off with `TRACEPRESS_TELEMETRY=0`, `DO_NOT_TRACK=1` or `tp.configure(telemetry=False)`.
-It's already off in CI and under pytest. `TRACEPRESS_TELEMETRY=debug` prints what would be sent
-without sending it. [docs/telemetry.md](https://github.com/Ziems/tracepress/blob/main/docs/telemetry.md)
-lists every field.
 
 ## License
 
