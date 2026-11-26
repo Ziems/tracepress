@@ -80,10 +80,13 @@ def test_nothing_private_is_sent(sent, monkeypatch):
         f"bedrock/arn:aws:bedrock:us-east-1:123456789012:provisioned-model/{SECRET}": ("litellm", "bedrock/other"),
         f"azure/{SECRET}-prod-eastus": ("litellm", "azure/other"),
         f"ollama/{SECRET}-finetune": ("litellm", "ollama/other"),
-        f"ollama_chat/{SECRET}-finetune": ("litellm", "other"),  # DSPy's model list has no ollama_chat provider
-        f"hosted_vllm/{SECRET}-ckpt-2026-11": ("litellm", "other"),  # nor hosted_vllm
+        f"ollama_chat/{SECRET}-finetune": ("litellm", "ollama_chat/other"),
+        f"hosted_vllm/{SECRET}-ckpt-2026-11": ("litellm", "hosted_vllm/other"),
+        f"acme/{SECRET}": ("litellm", "other"),
         f"openrouter:@preset/{SECRET}": ("openrouter", "other"),
         f"openrouter:openai/gpt-4o@preset/{SECRET}": ("openrouter", "openai/gpt-4o"),
+        f"openrouter/@preset/{SECRET}-2": ("litellm", "other"),
+        f"openrouter/qwen/qwen3-coder@preset/{SECRET}": ("litellm", "openrouter/qwen/qwen3-coder"),
     }
     for lm in [*map(lm_config.make_lm, sent_as), dspy.LM(f"openai/{SECRET}-model", api_base="http://10.0.0.5:8000/v1")]:
         stats.record(lm, "lm_map", 1.0, 10, 5, ok=True, cached=False)
@@ -104,6 +107,7 @@ def test_public_model_names_are_sent(sent, monkeypatch):
         "openrouter:anthropic/claude-sonnet-4.5",
         "openrouter:qwen/qwen3-coder",
         "openrouter:openai/gpt-6-luna",
+        "openrouter/moonshotai/kimi-k2",
         "anthropic/claude-sonnet-4-5",
         "gpt-4o",
         f"openai/{SECRET}",
@@ -118,6 +122,7 @@ def test_public_model_names_are_sent(sent, monkeypatch):
         ("openrouter", "anthropic/claude-sonnet-4.5"),
         ("openrouter", "qwen/qwen3-coder"),
         ("openrouter", "openai/gpt-6-luna"),
+        ("litellm", "openrouter/moonshotai/kimi-k2"),
         ("litellm", "anthropic/claude-sonnet-4-5"),
         ("litellm", "gpt-4o"),
         ("litellm", "openai/other"),
@@ -133,12 +138,15 @@ def test_public_check_never_fetches(monkeypatch):
     monkeypatch.setattr(model_metadata, "_load", fetch)
     monkeypatch.setattr(urllib.request, "urlopen", fetch)
     telemetry._bundled_models.cache_clear()
+    telemetry._known_providers.cache_clear()
     labels = [
         ("litellm", "anthropic/claude-sonnet-4-5"),
         ("litellm", "gpt-4o"),
         ("custom", "gpt-4o-mini"),
         ("litellm", "openrouter/openai/gpt-6-luna"),
         ("litellm", f"azure/{SECRET}"),
+        ("litellm", f"hosted_vllm/{SECRET}"),
+        ("litellm", f"acme/{SECRET}"),
         ("custom", SECRET),
     ]
     assert [telemetry._reported_model(*label) for label in labels] == [
@@ -147,6 +155,8 @@ def test_public_check_never_fetches(monkeypatch):
         "gpt-4o-mini",
         "openrouter/openai/gpt-6-luna",
         "azure/other",
+        "hosted_vllm/other",
+        "other",
         "other",
     ]
     assert model_metadata._data is data

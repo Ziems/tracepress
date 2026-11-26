@@ -22,12 +22,14 @@ one-time notice.
 - Duration, and counts of LM calls, cache hits, errors, retries, tokens and estimated cost.
 - For each model, the gateway and the model name. A name you type can contain an AWS account
   ID, a deployment name or an unreleased model, so only public names are sent:
-  - OpenRouter and TypeSafe: the name as typed, e.g. `openai/gpt-6-luna`, minus an OpenRouter
+  - OpenRouter and TypeSafe, including a plain `openrouter/...` model string: the name as
+    typed, e.g. `openai/gpt-6-luna` or `openrouter/openai/gpt-6-luna`, minus an OpenRouter
     preset (`@preset/...`). A name that is only a preset is sent as `"other"`.
   - Everything else, including Portkey and your own `dspy.LM`: the name, if TracePress's
     built-in prices or the model list bundled with DSPy include it. Otherwise the provider
-    and `/other` (e.g. `azure/other`) if that list includes the provider, else `"other"`.
-    Prices you add with `tp.configure(prices=...)` don't make a name public.
+    and `/other` (e.g. `azure/other`, `hosted_vllm/other`) if DSPy knows the provider from
+    that list or the `provider/` prefixes it routes, else `"other"`. Prices you add with
+    `tp.configure(prices=...)` don't make a name public.
   - A fine-tune is sent as `ft:` plus its base model, never its id. Portkey provider slugs and
     endpoints are never sent.
 - How many of each operator the plan has (`lm_map`, `filter`, `edit` for a `rerun`, …), the

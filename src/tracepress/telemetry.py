@@ -8,10 +8,11 @@ it makes inside are not reported on their own), `server_started` and `pipeline_r
 What is sent: library and Python versions, the OS name, run outcome and duration, call,
 cache, token and cost counts, which gateways and models were used, how many of each
 operator the plan has, the kinds of sources, and which built-in pipelines ran. An
-OpenRouter or TypeSafe model name is sent as typed, minus any OpenRouter preset. Any other
-name is sent only if TracePress's built-in prices or DSPy's bundled model list include it,
-else as `<provider>/other` if DSPy lists the provider, else "other". Nothing from the data,
-prompts, signatures, instructions, column names, paths or error messages is ever sent.
+OpenRouter or TypeSafe model name, `openrouter/...` included, is sent as typed, minus any
+OpenRouter preset. Any other name is sent only if TracePress's built-in prices or DSPy's
+bundled model list include it, else as `<provider>/other` if DSPy knows the provider, else
+"other". Nothing from the data, prompts, signatures, instructions, column names, paths or
+error messages is ever sent.
 
 Identity is a random install id in `~/.config/tracepress/telemetry.json`, not derived
 from the machine; delete the file to reset it.
@@ -81,7 +82,6 @@ SOURCES = {
     "OTLPReceiver": "otlp",
     "ServerSource": "server",
 }
-# Gateways whose model names come from a public catalog. Portkey's don't: they can be deployments.
 CATALOG_GATEWAYS = {"openrouter", "typesafe"}
 PUBLIC_ERROR_MODULES = ("builtins", "asyncio", "concurrent", "tracepress", "dspy", "litellm", "pydantic", "json")
 
@@ -228,6 +228,16 @@ def _bundled_models() -> dict[str, str | None]:
         return {}
 
 
+@functools.cache
+def _known_providers() -> frozenset[str]:
+    """Providers in DSPy's bundled models, plus the `provider/` prefixes DSPy routes itself."""
+    try:
+        from dspy._vendor.lm15.router import LITELLM_PROVIDER_PREFIXES as routed
+    except Exception:
+        routed = {}
+    return frozenset({p for p in _bundled_models().values() if p} | set(routed))
+
+
 def _is_public(model: str) -> bool:
     """In TracePress's built-in prices or DSPy's bundled models, as `name` or `provider/name`. Prices
     added with `configure(prices=...)` don't count: a user can price a private model."""
@@ -239,12 +249,13 @@ def _is_public(model: str) -> bool:
 def _reported_model(gateway: str, model: str) -> str:
     """The name telemetry sends for a `model_label`. A typed name can hold an AWS account id, a
     company's deployment name or an unreleased model, so only public names are sent."""
-    if gateway in CATALOG_GATEWAYS:
-        return model.split("@", 1)[0] or "other"  # "@" starts an OpenRouter preset
+    if gateway in CATALOG_GATEWAYS or (gateway == "litellm" and model.startswith("openrouter/")):
+        name = model.split("@", 1)[0]  # OpenRouter preset
+        return name if name.removeprefix("openrouter/") else "other"
     if _is_public(model.replace("ft:", "")):
         return model
     provider = model.partition("/")[0]
-    return f"{provider}/other" if "/" in model and provider in _bundled_models().values() else "other"
+    return f"{provider}/other" if "/" in model and provider in _known_providers() else "other"
 
 
 def _op_counts(plan: list[Node]) -> dict[str, int]:
