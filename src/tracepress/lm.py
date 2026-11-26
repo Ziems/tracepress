@@ -14,7 +14,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import dspy
 from dspy.utils.exceptions import AdapterParseError
@@ -110,7 +110,8 @@ def _openrouter(model: str, spec: str) -> dspy.LM:
     # For models with no known price (e.g. ones newer than DSPy's price table), ask
     # OpenRouter to report each call's cost. Only for those: the flag changes the request,
     # so adding it to priced models would miss every response already cached for them.
-    kwargs = {} if call_cost(f"openrouter/{model}", 1, 1) else {"extra_body": {"usage": {"include": True}}}
+    priced = call_cost(f"openrouter/{model}", 1, 1)
+    kwargs: dict[str, Any] = {} if priced else {"extra_body": {"usage": {"include": True}}}
     return _labeled(dspy.LM(f"openrouter/{model}", **kwargs), "openrouter", model)
 
 
@@ -164,7 +165,7 @@ def make_lm(spec: str) -> dspy.LM:
 
 
 def _labeled(lm: dspy.LM, gateway: str, model: str) -> dspy.LM:
-    lm._tp_label = (gateway, model)
+    vars(lm)["_tp_label"] = (gateway, model)
     return lm
 
 
@@ -390,6 +391,7 @@ class Executor:
                     raise
                 self.stats.fallbacks += 1
                 return answer
+        raise AssertionError("no adapter to try")
 
 
 def bare_answer(error: AdapterParseError) -> dspy.Prediction | None:
@@ -398,7 +400,7 @@ def bare_answer(error: AdapterParseError) -> dspy.Prediction | None:
     Models sometimes skip the format for a one-field answer, e.g. `-> digest`. Every adapter
     then fails on the same (cached) response, so the row would be skipped on every run.
     """
-    outputs = error.signature.output_fields
+    outputs = cast(type[dspy.Signature], error.signature).output_fields
     text = (error.lm_response or "").strip()
     if len(outputs) != 1 or not text or text.startswith(("{", "[", "<")):
         return None

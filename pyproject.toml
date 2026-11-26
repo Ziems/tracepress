@@ -48,6 +48,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.17.6",
+    "ty>=0.0.111",
 ]
 
 [tool.pytest.ini_options]
@@ -58,3 +59,16 @@ line-length = 120
 
 [tool.ruff.lint.per-file-ignores]
 "src/tracepress/telemetry.py" = ["BLE001", "S110"]
+
+[tool.ty.src]
+include = ["src", "tests"]
+
+[[tool.ty.overrides]]
+include = ["src/tracepress/signatures.py"]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"
+invalid-explicit-return = "ignore"
+invalid-type-form = "ignore"
+missing-attribute = "ignore"
+too-many-positional-arguments = "ignore"

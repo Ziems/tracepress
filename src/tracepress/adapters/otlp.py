@@ -309,6 +309,7 @@ class OTLPReceiver(Adapter):
 
     def close_trace(self, trace_id: str) -> None:
         trace = self.open.pop(trace_id)
+        assert trace.builder is not None
         self.closed[trace_id] = time.monotonic()
         self._release(trace_id, trace, trace.builder.finish())
         spans = list(trace.spans.values())

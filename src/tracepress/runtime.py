@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from . import telemetry
 from .lm import Executor, RunStats
-from .operators import END, Operator, supersedes
+from .operators import END, JoinOp, Operator, supersedes
 from .rows import Event, Row, RowAdded, RowUpdated, sort_key
 
 if TYPE_CHECKING:
@@ -89,6 +89,7 @@ async def run_async(
         op.label = node.label
         ops[id(node)] = op
         if node.parent is None:
+            assert isinstance(op, SourceOp)
             op.live = not op.adapter.bounded
             coros.append(op.produce())
         else:
@@ -97,6 +98,7 @@ async def run_async(
             parent.outputs.append(queue)
             coros.append(op.consume(queue))
             for other in node.others:  # a second input, e.g. the right side of a join
+                assert isinstance(op, JoinOp)
                 side: asyncio.Queue = asyncio.Queue()
                 other_op, other_live = build(other)
                 other_op.outputs.append(side)
@@ -120,7 +122,7 @@ async def run_async(
     error: BaseException | None = None
     try:
         done, _ = await asyncio.wait([work, stop], return_when=asyncio.FIRST_COMPLETED)
-        failures = [f.exception() for f in done if f.exception()]
+        failures = [e for f in done if (e := f.exception())]
         if failures:
             raise failures[0]
     except BaseException as e:

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import dspy
 
@@ -18,6 +18,9 @@ from . import signatures as sigs
 from .rows import Key, Row
 from .schema import Schema
 from .signatures import SigLike
+
+if TYPE_CHECKING:
+    from .optimize import OptimizeReport
 
 
 @dataclass(eq=False)
@@ -42,6 +45,8 @@ class LMSpec:
 
 
 class Table:
+    optimize_report: OptimizeReport
+
     def __init__(self, node: Node):
         self._node = node
 
@@ -50,7 +55,7 @@ class Table:
         return self._node.schema
 
     def __repr__(self) -> str:
-        cols = "?" if self.schema.open else ", ".join(self.schema.columns)
+        cols = "?" if self.schema.columns is None else ", ".join(self.schema.columns)
         return f"Table[{' > '.join(self.schema.levels)}]({cols})"
 
     def _then(self, make, schema: Schema, label: str, spec: LMSpec | None = None) -> Table:
@@ -71,7 +76,7 @@ class Table:
         # `fn` may overwrite any column, so only columns it declares keep their grain.
         grain = {c: d for c, d in self.schema.grain.items() if columns is not None and c not in columns}
         schema = replace(self.schema, columns=None, grain=grain)
-        if columns is not None and not self.schema.open:
+        if columns is not None and self.schema.columns is not None:
             schema = replace(schema, columns={**self.schema.columns, **columns})
         return self._then(lambda: ops.MapOp(fn), schema, "map")
 
@@ -156,7 +161,7 @@ class Table:
             depth = 0
             # The added columns are constant wherever every `on` value is.
             where = [left.levels.index(n) + 1 if n in left.levels else left.grain.get(n) for n in names]
-            grain_depth = None if None in where else max(where)
+            grain_depth = None if None in where else max(w for w in where if w is not None)
         if columns is not None:
             other.schema.require(columns, "join columns")
         added = {c: t for c, t in (right.columns or {}).items() if c not in names and (columns is None or c in columns)}
@@ -173,11 +178,11 @@ class Table:
                 f"join: column(s) {clash} are on both tables. Pass columns=[...] to add only "
                 f"some of the other table's columns, or suffix='_x' to keep both copies."
             )
-        renamed = {c: c + suffix if c in clash else c for c in added}
+        renamed = {c: c + suffix if suffix is not None and c in clash else c for c in added}
         still = [renamed[c] for c in clash if renamed[c] in taken]
         if still:
             raise ValueError(f"join: column(s) {still} still clash after adding suffix {suffix!r}")
-        if left.open or right.open:
+        if left.columns is None or right.columns is None:
             schema_columns = None
         else:
             schema_columns = {**left.columns, **{renamed[c]: t for c, t in added.items()}}

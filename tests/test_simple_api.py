@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from typing import Any
 
 import pytest
 from fakes import FuncLM
@@ -80,7 +81,7 @@ def test_reduce_lifts_group_constants_and_carries_them(harbor_dir):
     # Trial-level columns ride along onto the per-trial rows, for the next level up.
     assert {r.trial: r.reward for r in rows} == {"alpha__1": 1.0, "alpha__2": 0.0, "beta__1": 1.0}
     assert rows[0].model == "anthropic/claude-opus-5"
-    assert "reward" in per_trial.schema.columns
+    assert per_trial.schema.columns is not None and "reward" in per_trial.schema.columns
 
 
 def test_hierarchy_compares_trials_by_model(harbor_dir):
@@ -216,8 +217,9 @@ def test_join_stops_cleanly_when_a_run_fails():
 
 def test_join_needs_on(harbor_dir):
     src = tp.read.harbor(harbor_dir)
+    options: dict[str, Any] = {}
     with pytest.raises(TypeError):
-        src.steps.join(src.trials)
+        src.steps.join(src.trials, **options)
 
 
 def test_join_on_a_level_must_be_the_others_deepest(harbor_dir):
@@ -244,7 +246,7 @@ def test_join_on_a_column(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     per_model = src.trials.group_by("model").reduce(lambda rs: {"runs": len(rs)}, columns={"runs": int})
     joined = src.trials.join(per_model, on="model")
-    assert joined.schema.columns["runs"] is int
+    assert joined.schema.columns is not None and joined.schema.columns["runs"] is int
     rows = joined.collect()
     assert len(rows) == 4 and {r.runs for r in rows} == {4}  # every fixture run uses the same model
 

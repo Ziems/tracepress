@@ -25,7 +25,7 @@ class Schema:
         return self.columns is None
 
     def has(self, name: str) -> bool:
-        return self.open or name in self.columns or name in self.levels
+        return self.columns is None or name in self.columns or name in self.levels
 
     def require(self, names, what: str) -> None:
         missing = [n for n in names if not self.has(n)]
@@ -34,7 +34,7 @@ class Schema:
             raise ValueError(f"{what}: unknown field(s) {missing}. Available: {known}")
 
     def with_columns(self, new: dict[str, Any]) -> Schema:
-        if self.open:
+        if self.columns is None:
             return self
         clash = [n for n in new if n in self.columns or n in self.levels]
         if clash:

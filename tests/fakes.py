@@ -48,6 +48,7 @@ class FuncLM(dspy.BaseLM):
         super().__init__(model="func", engine=_Engine(self), async_engine=_AsyncEngine(self))
         self.fn = fn
         self.calls = 0
+        self.seen: list[dict] = []
         self._cache_responses = False  # answer every call, like a live model
 
     def _answer(self, request):
