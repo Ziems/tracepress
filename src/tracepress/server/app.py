@@ -175,15 +175,18 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
         return web.Response(body=pickle.dumps(hub.schemas), content_type="application/octet-stream")
 
     async def push(request):
-        body = await request.json()
         by_table: dict[str, list[Event]] = {}
-        for item in body["events"]:
-            by_table.setdefault(item["table"], []).append(decode(item))
         try:
-            for table, events in by_table.items():
-                hub.publish(table, events)
-        except KeyError as e:
-            raise web.HTTPBadRequest(text=str(e.args[0]))
+            for item in (await request.json())["events"]:
+                by_table.setdefault(item["table"], []).append(decode(item))
+        except (KeyError, TypeError, ValueError) as e:
+            raise web.HTTPBadRequest(text=f"malformed push: {e!r}")
+        # Checked before publishing any, so a rejected batch leaves nothing behind for a retry to duplicate.
+        if undeclared := [t for t in by_table if t not in hub.schemas]:
+            raise web.HTTPBadRequest(text=f"no table {undeclared[0]!r} has been declared; "
+                                          "stream from an adapter, or push with its schema")
+        for table, events in by_table.items():
+            hub.publish(table, events)
         return web.json_response({"events": sum(map(len, by_table.values()))})
 
     async def stop(name: str) -> None:

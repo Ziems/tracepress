@@ -162,6 +162,8 @@ results are combined with the merge signature.
   JSON (`client.push`, or `client.stream` from any adapter in a background thread), and build
   pipelines on `client.source`, a `RemoteSource` with the server's tables and no rows (collecting
   it locally raises).
+- A push is accepted or refused whole: one naming an undeclared table, or with a malformed
+  event, gets a 400 and publishes nothing, so retrying it doesn't duplicate events.
 - `client.register(name=, pipeline=)` cloudpickles the plan's `Node` graph. The server swaps
   every `RemoteSource` source node for its `ServerSource` and runs the plan with
   `runtime.stream_events` as a background task; re-registering a name replaces it. Rows and

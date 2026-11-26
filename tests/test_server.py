@@ -87,6 +87,27 @@ def test_a_late_pipeline_catches_up(server):
     assert sorted(e.row.step for e in rows) == [1, 2]
 
 
+def test_a_rejected_push_publishes_none_of_its_events(server):
+    import time
+
+    from tracepress.rows import RowAdded
+    from tracepress.server.protocol import encode
+
+    client = tp.connect(server.address)
+    client.declare({"steps": STEPS})
+    with pytest.raises(RuntimeError, match="400: no table 'nope'"):
+        client._push_encoded([encode(RowAdded(step("a", 1)), "steps"), encode(RowAdded(step("a", 2)), "nope")])
+    with pytest.raises(RuntimeError, match="400"):
+        client._push_encoded([{"kind": "added", "key": [["trace", "a"], ["step", 3]]}])  # no table
+    client.push([step("b", 1)], table="steps")
+    client.register(name="p", pipeline=client.source.steps.map(record_step, columns={}))
+    deadline = time.monotonic() + 10
+    while client.pipelines()[0]["rows"] < 1 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.2)
+    assert client.pipelines()[0]["rows"] == 1  # only b, pushed on its own
+
+
 def test_unregister_ends_listeners(server):
     client = tp.connect(server.address)
     client.declare({"steps": STEPS})
