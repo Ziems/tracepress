@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ..rows import Closed, Event, Key, Row, RowAdded
 from ..schema import Schema
@@ -90,8 +90,8 @@ class SessionAdapter(Adapter):
     """One row per session, its steps, and their tool calls. Subclasses parse one session."""
 
     levels = ("project", "session", "step")
-    session_columns: dict[str, Any] = {}
-    step_columns: dict[str, Any] = SESSION_STEP_COLUMNS
+    session_columns: ClassVar[dict[str, Any]] = {}
+    step_columns: ClassVar[dict[str, Any]] = SESSION_STEP_COLUMNS
 
     def __init__(self, files: list[SessionFile]):
         self.files = files

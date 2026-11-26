@@ -6,7 +6,7 @@ import re
 import dspy
 from dspy.lm15 import Message, Response, TextPart, Usage
 
-FIELD = re.compile(r"\[\[ ## (\w+) ## \]\]\n(.*?)(?=\n\n(?:\[\[ ## |Respond with)|\Z)", re.S)
+FIELD = re.compile(r"\[\[ ## (\w+) ## \]\]\n(.*?)(?=\n\n(?:\[\[ ## |Respond with)|\Z)", re.DOTALL)
 
 
 def _last_user_text(request) -> str:

@@ -196,7 +196,7 @@ async def _serve_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     else:
                         data = decode_traces_request(body)
                     on_spans(list(spans_from_otlp(data)))
-                except Exception as e:  # a bad request must not stop the receiver
+                except Exception as e:  # noqa: BLE001 - a bad request must not stop the receiver
                     status, reply = 400, str(e).encode()
             reason = {200: "OK", 400: "Bad Request", 404: "Not Found"}[status]
             writer.write(f"HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n"

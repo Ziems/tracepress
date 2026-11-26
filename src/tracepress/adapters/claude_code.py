@@ -22,12 +22,22 @@ import json
 import os
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from .atif import clean_content
 from .sessions import (
-    SESSION_STEP_COLUMNS, Parsed, SessionAdapter, SessionFile, find_files, first_prompt, join, new_step,
-    read_head, read_lines, seconds, select,
+    SESSION_STEP_COLUMNS,
+    Parsed,
+    SessionAdapter,
+    SessionFile,
+    find_files,
+    first_prompt,
+    join,
+    new_step,
+    read_head,
+    read_lines,
+    seconds,
+    select,
 )
 
 SESSION_COLUMNS = {
@@ -154,8 +164,8 @@ def owners(files: list[SessionFile]) -> dict[str, str]:
 class ClaudeCodeAdapter(SessionAdapter):
     """Claude Code / Agent SDK sessions. Levels: project > session > step (> call)."""
 
-    session_columns = SESSION_COLUMNS
-    step_columns = {**SESSION_STEP_COLUMNS, "inherited": bool}  # copied from an earlier session
+    session_columns: ClassVar[dict[str, Any]] = SESSION_COLUMNS
+    step_columns: ClassVar[dict[str, Any]] = {**SESSION_STEP_COLUMNS, "inherited": bool}  # copied from an earlier session
 
     def __init__(self, files: list[SessionFile], inherited: bool = False):
         super().__init__(files)

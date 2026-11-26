@@ -1,7 +1,7 @@
 import asyncio
 
-import pandas as pd
 import dspy
+import pandas as pd
 import pytest
 from dspy.utils import DummyLM
 from fakes import FuncLM

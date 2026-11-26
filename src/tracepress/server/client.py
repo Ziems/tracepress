@@ -70,7 +70,7 @@ class Streaming:
     def _main(self) -> None:
         try:
             asyncio.run(self._pump())
-        except BaseException as e:  # reported by wait()
+        except BaseException as e:  # noqa: BLE001 - reported by wait()
             self.error = e
 
     async def _pump(self) -> None:
@@ -207,19 +207,18 @@ class Client:
         import aiohttp
 
         url = self.base.replace("http", "ws", 1) + f"/listen/{_quote(name)}" + ("?from_start=1" if from_start else "")
-        async with aiohttp.ClientSession(headers=self._headers()) as session:
-            async with session.ws_connect(url) as ws:
-                async for msg in ws:
-                    if msg.type != aiohttp.WSMsgType.TEXT:
-                        break
-                    data = msg.json()
-                    if data["kind"] == "error":
-                        raise RuntimeError(f"pipeline {name!r} failed on the server: {data['error']}")
-                    event = decode(data)
-                    if isinstance(event, Closed):
-                        yield ServerEvent("closed", prefix=event.prefix)
-                    else:
-                        yield ServerEvent("updated" if isinstance(event, RowUpdated) else "added", row=event.row)
+        async with aiohttp.ClientSession(headers=self._headers()) as session, session.ws_connect(url) as ws:
+            async for msg in ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    break
+                data = msg.json()
+                if data["kind"] == "error":
+                    raise RuntimeError(f"pipeline {name!r} failed on the server: {data['error']}")
+                event = decode(data)
+                if isinstance(event, Closed):
+                    yield ServerEvent("closed", prefix=event.prefix)
+                else:
+                    yield ServerEvent("updated" if isinstance(event, RowUpdated) else "added", row=event.row)
 
 
 def connect(address: str = "localhost:7700", token: str | None = None) -> Client:

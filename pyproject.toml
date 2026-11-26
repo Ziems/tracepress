@@ -47,7 +47,14 @@ dev = [
     "nbformat>=5.11.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.6",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint.per-file-ignores]
+"src/tracepress/telemetry.py" = ["BLE001", "S110"]

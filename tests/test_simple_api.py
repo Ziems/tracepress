@@ -29,7 +29,7 @@ def test_tables_as_attributes(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     assert src.steps.schema == src.table("steps").schema
     with pytest.raises(AttributeError, match="no attribute or table 'stepz'"):
-        src.stepz
+        _ = src.stepz
 
 
 def test_step_input_is_the_whole_step(harbor_dir):

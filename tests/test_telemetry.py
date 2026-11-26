@@ -2,14 +2,12 @@ import json
 
 import dspy
 import pytest
+from fakes import FuncLM
 
 import tracepress as tp
 from tracepress import lm as lm_config
 from tracepress import telemetry
 from tracepress.lm import RunStats
-from tracepress.pipelines import harbor as pipes
-
-from fakes import FuncLM
 
 SECRET = "zz_secret_zz"
 

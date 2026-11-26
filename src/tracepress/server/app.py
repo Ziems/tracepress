@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import os
 import logging
+import os
 import pickle
 import threading
 from collections import deque
@@ -22,8 +22,8 @@ from typing import Any
 
 from aiohttp import web
 
-from .. import runtime, telemetry
 from .. import lm as lm_config
+from .. import runtime, telemetry
 from ..adapters.base import Adapter
 from ..rows import Event, RowAdded, RowUpdated, sort_key
 from ..schema import Schema

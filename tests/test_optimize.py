@@ -2,7 +2,7 @@
 
 import pandas as pd
 import pytest
-from fakes import FIELD, FuncLM
+from fakes import FuncLM
 
 import tracepress as tp
 

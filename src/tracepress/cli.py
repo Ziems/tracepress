@@ -19,7 +19,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.command == "serve":
-        from .server.app import LOCAL_HOSTS, serve as run
+        from .server.app import LOCAL_HOSTS
+        from .server.app import serve as run
 
         if args.host not in LOCAL_HOSTS and not args.token:
             parser.error(f"--host {args.host} lets anyone who can reach it run code here; pass --token too")

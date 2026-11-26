@@ -226,7 +226,7 @@ def _table_price(model: str) -> tuple[float, float] | None:
         provider, name = match.groups() if match else ("openai", model)  # bare names are OpenAI's
         info = model_info(provider, name)
         prices = rate(info, "input_cost_per_token"), rate(info, "output_cost_per_token")
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     if prices[0] is None and prices[1] is None:
         return None

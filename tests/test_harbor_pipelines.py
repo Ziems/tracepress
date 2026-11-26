@@ -1,9 +1,9 @@
 import asyncio
 
+from fakes import FuncLM
+
 import tracepress as tp
 from tracepress.pipelines import harbor as pipes
-
-from fakes import FuncLM
 
 
 def judge(fields):

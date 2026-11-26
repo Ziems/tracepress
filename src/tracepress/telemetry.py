@@ -126,11 +126,11 @@ def install_id() -> str | None:
 
 
 def _version(dist: str) -> str:
-    try:
-        from importlib.metadata import version
+    from importlib.metadata import PackageNotFoundError, version
 
+    try:
         return version(dist)
-    except Exception:
+    except PackageNotFoundError:
         return "unknown"
 
 
@@ -307,5 +307,5 @@ def _send(body: dict[str, Any]) -> None:
 @atexit.register
 def _flush() -> None:
     """Give in-flight events up to a second at exit; never hold up shutdown longer."""
-    for thread in list(_pending):
+    for thread in _pending:
         thread.join(timeout=1.0 / max(1, len(_pending)))

@@ -19,7 +19,15 @@ from typing import Any
 
 from .atif import IMAGE_PLACEHOLDER
 from .sessions import (
-    Parsed, SessionAdapter, SessionFile, find_files, first_prompt, join, new_step, read_lines, seconds,
+    Parsed,
+    SessionAdapter,
+    SessionFile,
+    find_files,
+    first_prompt,
+    join,
+    new_step,
+    read_lines,
+    seconds,
     select,
 )
 
