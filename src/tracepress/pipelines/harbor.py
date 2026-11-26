@@ -27,8 +27,6 @@ from typing import Any, Literal
 import dspy
 
 from ..adapters.base import Adapter
-from ..adapters.harbor import HarborAdapter, trial_values
-from ..adapters.replay import ReplayAdapter
 from ..plan import Table
 from ..rows import Row
 
@@ -59,20 +57,6 @@ def _tagged(table: Table, pipeline: str) -> Table:
     """Mark a pipeline's output node, so usage telemetry can count built-in pipelines."""
     table._node.pipeline = pipeline
     return table
-
-
-def _rewards(src: Adapter) -> dict[str, float | None]:
-    """Trial name -> reward, read from the trials' result.json without running a plan.
-
-    There are no joins yet, so steps get their trial's reward through this lookup. Reading
-    the metadata directly (rather than collecting the trials table) keeps the pipelines
-    buildable inside a running event loop, e.g. Jupyter.
-    """
-    while isinstance(src, ReplayAdapter):
-        src = src.source
-    if not isinstance(src, HarborAdapter):
-        raise TypeError(f"tp.pipelines.harbor needs a tp.read.harbor(...) source, got {type(src).__name__}")
-    return {trial.result["trial_name"]: trial_values(trial)["reward"] for trial in src.trial_dirs}
 
 
 # --- Trajectory taxonomy (paper §4.4, Appendix C) ----------------------------------------
@@ -231,11 +215,9 @@ def trajectory_taxonomy(src: Adapter, *, failed_only: bool = True, lm=None,
     per mode per trial; `trajectory_labels_wide` pivots to one row per trial.
     """
     modes = TRAJECTORY_MODES if modes is None else modes
-    rewards = _rewards(src)
-    steps = src.table("steps")
+    steps = src.table("steps").join(src.table("trials"), on="trial", columns=["reward"])
     if failed_only:
-        steps = steps.filter(lambda r: _failed(rewards.get(r.trial)))
-    steps = steps.map(lambda r: {"reward": rewards.get(r.trial)}, columns={"reward": float})
+        steps = steps.filter(lambda r: _failed(r.reward))
     digests = steps.lm_map(f"{STEP_INPUTS} -> digest", instructions=DIGEST_INSTRUCTIONS, lm=lm)
     per_trial = digests.group_by("trial", "model", "reward").reduce(
         _transcript, columns={"transcript": str, "n_steps": int})
@@ -441,8 +423,7 @@ def step_taxonomy(src: Adapter, *, failed_only: bool = False, lm=None,
     taxonomy = COMMAND_TAXONOMY if taxonomy is None else taxonomy
     calls = src.table("tool_calls")
     if failed_only:
-        rewards = _rewards(src)
-        calls = calls.filter(lambda r: _failed(rewards.get(r.trial)))
+        calls = calls.join(src.table("trials"), on="trial", columns=["reward"]).filter(lambda r: _failed(r.reward))
     failures = calls.lm_filter(f"{CALL_INPUTS} -> is_failure_present: bool", instructions=DETECT_INSTRUCTIONS, lm=lm)
     return _tagged(
         failures

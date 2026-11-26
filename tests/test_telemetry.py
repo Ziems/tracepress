@@ -57,7 +57,7 @@ def test_one_event_per_run_with_counts(sent, harbor_dir):
     # alpha__2 is the only failed trial with a trajectory: 3 digests, then 9 judges.
     assert props["calls"] == 12 and props["ok"] and props["error_type"] is None
     assert props["llm_calls_by_op"] == {"lm_map": 12}
-    assert props["ops"] == {"filter": 1, "map": 3, "lm_map": 2, "reduce": 1, "explode": 1}
+    assert props["ops"] == {"join": 1, "filter": 1, "map": 2, "lm_map": 2, "reduce": 1, "explode": 1}
     assert props["sources"] == ["harbor"] and props["pipelines"] == ["harbor.trajectory_taxonomy"]
     assert props["models"][0]["gateway"] == "custom" and props["primary_model"] == "custom:custom"
     assert props["$process_person_profile"] is False and props["$geoip_disable"] is True
