@@ -116,9 +116,9 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    and one per group for `lm_reduce`. A step-level map dominates: count steps first with
    `len(src.table("steps").collect())`. As a reference,
    six Harbor tasks (30 trials, about 530 agent steps) through a four-level pipeline was 546 calls,
-   about $0.08 and 1–2 minutes uncached. `tp.prices("openrouter/openai/gpt-6-luna")` gives a
-   model's USD per million tokens; name it as `lm.model` does, with `/` after the provider. Tell
-   the user the estimate before running anything large.
+   about $0.08 and 1–2 minutes uncached. `tp.prices("openrouter:openai/gpt-6-luna")` gives a
+   model's USD per million tokens; pass the model string the run is configured with. Tell the user
+   the estimate before running anything large.
 
 3. **Build the pipeline.** Signatures are one-line DSPy strings. Inputs bind to columns by name,
    and outputs become new columns.

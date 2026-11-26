@@ -65,6 +65,41 @@ def test_prices_show_what_a_run_charges_and_where_it_comes_from(monkeypatch):
         assert looked_up.loc[unpriced].isna().all() and lm_config.call_cost(unpriced, 100, 10) is None
 
 
+def test_prices_take_the_model_strings_people_configure_without_api_keys():
+    luna = tp.prices("openrouter:openai/gpt-6-luna").iloc[0]
+    assert luna.model == "openrouter/openai/gpt-6-luna" and luna.source == "built-in"
+    assert (luna.usd_per_1m_input, luna.usd_per_1m_output) == lm_config.PRICES["openrouter/openai/gpt-6-luna"]
+    assert luna.usd_per_1m_input == lm_config.call_cost(luna.model, 1_000_000, 0)
+    specs = [
+        "portkey:openai-prod/gpt-5",
+        "portkey:@openai-prod/gpt-5",
+        "typesafe:jev-latest",
+        "openrouter/openai/gpt-6-luna",
+        "anthropic/claude-opus-5",
+    ]
+    assert tp.prices(*specs).model.tolist() == [
+        "openai/@openai-prod/gpt-5",
+        "openai/@openai-prod/gpt-5",
+        "typesafe:jev-latest",
+        "openrouter/openai/gpt-6-luna",
+        "anthropic/claude-opus-5",
+    ]
+
+
+def test_model_name_is_the_name_make_lm_gives_its_lm(monkeypatch):
+    for key in ("OPENROUTER_API_KEY", "PORTKEY_API_KEY", "TYPESAFE_API_KEY"):
+        monkeypatch.setenv(key, "test")
+    for spec in (
+        "openrouter:openai/gpt-6-luna",
+        "openrouter:acme/unreleased-model",
+        "portkey:openai-prod/gpt-5",
+        "portkey:@openai-prod/gpt-5",
+        "typesafe:jev-latest",
+        "ollama_chat/llama3:8b",
+    ):
+        assert lm_config.make_lm(spec).model == lm_config.model_name(spec)
+
+
 def test_portkey_prefix_targets_the_gateway_with_a_provider_slug(monkeypatch):
     monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
     for spec in ("portkey:openai-prod/gpt-5", "portkey:@openai-prod/gpt-5"):

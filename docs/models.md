@@ -134,14 +134,17 @@ These are added to the prices already configured; an entry for a model that alre
 price replaces it.
 
 `tp.prices()` lists the configured prices and where each came from. Name models to look them up
-in DSPy's table too:
+in DSPy's table too, as you pass them to `tp.configure(lm=...)` or as `lm.model` names them:
 
 ```python
->>> tp.prices("anthropic/claude-sonnet-5", "ollama/llama3")
-                       model  usd_per_1m_input  usd_per_1m_output source
-0  anthropic/claude-sonnet-5               2.0               10.0   dspy
-1              ollama/llama3               NaN                NaN    NaN
+>>> tp.prices("openrouter:openai/gpt-6-luna", "anthropic/claude-sonnet-5", "ollama/llama3")
+                          model  usd_per_1m_input  usd_per_1m_output    source
+0  openrouter/openai/gpt-6-luna               0.1                0.5  built-in
+1     anthropic/claude-sonnet-5               2.0               10.0      dspy
+2                 ollama/llama3               NaN                NaN       NaN
 ```
+
+The `model` column shows `lm.model`, the name `costs()` and `tp.configure(prices=...)` use.
 
 The source is `built-in`, `configured` or `dspy`. These are the prices a run charges. A model with
 NaN here is unpriced unless its provider reports the cost, as OpenRouter does. DSPy lists some
