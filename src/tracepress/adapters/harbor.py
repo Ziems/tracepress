@@ -49,10 +49,14 @@ class Trial:
     result: dict
     dataset: str
     task: str
+    name: str = ""  # the trial key; its trial_name unless another trial shares that
+
+    def __post_init__(self):
+        self.name = self.name or self.result["trial_name"]
 
     @property
     def key(self) -> Key:
-        return (("dataset", self.dataset), ("task", self.task), ("trial", self.result["trial_name"]))
+        return (("dataset", self.dataset), ("task", self.task), ("trial", self.name))
 
 
 def _reward(result: dict) -> float | None:
@@ -194,6 +198,27 @@ def _is_trial_result(path: Path) -> dict | None:
     return data if isinstance(data, dict) and "trial_name" in data else None
 
 
+def _distinct(found: list[Trial], root: Path) -> list[Trial]:
+    """One Trial per result id, each with its own key.
+
+    Harbor names trials `<task>__<random>`, but `--trial-name` lets two trials of a task
+    share a name; those are keyed by their directory under `root` instead. A trial read
+    twice (a hub regrade caches its source job under a hidden `.sources` dir) is kept once,
+    from outside the cache."""
+    hidden = lambda t: any(part.startswith(".") for part in t.path.relative_to(root).parts)
+    by_name: dict[tuple, dict[str, Trial]] = {}
+    for trial in sorted(found, key=hidden):
+        copies = by_name.setdefault(trial.key, {})
+        copies.setdefault(trial.result.get("id") or str(trial.path), trial)
+    distinct = []
+    for copies in by_name.values():
+        if len(copies) > 1:
+            for trial in copies.values():
+                trial.name = trial.path.relative_to(root).as_posix()
+        distinct += copies.values()
+    return distinct
+
+
 def read_harbor(path: str | Path, tasks: list[str] | None = None, limit: int | None = None) -> HarborAdapter:
     """A Harbor job directory, its `trials/` directory, or a directory of jobs.
 
@@ -215,7 +240,8 @@ def read_harbor(path: str | Path, tasks: list[str] | None = None, limit: int | N
         if tasks and task not in tasks and task.rsplit("/", 1)[-1] not in tasks:
             continue
         found.append(Trial(result_path.parent, result, dataset, task))
-    found.sort(key=lambda t: (t.dataset, t.task, t.result["trial_name"]))
+    found = _distinct(found, root)
+    found.sort(key=lambda t: (t.dataset, t.task, t.name))
     if limit is not None:
         found = found[:limit]
     if not found:

@@ -108,3 +108,27 @@ def test_dataset_from_regrade_lock(tmp_path):
     (trials / "alpha__1" / "lock.json").write_text(json.dumps({"source_trial": {"task": {"source": "bench/bench"}}}))
     (row,) = tp.read.harbor(tmp_path / "job").table("trials").collect()
     assert row.key[0] == ("dataset", "bench/bench")
+
+
+def _set_result(trial_dir, **fields):
+    import json
+
+    path = trial_dir / "result.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), **fields}))
+
+
+def test_trials_given_one_name_in_two_dirs_stay_two_rows(tmp_path):
+    """`harbor trials start --trial-name` lets two trials of a task share a name."""
+    import shutil
+
+    from conftest import write_trial
+
+    write_trial(tmp_path / "v1" / "trials", "alpha", "fix-bug", 1.0)
+    write_trial(tmp_path / "v2" / "trials", "alpha", "fix-bug", 0.0)
+    _set_result(tmp_path / "v1" / "trials" / "fix-bug", id="11111111-1111-1111-1111-111111111111")
+    _set_result(tmp_path / "v2" / "trials" / "fix-bug", id="22222222-2222-2222-2222-222222222222")
+    # A hub regrade caches its source job under a hidden .sources dir: the same trial again.
+    shutil.copytree(tmp_path / "v1" / "trials", tmp_path / ".sources" / "job-uuid" / "trials")
+    rows = tp.read.harbor(tmp_path).table("trials").collect()
+    assert [(r.trial, r.reward) for r in rows] == [("v1/trials/fix-bug", 1.0), ("v2/trials/fix-bug", 0.0)]
+    assert rows[0].path == str(tmp_path / "v1" / "trials" / "fix-bug")
