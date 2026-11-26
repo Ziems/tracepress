@@ -162,7 +162,31 @@ def test_send_never_raises(monkeypatch):
     telemetry._send({"event": "x"})
     monkeypatch.setattr(telemetry, "payload", lambda *a: 1 / 0)
     monkeypatch.setattr(telemetry, "mode", lambda: "on")
-    telemetry.report(RunStats(), [])
+    stats = RunStats()
+    stats.record(dspy.LM("openai/gpt-5"), "lm_map", 1.0, 10, 5, ok=True, cached=False)
+    telemetry.report(stats, [])
+
+
+def test_runs_that_only_read_a_source_send_nothing(sent, harbor_dir):
+    src = tp.read.atif(harbor_dir / "trials" / "alpha__1" / "agent" / "trajectory.json")
+    assert len(src.table("steps").collect()) > 0
+    src.table("steps").to_pandas()
+    _wait()
+    assert sent == []
+    src.table("steps").map(lambda r: {"n": 1}, columns={"n": int}).collect()  # an operator: reported
+    _wait()
+    (props,) = _events(sent, "run_completed")
+    assert props["sources"] == ["atif"] and props["ops"] == {"map": 1}
+
+
+def test_a_failed_read_is_still_reported(sent, tmp_path):
+    bad = tmp_path / "trajectory.json"
+    bad.write_text("not json")
+    with pytest.raises(json.JSONDecodeError):
+        tp.read.atif(bad).table("steps").collect()
+    _wait()
+    (props,) = _events(sent, "run_completed")
+    assert props["ok"] is False and props["error_type"] == "JSONDecodeError" and props["ops"] == {}
 
 
 def _events(sent, name):
@@ -225,8 +249,10 @@ def test_server_reports_start_registration_and_its_source(sent):
 
 
 def test_finished_sends_are_forgotten(sent):
+    stats = RunStats()
+    stats.record(dspy.LM("openai/gpt-5"), "lm_map", 1.0, 10, 5, ok=True, cached=False)
     for _ in range(5):
-        telemetry.report(RunStats(), [])
+        telemetry.report(stats, [])
         _wait()
     assert len(sent) == 5
     assert len(telemetry._pending) == 1  # only the latest; the rest finished before it started

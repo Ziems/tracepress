@@ -6,7 +6,8 @@ one-time notice.
 
 ## Events
 
-- `run_completed`: one per run.
+- `run_completed`: one per run. A run that only reads a source (no operators, no LM calls),
+  such as counting a table's rows, sends nothing unless it fails.
 - `optimize_completed`: one per `table.optimize(...)`. The runs it makes while trying prompts
   don't send their own events.
 - `server_started`: when `tracepress serve` (or `serve_in_thread`) starts.
