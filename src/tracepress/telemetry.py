@@ -1,6 +1,8 @@
 """Anonymous usage telemetry: PostHog events built from an allowlist.
 
-Events: `run_completed` (one per run), `optimize_completed` (one per `optimize()`; the runs
+Events: `run_completed` (one per run that does something: a run that only reads a source,
+with no operators and no LM calls, e.g. `len(src.table("steps").collect())`, sends nothing
+unless it fails), `optimize_completed` (one per `optimize()`; the runs
 it makes inside are not reported on their own), `server_started` and `pipeline_registered`.
 
 What is sent: library and Python versions, the OS name, run outcome and duration, call,
@@ -236,9 +238,18 @@ def payload(stats: RunStats, nodes: list[Node], operators: dict[int, Any] | None
 def report(stats: RunStats, nodes: list[Node], operators: dict[int, Any] | None = None,
            error: BaseException | None = None, lineage: bool = False) -> None:
     """Send (or, in debug mode, print) the run's event. Never raises."""
-    if _quiet:
+    if _quiet or _only_read(stats, nodes, error):
         return
     _emit(EVENT, lambda: payload(stats, nodes, operators, error, lineage))
+
+
+def _only_read(stats: RunStats, nodes: list[Node], error: BaseException | None) -> bool:
+    """A run that read a source and did nothing else, e.g. to look at or count the rows:
+    there's nothing to learn from it, and an agent exploring data makes many."""
+    try:
+        return error is None and not (stats.calls or stats.by_model) and not _op_counts(_walk(nodes))
+    except Exception:
+        return False
 
 
 def report_optimize(*, optimizer: str, step_op: str, metric: str, n_labels: int, n_val: int, budget: int,
