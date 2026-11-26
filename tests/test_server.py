@@ -222,3 +222,22 @@ def test_stream_an_adapter(server, harbor_dir):
     sent = client.stream(src, tables=["steps"]).wait(10)
     assert sent > 0
     assert sorted(client.source.tables()) == ["steps"]
+
+
+class OneThenQuiet(tp.Adapter):
+    """A live source that sends one step, then nothing."""
+
+    bounded, levels = False, ("trace", "step")
+
+    def tables(self):
+        return {"steps": STEPS}
+
+    async def events(self, table):
+        yield tp.RowAdded(step("a", 1))
+        await asyncio.Event().wait()
+
+
+def test_waiting_on_a_stream_that_is_still_going_raises_timeout(server):
+    streaming = tp.connect(server.address).stream(OneThenQuiet(), every=0.05)
+    with pytest.raises(TimeoutError):
+        streaming.wait(0.5)
