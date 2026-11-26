@@ -70,6 +70,16 @@ def test_trajectory_taxonomy_all_trials_and_custom_modes(harbor_dir):
     assert "Only mode" in rows[0].rubric
 
 
+def test_trials_with_one_name_in_two_tasks_keep_their_own_rewards(tmp_path):
+    from conftest import _step, write_trial
+
+    steps = [_step(1, "user", "Please solve it.")]
+    write_trial(tmp_path / "job-a" / "trials", "alpha", "run-1", 1.0, steps=steps)
+    write_trial(tmp_path / "job-b" / "trials", "beta", "run-1", 0.0, steps=steps)
+    rows = pipes.trajectory_taxonomy(tp.read.harbor(tmp_path), lm=FuncLM(judge)).collect()
+    assert {(r.task, r.reward) for r in rows} == {("bench/beta", 0.0)}
+
+
 def test_trajectory_labels_wide(harbor_dir):
     rows = pipes.trajectory_taxonomy(tp.read.harbor(harbor_dir), failed_only=False, lm=FuncLM(judge)).collect()
     wide = pipes.trajectory_labels_wide(rows)
