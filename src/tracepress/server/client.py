@@ -11,6 +11,7 @@ import json
 import pickle
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
@@ -114,6 +115,11 @@ class Streaming:
         self._stop.set()
 
 
+def _quote(name: str) -> str:
+    """A pipeline name as one URL path segment: names may hold `/`, `?`, spaces and the like."""
+    return urllib.parse.quote(name, safe="")
+
+
 class Client:
     def __init__(self, address: str, token: str | None = None, timeout: float = 30):
         self.base = address if "://" in address else f"http://{address}"
@@ -181,7 +187,7 @@ class Client:
         return json.loads(self._request("POST", "/register", blob, "application/octet-stream"))
 
     def unregister(self, name: str) -> None:
-        self._request("DELETE", f"/pipelines/{name}")
+        self._request("DELETE", f"/pipelines/{_quote(name)}")
 
     def pipelines(self) -> list[dict[str, Any]]:
         """Registered pipelines: name, status (running, finished, failed or stopped) and rows so far."""
@@ -195,7 +201,7 @@ class Client:
         """
         import aiohttp
 
-        url = self.base.replace("http", "ws", 1) + f"/listen/{name}" + ("?from_start=1" if from_start else "")
+        url = self.base.replace("http", "ws", 1) + f"/listen/{_quote(name)}" + ("?from_start=1" if from_start else "")
         async with aiohttp.ClientSession(headers=self._headers()) as session:
             async with session.ws_connect(url) as ws:
                 async for msg in ws:

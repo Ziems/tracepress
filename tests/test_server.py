@@ -109,6 +109,23 @@ def test_unregister_ends_listeners(server):
     assert client.pipelines() == []
 
 
+def test_pipelines_named_with_url_characters_can_be_listened_to_and_unregistered(server):
+    client = tp.connect(server.address)
+    client.declare({"steps": STEPS})
+    names = ["team/a", "a?b", "a b", "50%", "a#b"]
+    for name in names:
+        client.register(name, client.source.steps.map(lambda r: {"x": 1}, columns={"x": int}))
+
+    async def listen_to_each():
+        await after_listening(lambda: client.push([step("a", 1)], table="steps"),
+                              *(take(client, name, 1) for name in names))
+
+    asyncio.run(listen_to_each())
+    for name in names:
+        client.unregister(name)
+    assert client.pipelines() == []
+
+
 SEEN: list = []
 
 
