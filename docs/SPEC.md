@@ -167,7 +167,8 @@ results are combined with the merge signature.
   `runtime.stream_events` as a background task; re-registering a name replaces it. Rows and
   closes go to listeners as JSON over a websocket (`client.listen(name, from_start=False)`
   yields `ServerEvent(kind, row, prefix)`); `from_start` sends the newest version of each row so
-  far first. Unregistering, or the pipeline stopping, ends listeners' streams.
+  far first. Unregistering, or the pipeline stopping, ends listeners' streams; a client hanging
+  up ends its own listener at once, even while the pipeline is idle.
 - LM defaults come from the server (`--lm`, its environment and `.env`). Registering runs
   pickled code, so the server binds to localhost by default and needs `--token` (checked as a
   bearer token) for any other host. It refuses any request with an `Origin` header, which
