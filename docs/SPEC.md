@@ -255,6 +255,10 @@ Decisions made while building:
 - **Caching** uses DSPy's request cache; a fully cached rerun is byte-identical.
 - **Errors:** LM operators default to `on_error="skip"` (logged and counted in
   `tp.last_run()`); `on_error="raise"` fails the run.
+- **Cost** is estimated from token counts, priced from `Config.prices` and then DSPy's table, or
+  taken from the provider when it reports one. A model with no price is unpriced, never $0.
+  `tp.last_run().costs()` is a per-model DataFrame with a total of the known costs;
+  `tp.prices(*models)` shows the prices a run charges and their source.
 
 ## Sources / adapters
 

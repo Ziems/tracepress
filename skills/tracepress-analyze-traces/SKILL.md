@@ -116,7 +116,9 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    and one per group for `lm_reduce`. A step-level map dominates: count steps first with
    `len(src.table("steps").collect())`. As a reference,
    six Harbor tasks (30 trials, about 530 agent steps) through a four-level pipeline was 546 calls,
-   about $0.08 and 1–2 minutes uncached. Tell the user the estimate before running anything large.
+   about $0.08 and 1–2 minutes uncached. `tp.prices("openrouter/openai/gpt-6-luna")` gives a
+   model's USD per million tokens; name it as `lm.model` does, with `/` after the provider. Tell
+   the user the estimate before running anything large.
 
 3. **Build the pipeline.** Signatures are one-line DSPy strings. Inputs bind to columns by name,
    and outputs become new columns.
@@ -220,7 +222,11 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    notes_rows, trial_rows, task_rows = tp.collect(notes, per_trial, per_task)  # shared work runs once
    tp.last_run()  # calls, errors, fallbacks, timeouts, tokens, seconds; .latency() for percentiles
    tp.last_run().status  # "completed", "failed" or "cancelled"; .error says why
+   tp.last_run().costs()  # calls, tokens and USD per model; NaN for a model with no price
    ```
+
+   Report the cost to the user. If a model shows NaN, the total leaves its calls out: check
+   `tp.prices("<model>")` and add a price with `tp.configure(prices=...)` if the user knows it.
 
    A run with skipped rows is still `completed`, so check `errors` as well as `status`.
 

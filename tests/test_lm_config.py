@@ -52,6 +52,19 @@ def test_configuring_a_price_keeps_the_built_in_prices(monkeypatch):
     assert lm_config.call_cost("typesafe:jev-latest", 1_000_000, 0) == 0.042
 
 
+def test_prices_show_what_a_run_charges_and_where_it_comes_from(monkeypatch):
+    monkeypatch.setattr(tp.configure(), "prices", dict(lm_config.PRICES))  # restored after the test
+    tp.configure(prices={"openai/my-model": (0.50, 2.00)})
+    configured = tp.prices().set_index("model")
+    assert configured.loc["openrouter/openai/gpt-6-luna"].tolist() == [0.10, 0.50, "built-in"]
+    assert configured.loc["openai/my-model"].tolist() == [0.50, 2.00, "configured"]
+    looked_up = tp.prices("openai/gpt-4o-mini", "openai/acme-unreleased-model", "ollama/llama3").set_index("model")
+    gpt = looked_up.loc["openai/gpt-4o-mini"]
+    assert gpt.source == "dspy" and gpt.usd_per_1m_input == lm_config.call_cost("openai/gpt-4o-mini", 1_000_000, 0)
+    for unpriced in ("openai/acme-unreleased-model", "ollama/llama3"):  # DSPy lists Ollama as free; runs don't price it
+        assert looked_up.loc[unpriced].isna().all() and lm_config.call_cost(unpriced, 100, 10) is None
+
+
 def test_portkey_prefix_targets_the_gateway_with_a_provider_slug(monkeypatch):
     monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
     for spec in ("portkey:openai-prod/gpt-5", "portkey:@openai-prod/gpt-5"):

@@ -213,10 +213,38 @@ def call_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float |
     """USD for one call, from `Config.prices` or DSPy's price table; None if unknown."""
     if not prompt_tokens and not completion_tokens:
         return 0.0
-    price = _config.prices.get(model) or _table_price(model)
-    if price is None:
+    if (found := _price(model)) is None:
         return None
-    return (prompt_tokens * price[0] + completion_tokens * price[1]) / 1e6 or None
+    (input_price, output_price), _ = found
+    return (prompt_tokens * input_price + completion_tokens * output_price) / 1e6 or None
+
+
+def _price(model: str) -> tuple[tuple[float, float], str] | None:
+    """USD per million (input, output) tokens and where it came from; None if unknown. Free counts as unknown."""
+    if (price := _config.prices.get(model)) is not None:
+        source = "built-in" if PRICES.get(model) == price else "configured"
+    elif (price := _table_price(model)) is not None:
+        source = "dspy"
+    else:
+        return None
+    return (price, source) if any(price) else None
+
+
+def prices(*models: str):
+    """The USD per million tokens a run charges each model, and where that price came from, as a DataFrame.
+
+    With no names, the configured prices: the built-ins plus `configure(prices=...)`. Name models, as in
+    `lm.model`, to look them up in DSPy's price table too. A model with no price shows NaN.
+    """
+    import pandas as pd
+
+    rows = []
+    for model in models or _config.prices:
+        (input_price, output_price), source = _price(model) or ((None, None), None)
+        rows.append(
+            {"model": model, "usd_per_1m_input": input_price, "usd_per_1m_output": output_price, "source": source}
+        )
+    return pd.DataFrame(rows, columns=["model", "usd_per_1m_input", "usd_per_1m_output", "source"])
 
 
 def _table_price(model: str) -> tuple[float, float] | None:
@@ -275,6 +303,30 @@ class RunStats:
         self.finished = time.monotonic()
         self.error = error
         self.status = "completed" if error is None else "failed" if isinstance(error, Exception) else "cancelled"
+
+    def costs(self):
+        """Calls, tokens and estimated USD per model as a DataFrame, then a total row.
+
+        A model with an unpriced call has no cost (NaN). The total sums the known costs, and its label
+        counts the unpriced calls it leaves out.
+        """
+        import pandas as pd
+
+        rows: list[dict[str, Any]] = [
+            {
+                "model": name,
+                "calls": m.calls,
+                "cached_calls": m.cached_calls,
+                "prompt_tokens": m.prompt_tokens,
+                "completion_tokens": m.completion_tokens,
+                "cost_usd": m.cost_usd,
+            }
+            for name, m in self.by_model.items()
+        ]
+        total = {k: sum(r[k] for r in rows) for k in ("calls", "cached_calls", "prompt_tokens", "completion_tokens")}
+        n = self.unpriced_calls
+        label = f"total (excludes {n} unpriced call{'s' * (n != 1)})" if n else "total"
+        return pd.DataFrame([*rows, {"model": label, **total, "cost_usd": self.cost_usd}])
 
     def latency(self) -> dict[str, float]:
         """Per-call latency percentiles, in seconds."""

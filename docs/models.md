@@ -104,6 +104,19 @@ RunStats(calls=186, cached=7, errors=0, fallbacks=0, timeouts=0, prompt_tokens=1
          completion_tokens=39700, cost=$0.033148, seconds=37.3)
 ```
 
+`costs()` puts the per-model numbers in a DataFrame, with a total row at the bottom:
+
+```python
+>>> tp.last_run().costs()
+                               model  calls  cached_calls  prompt_tokens  completion_tokens  cost_usd
+0                    openai/my-model      3             0              3                  3  0.000008
+1                      ollama/llama3      3             0              3                  3       NaN
+2  total (excludes 3 unpriced calls)      6             0              6                  6  0.000008
+```
+
+A model with an unpriced call has no cost. The total sums the known costs, and its label says how
+many calls it leaves out.
+
 `by_model` and `by_op` break the totals down by model and by operator. `latency()` gives
 per-call percentiles. `status` is `running`, `completed`, `failed` or `cancelled`, and `error`
 holds what ended a run that didn't complete. During a live run, `tp.last_run()` shows the totals so far.
@@ -119,5 +132,19 @@ tp.configure(prices={"openai/my-model": (0.50, 2.00)})
 
 These are added to the prices already configured; an entry for a model that already has a
 price replaces it.
+
+`tp.prices()` lists the configured prices and where each came from. Name models to look them up
+in DSPy's table too:
+
+```python
+>>> tp.prices("anthropic/claude-sonnet-5", "ollama/llama3")
+                       model  usd_per_1m_input  usd_per_1m_output source
+0  anthropic/claude-sonnet-5               2.0               10.0   dspy
+1              ollama/llama3               NaN                NaN    NaN
+```
+
+The source is `built-in`, `configured` or `dspy`. These are the prices a run charges. A model with
+NaN here is unpriced unless its provider reports the cost, as OpenRouter does. DSPy lists some
+models (like Ollama's) as free, and runs count those as unpriced too.
 
 Calls to models with no known price are counted as `unpriced_calls` instead of being guessed.
