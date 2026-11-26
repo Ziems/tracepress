@@ -1,9 +1,6 @@
 """The Terminal-Bench failure taxonomies over a Harbor job: per-trial failure modes and per-command errors.
 
     uv run python examples/harbor_taxonomy.py example_harbor_jobs/trials --tasks wal-recovery-ordering --limit 4
-
-`example_harbor_jobs/trials` is the sample job this was run on, and it isn't in the repo. Pass
-your own Harbor job and task names. The README shows how to make a job with `harbor run`.
 """
 
 import argparse

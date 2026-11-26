@@ -72,8 +72,5 @@ The repository has a script that runs both taxonomies and prints the rates:
 uv run python examples/harbor_taxonomy.py example_harbor_jobs/trials --tasks wal-recovery-ordering
 ```
 
-`example_harbor_jobs/trials` is the sample job, which isn't in the repo. Pass your own job and task
-names. The [README](../README.md#learn-more) shows how to make a job with `harbor run`.
-
 Section 6 of [the notebook](../examples/explore_results.ipynb) shows the same results as
 tables.
