@@ -6,8 +6,8 @@ unless it fails), `optimize_completed` (one per `optimize()`; the runs
 it makes inside are not reported on their own), `server_started` and `pipeline_registered`.
 
 What is sent: library and Python versions, the OS name, run outcome and duration, call,
-cache, token and cost counts, which gateways and models were used (no Portkey slugs,
-endpoints or fine-tune ids), how many of each operator the plan has, the kinds of
+cache, token and cost counts, which gateways and models were used (a model's name only if a
+built-in price table lists it, else "other"), how many of each operator the plan has, the kinds of
 sources, and which built-in pipelines ran. Nothing from the data, prompts, signatures,
 instructions, column names, paths or error messages is ever sent.
 
@@ -207,6 +207,15 @@ def _common() -> dict[str, Any]:
     }
 
 
+def reported_model(gateway: str, model: str) -> str:
+    """The model name telemetry may send: `model` if a price table shipped with TracePress or DSPy lists it
+    (a fine-tune by its base model), else "other". Prices added with `configure(prices=...)` don't count:
+    they are often for private models."""
+    base = model.replace("ft:", "")
+    names = {base, {"openrouter": f"openrouter/{base}", "typesafe": f"typesafe:{base}"}.get(gateway, base)}
+    return model if any(n in lm_config.PRICES or lm_config._table_price(n) for n in names) else "other"
+
+
 def _op_counts(plan: list[Node]) -> dict[str, int]:
     return _count(n.label if n.label in OPS else "other" for n in plan if n.parent is not None)
 
@@ -226,7 +235,7 @@ def payload(
     models = [
         {
             "gateway": m.label[0],
-            "model": m.label[1],
+            "model": reported_model(*m.label),
             "calls": m.calls,
             "cached_calls": m.cached_calls,
             "prompt_tokens": m.prompt_tokens,

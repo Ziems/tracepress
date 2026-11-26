@@ -21,7 +21,10 @@ one-time notice.
   built-in, TracePress, DSPy or litellm exceptions. Anything else is sent as `"other"`.
 - Duration, and counts of LM calls, cache hits, errors, retries, tokens and estimated cost.
 - For each model, the gateway and the model name, e.g. `openrouter` + `openai/gpt-6-luna`.
-  Portkey provider slugs, endpoints and fine-tune ids are stripped.
+  The name is sent only if TracePress's or DSPy's built-in price table lists the model;
+  any other model, including one you add with `tp.configure(prices=...)`, is sent as
+  `"other"`. A fine-tune is sent as `ft:` plus its base model, never its id, and Portkey
+  provider slugs and endpoints are never sent.
 - How many of each operator the plan has (`lm_map`, `filter`, `edit` for a `rerun`, …), the
   kinds of sources (`harbor`, `atif`, `server`, …), which built-in pipelines ran, and whether
   the run recorded lineage.
