@@ -18,6 +18,7 @@ from typing import Any
 
 import dspy
 from dspy.utils.exceptions import AdapterParseError
+from dspy.utils.usage_tracker import track_usage
 
 log = logging.getLogger("tracepress")
 
@@ -332,19 +333,21 @@ class Executor:
             self.stats.calls += 1
             start = time.monotonic()
             try:
-                for attempt in range(_config.timeout_retries + 1):
-                    try:
-                        pred = await asyncio.wait_for(self._predict(module, lm, inputs), timeout)
-                        break
-                    except asyncio.TimeoutError:
-                        self.stats.timeouts += 1
-                        if attempt == _config.timeout_retries:
-                            raise TimeoutError(f"LM call timed out {attempt + 1}x after {timeout:.0f}s") from None
+                with track_usage() as tracker:
+                    for attempt in range(_config.timeout_retries + 1):
+                        try:
+                            pred = await asyncio.wait_for(self._predict(module, lm, inputs), timeout)
+                            break
+                        except asyncio.TimeoutError:
+                            self.stats.timeouts += 1
+                            if attempt == _config.timeout_retries:
+                                raise TimeoutError(f"LM call timed out {attempt + 1}x after {timeout:.0f}s") from None
             except Exception:
                 self.stats.record(lm, op, time.monotonic() - start, 0, 0, ok=False, cached=False)
                 raise
-        # DSPy only records usage for requests that missed its cache.
-        usage = pred.get_lm_usage() or {}
+        # Every request the call made, including responses no adapter could parse. DSPy records
+        # none for requests its cache answered.
+        usage = tracker.get_total_tokens()
         prompt = sum(u.get("prompt_tokens") or 0 for u in usage.values())
         completion = sum(u.get("completion_tokens") or 0 for u in usage.values())
         costs = [u["cost"] for u in usage.values() if u.get("cost") is not None]  # e.g. OpenRouter's usage.cost

@@ -329,3 +329,30 @@ def test_bare_text_answer_to_a_single_text_output_is_kept():
     lm = DummyLM([{"topic": "Ran the tests.", "ok": "yes"}] * 30, adapter=BareText())
     assert rows_table().lm_map("summary -> topic, note", lm=lm).collect() == []
     assert tp.last_run().errors == 6
+
+
+def test_usage_counts_every_request_a_call_makes():
+    """A call that needs a fallback adapter, or the bare text, paid for each request it made."""
+    from dspy.lm15 import Message, Response, TextPart, Usage
+
+    class BareLM(FuncLM):
+        """Answers with the text alone, in no adapter's format."""
+
+        def _answer(self, request):
+            self.calls += 1
+            return Response(id=None, model="func", message=Message.assistant([TextPart("a topic")]),
+                            finish_reason="stop", usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2))
+
+    cases = [
+        (FuncLM(lambda fields: {"topic": "t"}), dspy.JSONAdapter(), dspy.ChatAdapter()),  # parsed by the fallback
+        (BareLM(None), dspy.ChatAdapter(), dspy.XMLAdapter()),  # parsed by neither: the bare text is the answer
+    ]
+    try:
+        for lm, adapter, fallback in cases:
+            tp.configure(adapter=adapter, fallback_adapters=[fallback])
+            rows_table().lm_map("summary -> topic", lm=lm).collect()
+            stats = tp.last_run()
+            assert lm.calls > stats.calls == 6
+            assert stats.prompt_tokens == lm.calls and stats.cached_calls == 0
+    finally:
+        tp.configure(adapter=dspy.ChatAdapter(), fallback_adapters=[dspy.XMLAdapter()])
