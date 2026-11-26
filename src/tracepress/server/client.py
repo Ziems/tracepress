@@ -105,10 +105,15 @@ class Streaming:
             await flush()
 
     def wait(self, timeout: float | None = None) -> int:
-        """Block until a bounded source has been streamed in full; returns the events sent."""
+        """Block until a bounded source has been streamed in full; returns the events sent.
+
+        Raises `TimeoutError` if the stream is still going after `timeout` seconds.
+        """
         self._thread.join(timeout)
         if self.error is not None:
             raise self.error
+        if self._thread.is_alive():
+            raise TimeoutError(f"still streaming after {timeout}s ({self.sent} events sent so far)")
         return self.sent
 
     def stop(self) -> None:
