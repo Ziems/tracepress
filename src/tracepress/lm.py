@@ -72,6 +72,8 @@ def configure(**kwargs: Any) -> Config:
     for name, value in kwargs.items():
         if not hasattr(_config, name):
             raise TypeError(f"unknown setting {name!r}")
+        if name == "prices":
+            value = {**_config.prices, **value}  # added to the prices so far (built-ins included), not a new table
         setattr(_config, name, value)
     return _config
 
