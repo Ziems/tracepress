@@ -6,10 +6,12 @@ unless it fails), `optimize_completed` (one per `optimize()`; the runs
 it makes inside are not reported on their own), `server_started` and `pipeline_registered`.
 
 What is sent: library and Python versions, the OS name, run outcome and duration, call,
-cache, token and cost counts, which gateways and models were used (a model's name only if a
-built-in price table lists it, else "other"), how many of each operator the plan has, the kinds of
-sources, and which built-in pipelines ran. Nothing from the data, prompts, signatures,
-instructions, column names, paths or error messages is ever sent.
+cache, token and cost counts, which gateways and models were used, how many of each
+operator the plan has, the kinds of sources, and which built-in pipelines ran. An
+OpenRouter or TypeSafe model name is sent as typed, minus any OpenRouter preset. Any other
+name is sent only if TracePress's built-in prices or DSPy's bundled model list include it,
+else as `<provider>/other` if DSPy lists the provider, else "other". Nothing from the data,
+prompts, signatures, instructions, column names, paths or error messages is ever sent.
 
 Identity is a random install id in `~/.config/tracepress/telemetry.json`, not derived
 from the machine; delete the file to reset it.
@@ -22,6 +24,7 @@ instead of sending it.
 from __future__ import annotations
 
 import atexit
+import functools
 import json
 import os
 import platform
@@ -78,6 +81,8 @@ SOURCES = {
     "OTLPReceiver": "otlp",
     "ServerSource": "server",
 }
+# Gateways whose model names come from a public catalog. Portkey's don't: they can be deployments.
+CATALOG_GATEWAYS = {"openrouter", "typesafe"}
 PUBLIC_ERROR_MODULES = ("builtins", "asyncio", "concurrent", "tracepress", "dspy", "litellm", "pydantic", "json")
 
 _pending: list[threading.Thread] = []  # sends still in flight, for _flush to wait on at exit
@@ -207,13 +212,39 @@ def _common() -> dict[str, Any]:
     }
 
 
-def reported_model(gateway: str, model: str) -> str:
-    """The model name telemetry may send: `model` if a price table shipped with TracePress or DSPy lists it
-    (a fine-tune by its base model), else "other". Prices added with `configure(prices=...)` don't count:
-    they are often for private models."""
-    base = model.replace("ft:", "")
-    names = {base, {"openrouter": f"openrouter/{base}", "typesafe": f"typesafe:{base}"}.get(gateway, base)}
-    return model if any(n in lm_config.PRICES or lm_config._table_price(n) for n in names) else "other"
+@functools.cache
+def _bundled_models() -> dict[str, str | None]:
+    """Model name -> provider, from the model list bundled with DSPy. Never the remote list: fetching
+    it would block the thread finishing the run, and what it lists changes."""
+    try:
+        from dspy.clients.model_metadata import _RESERVED, _snapshot
+
+        return {
+            name: entry.get("litellm_provider")
+            for name, entry in _snapshot().items()
+            if name not in _RESERVED and isinstance(entry, dict)
+        }
+    except Exception:
+        return {}
+
+
+def _is_public(model: str) -> bool:
+    """In TracePress's built-in prices or DSPy's bundled models, as `name` or `provider/name`. Prices
+    added with `configure(prices=...)` don't count: a user can price a private model."""
+    models = _bundled_models()
+    provider, _, name = model.partition("/")
+    return model in lm_config.PRICES or model in models or models.get(name) == provider
+
+
+def _reported_model(gateway: str, model: str) -> str:
+    """The name telemetry sends for a `model_label`. A typed name can hold an AWS account id, a
+    company's deployment name or an unreleased model, so only public names are sent."""
+    if gateway in CATALOG_GATEWAYS:
+        return model.split("@", 1)[0] or "other"  # "@" starts an OpenRouter preset
+    if _is_public(model.replace("ft:", "")):
+        return model
+    provider = model.partition("/")[0]
+    return f"{provider}/other" if "/" in model and provider in _bundled_models().values() else "other"
 
 
 def _op_counts(plan: list[Node]) -> dict[str, int]:
@@ -235,7 +266,7 @@ def payload(
     models = [
         {
             "gateway": m.label[0],
-            "model": reported_model(*m.label),
+            "model": _reported_model(*m.label),
             "calls": m.calls,
             "cached_calls": m.cached_calls,
             "prompt_tokens": m.prompt_tokens,

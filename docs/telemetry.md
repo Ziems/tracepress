@@ -20,11 +20,16 @@ one-time notice.
 - Whether the run succeeded. On failure, the exception class name is sent, but only for
   built-in, TracePress, DSPy or litellm exceptions. Anything else is sent as `"other"`.
 - Duration, and counts of LM calls, cache hits, errors, retries, tokens and estimated cost.
-- For each model, the gateway and the model name, e.g. `openrouter` + `openai/gpt-6-luna`.
-  The name is sent only if TracePress's or DSPy's built-in price table lists the model;
-  any other model, including one you add with `tp.configure(prices=...)`, is sent as
-  `"other"`. A fine-tune is sent as `ft:` plus its base model, never its id, and Portkey
-  provider slugs and endpoints are never sent.
+- For each model, the gateway and the model name. A name you type can contain an AWS account
+  ID, a deployment name or an unreleased model, so only public names are sent:
+  - OpenRouter and TypeSafe: the name as typed, e.g. `openai/gpt-6-luna`, minus an OpenRouter
+    preset (`@preset/...`). A name that is only a preset is sent as `"other"`.
+  - Everything else, including Portkey and your own `dspy.LM`: the name, if TracePress's
+    built-in prices or the model list bundled with DSPy include it. Otherwise the provider
+    and `/other` (e.g. `azure/other`) if that list includes the provider, else `"other"`.
+    Prices you add with `tp.configure(prices=...)` don't make a name public.
+  - A fine-tune is sent as `ft:` plus its base model, never its id. Portkey provider slugs and
+    endpoints are never sent.
 - How many of each operator the plan has (`lm_map`, `filter`, `edit` for a `rerun`, …), the
   kinds of sources (`harbor`, `atif`, `server`, …), which built-in pipelines ran, and whether
   the run recorded lineage.
