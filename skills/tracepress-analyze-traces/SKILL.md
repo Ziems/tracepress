@@ -36,22 +36,20 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
   - `portkey:<provider slug>/<model>` (Portkey Model Catalog) needs `PORTKEY_API_KEY`.
   - `typesafe:jev-latest` (TypeSafe's Jev) needs `TYPESAFE_API_KEY`.
   - A plain DSPy model string, with no `provider:` prefix, also works.
-- **Strongly prefer Jev for every stage where classification alone is enough.** Whenever a
-  stage's job is to classify, flag, pick or score (did this step fail? which agent? which error
-  mode? how severe?), recommend `lm="typesafe:jev-latest"` for it by default. It's far cheaper
-  and faster than a generative model, and on Who&When Pro it matched GPT-6-luna's accuracy at
-  about a third of the cost, in seconds instead of minutes. Design pipelines so the deciding
-  stages are classification-only, and keep generative models for stages that must write text
-  (notes, summaries, explanations), mixing the two per operator with `lm=`: e.g. a generative
-  `lm_map` that writes notes, then a Jev stage that decides from them.
-  - Jev answers only decision outputs, with probabilities: `Noul` (yes/no),
-    `Annotated[Literal[...], Choice]` (one of fixed options) or `Score`, all from
-    `dspy.experimental`. Use a class signature, and give every decision output a `desc`, which Jev
-    reads as the question. A stage with any `str` output can't run on Jev.
-  - Don't add a free-text `reason` to a classification stage just to justify the label; that
-    forces a generative model. Add one only if the user wants explanations.
-  - Jev needs `TYPESAFE_API_KEY`. If it isn't set, tell the user Jev is the recommended choice
-    for these stages and ask them to add a key, or fall back to the generative model they chose.
+- **Decision stages can use typed outputs.** When a stage's job is to classify, flag, pick or
+  score (did this step fail? which agent? which error mode? how severe?), give it decision
+  outputs instead of free text: `Noul` (yes/no), `Annotated[Literal[...], Choice]` (one of fixed
+  options) or `Score`, all from `dspy.experimental`. Use a class signature, and give every
+  decision output a `desc` stating the question. These run on any configured model, and the
+  labels are easier to count and filter than prose.
+  - Don't add a free-text `reason` to a classification stage just to justify the label. Add one
+    only if the user wants explanations.
+  - Stages can use different models, set per operator with `lm=`: e.g. a generative `lm_map`
+    that writes notes, then a decision stage on another model. Use the model the user configured
+    unless they ask for a different one per stage.
+  - Classification-only models such as `typesafe:jev-latest` can run a stage only if every output
+    is a decision output (no `str`). Use one only if the user asks for it and its key is already
+    set.
 
   ```python
   from typing import Annotated, Literal
@@ -69,7 +67,7 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
       )
 
 
-  judged = steps.lm_map(Triage, lm="typesafe:jev-latest")
+  judged = steps.lm_map(Triage)
   ```
 
   Keys are loaded from `.env` in the working directory. Override the model per operator with
