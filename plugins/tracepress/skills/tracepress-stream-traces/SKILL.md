@@ -77,11 +77,6 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
      Then the note can say what the agent is meant to be doing, not only what it just did.
    - **No Chain of Thought on per-step folds.** Every step is a sequential call, so it slows the
      whole stream. Save it for a final reduce over the finished notes, if there is one.
-   - **Jev for live flags, when the user uses it.** A fold's state is text, so the fold itself
-     needs a generative model. If the user asks for Jev, or `TYPESAFE_API_KEY` is already set,
-     per-step checks where classification alone is enough (is this step stuck? risky? off-task?)
-     can run on it: an `lm_map` with a `Noul` or `Choice` output and `lm="typesafe:jev-latest"`.
-     See the analyze-traces skill for decision signatures.
 
 3. **Or keep a provisional reduce.** `lm_reduce(..., emit="update")` (or `tp.every(n)`) updates a
    running result as children arrive, and finishes with a full reduce when the group closes. The

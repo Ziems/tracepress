@@ -35,37 +35,11 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 - Model strings are `provider:model`:
   - `openrouter:<model>` needs `OPENROUTER_API_KEY`.
   - `portkey:<provider slug>/<model>` (Portkey Model Catalog) needs `PORTKEY_API_KEY`.
-  - `typesafe:jev-latest` (TypeSafe's Jev) needs `TYPESAFE_API_KEY`.
+  - Jev is supported with `typesafe:jev-latest` (needs `TYPESAFE_API_KEY`). It answers only
+    `Noul`, `Choice` or `Score` outputs from `dspy.experimental`, so a stage with a `str` output
+    can't run on it.
   - A plain DSPy model string, with no `provider:` prefix, also works.
-- **Jev, when the user uses it.** If the user asks for Jev, or `TYPESAFE_API_KEY` is already set,
-  stages that only classify, flag, pick or score (did this step fail? which agent? how severe?)
-  can run on `lm="typesafe:jev-latest"`, while stages that write text (notes, summaries,
-  explanations) keep a generative model. Mix the two per operator with `lm=`: e.g. a generative
-  `lm_map` that writes notes, then a Jev stage that decides from them. Otherwise use the model the
-  user configured for every stage.
-  - Jev answers only decision outputs, with probabilities: `Noul` (yes/no),
-    `Annotated[Literal[...], Choice]` (one of fixed options) or `Score`, all from
-    `dspy.experimental`. Use a class signature, and give every decision output a `desc`, which Jev
-    reads as the question. A stage with any `str` output can't run on Jev.
-  - Don't add a free-text `reason` to a Jev stage just to justify the label; that forces a
-    generative model. Add one only if the user wants explanations.
-
-  ```python
-  from typing import Annotated, Literal
-  import dspy
-  from dspy.experimental import Choice, Noul
-
-  class Triage(dspy.Signature):
-      """Judge one step of an agent's trace."""
-      message: str = dspy.InputField()
-      failed: Noul = dspy.OutputField(desc="Did this step fail?")
-      kind: Annotated[Literal["tool", "reasoning", "planning"], Choice] = dspy.OutputField(
-          desc="What kind of mistake it is, if any")
-
-  judged = steps.lm_map(Triage, lm="typesafe:jev-latest")
-  ```
-
-  Keys are loaded from `.env` in the working directory. Override the model per operator with
+- Keys are loaded from `.env` in the working directory. Override the model per operator with
   `lm=`, or set `TRACEPRESS_LM`.
 
 ## Steps
