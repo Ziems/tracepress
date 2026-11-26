@@ -64,7 +64,7 @@ SESSION_COLUMNS = {
 }
 
 
-def _thread(lines, agent_id: str | None, calls: dict[str, dict]) -> list[dict]:
+def _thread(lines, agent_id: str | None, calls: dict[str | None, dict]) -> list[dict]:
     """The steps of one transcript (the main thread or one subagent)."""
     steps: list[dict] = []
     by_message: dict[str, dict] = {}
@@ -85,7 +85,8 @@ def _thread(lines, agent_id: str | None, calls: dict[str, dict]) -> list[dict]:
                 )
                 steps.append(step)
             step["metrics"] = message.get("usage") or step["metrics"]
-            for block in content if isinstance(content, list) else [{"type": "text", "text": content}]:
+            blocks: list[dict] = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            for block in blocks:
                 btype = block.get("type")
                 if btype == "text":
                     step["_text"].append(block.get("text"))
@@ -101,7 +102,7 @@ def _thread(lines, agent_id: str | None, calls: dict[str, dict]) -> list[dict]:
                     }
                     step["tool_calls"].append(call)
                     calls[call["id"]] = call
-                elif btype.endswith("_tool_result") and block.get("tool_use_id") in calls:
+                elif btype and btype.endswith("_tool_result") and block.get("tool_use_id") in calls:
                     calls[block["tool_use_id"]]["result"] = clean_content(json.dumps(block.get("content")))
             continue
         # A user line: either something the user (or the harness) said, or tool results.
@@ -192,7 +193,7 @@ class ClaudeCodeAdapter(SessionAdapter):
         owner = self.owner or {}
         own = lambda uuid: owner.get(uuid, file.session) == file.session
         lines = list(read_lines(file.path))
-        calls: dict[str, dict] = {}
+        calls: dict[str | None, dict] = {}
         steps = _thread(lines, None, calls)
         for path in file.extra:
             agent_id = path.stem.removeprefix("agent-")

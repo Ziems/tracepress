@@ -82,8 +82,8 @@ STATUSES = {0: "unset", 1: "ok", 2: "error"}
 
 @dataclass
 class Span:
-    trace_id: str
-    span_id: str
+    trace_id: str | None
+    span_id: str | None
     parent_id: str | None
     name: str
     kind: str
@@ -514,8 +514,8 @@ class TraceSteps:
         self.released = 0
         self.calls: dict[str, dict] = {}
         self.said: set[str] = set()
-        self.agents: dict[str, str] = {}  # span id -> agent name, for agent spans seen so far
-        self.parents: dict[str, str | None] = {}
+        self.agents: dict[str | None, str | None] = {}  # span id -> agent name, for agent spans seen so far
+        self.parents: dict[str | None, str | None] = {}
 
     def _agent(self, span: Span) -> str | None:
         own = _get(span.attributes, "gen_ai.agent.name", "agent.name")
@@ -603,7 +603,7 @@ class TraceSteps:
         )
         for m in answer:
             for c in m["tool_calls"]:
-                call = {**c, "result": None, "is_error": None, "_done": False}
+                call: dict = {**c, "result": None, "is_error": None, "_done": False}
                 step["tool_calls"].append(call)
                 self.calls[call["id"] or f"{span.span_id}/{len(self.calls)}"] = call
         step["_open"] = bool(step["tool_calls"])

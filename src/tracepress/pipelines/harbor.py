@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 import dspy
 
 from ..adapters.base import Adapter
 from ..plan import Table
 from ..rows import Row
+from ..signatures import parse, with_choices
 
 # --- Inputs -----------------------------------------------------------------------------
 
@@ -407,7 +408,6 @@ def render_taxonomy(taxonomy: dict[str, list[str]]) -> str:
 
 def classify_signature(taxonomy: dict[str, list[str]]) -> type[dspy.Signature]:
     """`name, arguments, result -> error_category, error_subcategory`, with the category constrained to the taxonomy."""
-    category = Literal[tuple(taxonomy)]  # type: ignore[valid-type]
     instructions = (
         "You are an expert at classifying errors in command-line inputs and outputs. "
         "This is one tool call a coding agent made (`name`, `arguments`, `result`), and it failed. "
@@ -416,8 +416,8 @@ def classify_signature(taxonomy: dict[str, list[str]]) -> type[dspy.Signature]:
         "specific one. If none fit, use the closest category and the subcategory 'other'.\n\n"
         f"Taxonomy:\n{render_taxonomy(taxonomy)}"
     )
-    sig = dspy.Signature(f"{CALL_INPUTS} -> error_category, error_subcategory", instructions)
-    return sig.with_updated_fields("error_category", type_=category)
+    sig = parse(f"{CALL_INPUTS} -> error_category, error_subcategory", instructions)
+    return with_choices(sig, "error_category", taxonomy)
 
 
 def _snap(taxonomy: dict[str, list[str]], row: Row) -> dict[str, Any]:

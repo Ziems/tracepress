@@ -301,18 +301,17 @@ class Running:
         self.address = ""
         self._thread = threading.Thread(target=self._main, args=(host, port, token, retain), daemon=True)
         self._thread.start()
-        self._ready.wait(10)
-        if not self.address:
+        if not self._ready.wait(10):
             raise RuntimeError("the server didn't start")
         _report_started(host, token, retain)
 
     def _main(self, host, port, token, retain):
         asyncio.set_event_loop(self._loop)
-        self._runner = web.AppRunner(make_app(token, retain))
-        self._loop.run_until_complete(self._runner.setup())
-        site = web.TCPSite(self._runner, host, port)
+        self._runner = runner = web.AppRunner(make_app(token, retain))
+        self._loop.run_until_complete(runner.setup())
+        site = web.TCPSite(runner, host, port)
         self._loop.run_until_complete(site.start())
-        port = site._server.sockets[0].getsockname()[1]
+        port = runner.addresses[0][1]
         self.address = f"{host}:{port}"
         self._ready.set()
         self._loop.run_forever()

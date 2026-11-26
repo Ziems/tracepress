@@ -10,7 +10,7 @@ import asyncio
 import glob
 import json
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -67,7 +67,7 @@ def seconds(start: str | None, end: str | None) -> float | None:
         return None
 
 
-def find_files(path: str | Path, pattern: str, skip: callable = lambda p: False) -> list[Path]:
+def find_files(path: str | Path, pattern: str, skip: Callable[[Path], bool] = lambda p: False) -> list[Path]:
     """A file, a directory searched for `pattern`, or a glob."""
     p = Path(path).expanduser()
     if p.is_file():
@@ -165,7 +165,7 @@ def new_step(source: str, timestamp: str | None, agent_id: str | None = None, **
     }
 
 
-def join(parts: list[str]) -> str | None:
+def join(parts: Iterable[str | None]) -> str | None:
     parts = [p for p in parts if p]
     return "\n\n".join(parts) or None
 

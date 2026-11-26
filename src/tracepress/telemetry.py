@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from .plan import Node
 
 # PostHog's project key is public by design: it can only write events.
-POSTHOG_API_KEY = "phc_oj47o0vexqRFGmRy1u5Bm2aSx0CvhiHDygSUU6bAuix"
+POSTHOG_API_KEY: str = "phc_oj47o0vexqRFGmRy1u5Bm2aSx0CvhiHDygSUU6bAuix"
 POSTHOG_HOST = "https://us.i.posthog.com"
 EVENT = "run_completed"
 TIMEOUT = 2.0
@@ -161,7 +161,7 @@ def _error_type(error: BaseException | None) -> str | None:
 
 def _walk(nodes: list[Node]) -> list[Node]:
     seen: dict[int, Node] = {}
-    stack = list(nodes)
+    stack: list[Node | None] = list(nodes)
     while stack:
         node = stack.pop()
         if node is None or id(node) in seen:
@@ -221,21 +221,18 @@ def payload(
     plan = _walk(nodes)
     built = [operators[id(n)] for n in plan if id(n) in operators]
     sources = sorted({k for op in built for k in _source_kinds(op)})
-    models = sorted(
-        (
-            {
-                "gateway": m.label[0],
-                "model": m.label[1],
-                "calls": m.calls,
-                "cached_calls": m.cached_calls,
-                "prompt_tokens": m.prompt_tokens,
-                "completion_tokens": m.completion_tokens,
-                "cost_usd": None if m.cost_usd is None else round(m.cost_usd, 6),
-            }
-            for m in stats.by_model.values()
-        ),
-        key=lambda m: -m["calls"],
-    )
+    models = [
+        {
+            "gateway": m.label[0],
+            "model": m.label[1],
+            "calls": m.calls,
+            "cached_calls": m.cached_calls,
+            "prompt_tokens": m.prompt_tokens,
+            "completion_tokens": m.completion_tokens,
+            "cost_usd": None if m.cost_usd is None else round(m.cost_usd, 6),
+        }
+        for m in sorted(stats.by_model.values(), key=lambda m: -m.calls)
+    ]
     latency = stats.latency()
     return {
         **_common(),

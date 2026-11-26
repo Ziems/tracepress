@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import dspy
 
@@ -23,6 +24,10 @@ def parse(sig: SigLike, instructions: str | None = None) -> type[dspy.Signature]
 def as_record(sig: type[dspy.Signature], name: str) -> type[dspy.Signature]:
     """Make input `name` take a whole row (a dict of its columns)."""
     return sig.with_updated_fields(name, type_=dict, desc=f"the whole {name}: its fields as a dict")
+
+
+def with_choices(sig: type[dspy.Signature], name: str, choices: Iterable[str]) -> type[dspy.Signature]:
+    return sig.with_updated_fields(name, type_=Literal[tuple(choices)])
 
 
 def inputs(sig: type[dspy.Signature]) -> list[str]:
