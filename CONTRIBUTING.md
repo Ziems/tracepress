@@ -3,8 +3,7 @@
 TracePress welcomes bug reports, fixes and new adapters.
 
 **You must understand the code you contribute.** Use coding agents as much as you like, but be
-ready to explain every line of your change. Harbor follows the same
-[golden rule](https://github.com/harbor-framework/harbor/blob/main/CONTRIBUTING.md#golden-rule).
+ready to explain every line of your change.
 
 ## What to send
 
