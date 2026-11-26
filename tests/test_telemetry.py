@@ -221,3 +221,11 @@ def test_server_reports_start_registration_and_its_source(sent):
     assert first["ops"] == {"lm_map": 1} and not first["replaced"] and second["replaced"]
     runs = _events(sent, "run_completed")
     assert runs and all(r["sources"] == ["server"] for r in runs)  # each pipeline reports when it stops
+
+
+def test_finished_sends_are_forgotten(sent):
+    for _ in range(5):
+        telemetry.report(RunStats(), [])
+        _wait()
+    assert len(sent) == 5
+    assert len(telemetry._pending) == 1  # only the latest; the rest finished before it started
