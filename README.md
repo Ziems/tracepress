@@ -231,7 +231,9 @@ async for e in tp.connect("localhost:7700").listen("frustration"):
 
 A pipeline registered later catches up on the stream so far, and registering a name again
 replaces it. Registering ships the pipeline's code (pickled), so the server runs what clients
-send. It listens on localhost by default; any other `--host` needs `--token`.
+send. It listens on localhost by default; any other `--host` needs a token. Set
+`TRACEPRESS_TOKEN` on both sides (server and client read it), or pass `--token` and
+`tp.connect(addr, token=...)`.
 
 ## Your own coding sessions
 

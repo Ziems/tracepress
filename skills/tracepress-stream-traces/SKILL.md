@@ -158,8 +158,10 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 ## Pitfalls
 
 - **Registering ships code.** The pipeline is pickled with its lambdas, and the server runs it.
-  Only run a server for clients you trust. It binds to localhost; any other `--host` needs
-  `--token`, and clients pass it as `tp.connect(addr, token=...)`. Functions a pipeline imports
+  Only run a server for clients you trust. It binds to localhost; any other `--host` needs a
+  token, which both `tracepress serve` and `tp.connect(addr)` read from the `TRACEPRESS_TOKEN`
+  environment variable. Ask the user to set it in their shell or `.env` themselves; never ask for
+  the token's value, generate one, or write it into code, commands or files. Functions a pipeline imports
   from the user's own modules must be importable on the server too (lambdas and functions defined
   in the script travel with it).
 - **Build registered pipelines on `client.source`.** A pipeline built on a local reader runs on

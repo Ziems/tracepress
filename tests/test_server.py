@@ -204,6 +204,23 @@ def test_tokens(server):
         guarded.stop()
 
 
+def test_token_from_environment(monkeypatch):
+    monkeypatch.setenv("TRACEPRESS_TOKEN", "secret")
+    guarded = serve_in_thread(token="secret")
+    try:
+        assert tp.connect(guarded.address).pipelines() == []
+        with pytest.raises(RuntimeError, match="401"):
+            tp.connect(guarded.address, token="wrong").pipelines()
+    finally:
+        guarded.stop()
+    # The CLI takes it as the default --token, so a non-local host is allowed.
+    from unittest import mock
+
+    with mock.patch("tracepress.server.app.serve") as run:
+        main(["serve", "--host", "0.0.0.0"])
+    assert run.call_args.args[2] == "secret"
+
+
 class Marker:
     """Unpickling this records that the server ran it."""
 
