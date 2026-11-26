@@ -7,6 +7,7 @@ trials can be compared across jobs with `group_by("task")`.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -148,10 +149,11 @@ class HarborAdapter(Adapter):
             ctrf = trial.path / "verifier" / "ctrf.json"
             if ctrf.exists():
                 data = await load_json(ctrf)
-                for test in (data.get("results") or {}).get("tests", []):
+                tests = (data.get("results") or {}).get("tests", [])
+                for test, test_id in zip(tests, _test_ids(tests)):
                     yield RowAdded(
                         Row(
-                            (*trial.key, ("test", test.get("name"))),
+                            (*trial.key, ("test", test_id)),
                             {
                                 **carried,
                                 "name": test.get("name"),
@@ -173,6 +175,26 @@ class HarborAdapter(Adapter):
                     for call in calls:
                         yield RowAdded(call)
                     yield Closed(step.key)
+
+
+def _test_ids(tests: list[dict]) -> list[str | None]:
+    """A test's name, qualified by its file (or suite) only when another test in the trial
+    shares the name, so unique names keep their key; `#n` separates exact repeats."""
+    names = Counter(t.get("name") for t in tests)
+    ids = []
+    for test in tests:
+        name = test.get("name")
+        if names[name] > 1:
+            where = test.get("filePath") or test.get("suite")
+            where = "/".join(where) if isinstance(where, list) else where
+            name = f"{where}::{name}" if where else name
+        ids.append(name)
+    seen: Counter = Counter()
+    for i, test_id in enumerate(ids):
+        seen[test_id] += 1
+        if seen[test_id] > 1:
+            ids[i] = f"{test_id}#{seen[test_id]}"
+    return ids
 
 
 async def _instruction(trial: Trial) -> str | None:

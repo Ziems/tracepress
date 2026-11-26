@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import tracepress as tp
@@ -32,6 +34,32 @@ def test_tests_table(harbor_dir):
     tests = tp.read.harbor(harbor_dir).table("tests").collect()
     assert len(tests) == 6
     assert {t.status for t in tests if t.trial == "alpha__2"} == {"passed", "failed"}
+
+
+def test_tests_with_one_name_in_two_files_stay_two_rows(harbor_dir):
+    ctrf = harbor_dir / "trials" / "alpha__1" / "verifier" / "ctrf.json"
+    ctrf.write_text(
+        json.dumps(
+            {
+                "results": {
+                    "tests": [
+                        {"name": "test_basic", "status": "passed", "filePath": "tests/test_a.py"},
+                        {"name": "test_basic", "status": "failed", "filePath": "tests/test_b.py"},
+                        {"name": "test_basic", "status": "failed", "filePath": "tests/test_b.py"},
+                        {"name": "test_other", "status": "passed", "filePath": "tests/test_a.py"},
+                    ]
+                }
+            }
+        )
+    )
+    tests = [t for t in tp.read.harbor(harbor_dir).table("tests").collect() if t.trial == "alpha__1"]
+    assert sorted((t.test, t.status) for t in tests) == [
+        ("test_other", "passed"),
+        ("tests/test_a.py::test_basic", "passed"),
+        ("tests/test_b.py::test_basic", "failed"),
+        ("tests/test_b.py::test_basic#2", "failed"),
+    ]
+    assert {t.name for t in tests} == {"test_basic", "test_other"}
 
 
 def test_filters(harbor_dir):
