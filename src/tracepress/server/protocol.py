@@ -27,8 +27,13 @@ def encode(event: Event, table: str | None = None) -> dict[str, Any]:
         out: dict[str, Any] = {"kind": "closed", "prefix": _key(event.prefix)}
     else:
         row = event.row
-        out = {"kind": "updated" if isinstance(event, RowUpdated) else "added", "key": _key(row.key),
-               "values": _safe(row.values), "final": row.final, "version": row.version}
+        out = {
+            "kind": "updated" if isinstance(event, RowUpdated) else "added",
+            "key": _key(row.key),
+            "values": _safe(row.values),
+            "final": row.final,
+            "version": row.version,
+        }
     if table is not None:
         out["table"] = table
     return out

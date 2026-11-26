@@ -21,9 +21,11 @@ import tracepress as tp
 
 # The same step-summary prompt as the Trace Science post, so reruns come from the cache.
 STEP_SIG = "instruction, source, message, tool_calls -> step_summary"
-STEP_INS = ("This is one step of a coding agent working on the task in `instruction`. In one "
-            "short sentence (at most 20 words), say who did what (the agent, the user or the "
-            "harness) and what came of it, in words a reader who hasn't seen the code can follow.")
+STEP_INS = (
+    "This is one step of a coding agent working on the task in `instruction`. In one "
+    "short sentence (at most 20 words), say who did what (the agent, the user or the "
+    "harness) and what came of it, in words a reader who hasn't seen the code can follow."
+)
 
 
 def kind(step) -> str:
@@ -43,8 +45,11 @@ def kind(step) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("path")
-    parser.add_argument("--lm", default="openrouter:openai/gpt-6-luna",
-                        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a plain DSPy model string")
+    parser.add_argument(
+        "--lm",
+        default="openrouter:openai/gpt-6-luna",
+        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a plain DSPy model string",
+    )
     parser.add_argument("--tasks", nargs="*")
     parser.add_argument("--budget", type=int, default=400, help="example runs GEPA may make")
     args = parser.parse_args()
@@ -57,8 +62,8 @@ def main() -> None:
     print("labels:", dict(collections.Counter(label["kind"] for label in labels)))
 
     classify = step_summaries.lm_map(
-        "step_summary -> kind: Literal['explore', 'edit', 'test', 'other']",
-        instructions="What kind of step is this?")
+        "step_summary -> kind: Literal['explore', 'edit', 'test', 'other']", instructions="What kind of step is this?"
+    )
     tuned = classify.optimize(labels, metric="kind", budget=args.budget, val_frac=0.3, seed=0)
 
     print("\n", tuned.optimize_report, sep="")

@@ -20,8 +20,7 @@ def is_prefix(prefix: Key, key: Key) -> bool:
 def sort_key(key: Key) -> tuple:
     """Order keys deterministically, numbers numerically and everything else as strings."""
     return tuple(
-        (level, 0, ident, "") if isinstance(ident, (int, float)) else (level, 1, 0, str(ident))
-        for level, ident in key
+        (level, 0, ident, "") if isinstance(ident, (int, float)) else (level, 1, 0, str(ident)) for level, ident in key
     )
 
 

@@ -82,8 +82,12 @@ class Table:
         self.schema.require(columns, "select")
         known = self.schema.columns or {}
         record = tuple(c for c in self.schema.record if c in columns) if self.schema.record is not None else None
-        schema = Schema(self.schema.levels, {c: known.get(c, Any) for c in columns if c not in self.schema.levels},
-                        {c: d for c, d in self.schema.grain.items() if c in columns}, record or None)
+        schema = Schema(
+            self.schema.levels,
+            {c: known.get(c, Any) for c in columns if c not in self.schema.levels},
+            {c: d for c, d in self.schema.grain.items() if c in columns},
+            record or None,
+        )
         return self._then(lambda: ops.SelectOp(list(columns)), schema, "select")
 
     def explode(self, column: str, level: str | None = None, keep: tuple[str, ...] = ()) -> Table:
@@ -91,16 +95,24 @@ class Table:
         self.schema.require([column, *keep], "explode")
         level = level or column.rstrip("s")
         known = self.schema.columns or {}
-        schema = Schema((*self.schema.levels, level), {**{k: known.get(k, Any) for k in keep}, level: Any},
-                        self._kept_grain(keep))
+        schema = Schema(
+            (*self.schema.levels, level), {**{k: known.get(k, Any) for k in keep}, level: Any}, self._kept_grain(keep)
+        )
         return self._then(lambda: ops.ExplodeOp(column, level, list(keep)), schema, "explode")
 
     def _kept_grain(self, keep) -> dict[str, int]:
         depth = len(self.schema.levels)
         return {k: min(self.schema.grain.get(k, depth), depth) for k in keep}
 
-    def join(self, other: Table, on: str | Sequence[str], *, how: str = "left",
-             columns: Sequence[str] | None = None, suffix: str | None = None) -> Table:
+    def join(
+        self,
+        other: Table,
+        on: str | Sequence[str],
+        *,
+        how: str = "left",
+        columns: Sequence[str] | None = None,
+        suffix: str | None = None,
+    ) -> Table:
         """Add the columns of `other`'s matching row to each row. Each row matches at most one.
 
         `on` names what to match on:
@@ -130,11 +142,15 @@ class Table:
         if by_level:
             depth = len(right.levels)
             if left.levels[:depth] != right.levels:
-                raise ValueError(f"join: the other table's levels {list(right.levels)} must be a prefix of this "
-                                 f"table's levels {list(left.levels)} to join on {list(names)}")
+                raise ValueError(
+                    f"join: the other table's levels {list(right.levels)} must be a prefix of this "
+                    f"table's levels {list(left.levels)} to join on {list(names)}"
+                )
             if max(right.levels.index(n) for n in names) != depth - 1:
-                raise ValueError(f"join: the other table has several rows per {list(names)}. Join on its "
-                                 f"deepest level, {right.levels[-1]!r}, so each row matches one.")
+                raise ValueError(
+                    f"join: the other table has several rows per {list(names)}. Join on its "
+                    f"deepest level, {right.levels[-1]!r}, so each row matches one."
+                )
             grain_depth = depth
         else:
             depth = 0
@@ -143,8 +159,7 @@ class Table:
             grain_depth = None if None in where else max(where)
         if columns is not None:
             other.schema.require(columns, "join columns")
-        added = {c: t for c, t in (right.columns or {}).items()
-                 if c not in names and (columns is None or c in columns)}
+        added = {c: t for c, t in (right.columns or {}).items() if c not in names and (columns is None or c in columns)}
         if columns is not None and right.open:
             added = {c: Any for c in columns if c not in names}
         taken = set(left.levels) | set(left.columns or ())
@@ -154,8 +169,10 @@ class Table:
             added = {c: t for c, t in added.items() if not (c in taken and left.constant(c, depth))}
         clash = [c for c in added if c in taken]
         if clash and suffix is None:
-            raise ValueError(f"join: column(s) {clash} are on both tables. Pass columns=[...] to add only "
-                             f"some of the other table's columns, or suffix='_x' to keep both copies.")
+            raise ValueError(
+                f"join: column(s) {clash} are on both tables. Pass columns=[...] to add only "
+                f"some of the other table's columns, or suffix='_x' to keep both copies."
+            )
         renamed = {c: c + suffix if c in clash else c for c in added}
         still = [renamed[c] for c in clash if renamed[c] in taken]
         if still:
@@ -169,8 +186,13 @@ class Table:
             for c in added:
                 grain[renamed[c]] = min(right.grain.get(c, len(right.levels)), grain_depth) if by_level else grain_depth
         schema = replace(left, columns=schema_columns, grain=grain)
-        make = lambda: ops.JoinOp(depth, on=None if by_level else names, inner=how == "inner",
-                                  columns=None if right.open and columns is None else tuple(added), suffix=suffix)
+        make = lambda: ops.JoinOp(
+            depth,
+            on=None if by_level else names,
+            inner=how == "inner",
+            columns=None if right.open and columns is None else tuple(added),
+            suffix=suffix,
+        )
         return Table(Node(make, self._node, schema, "join", others=(other._node,)))
 
     def group_by(self, *names: str) -> GroupedTable:
@@ -178,29 +200,59 @@ class Table:
 
     # --- LM operators -------------------------------------------------------------------
 
-    def lm_map(self, sig: SigLike, *, instructions: str | None = None, lm=None,
-               module: type[dspy.Module] = dspy.Predict, on_error: str = "skip") -> Table:
+    def lm_map(
+        self,
+        sig: SigLike,
+        *,
+        instructions: str | None = None,
+        lm=None,
+        module: type[dspy.Module] = dspy.Predict,
+        on_error: str = "skip",
+    ) -> Table:
         """One LM call per row; the signature's outputs become new columns."""
         parsed, records = self._row_inputs(sigs.parse(sig, instructions))
         self.schema.require(sigs.inputs(parsed), "lm_map")
         schema = self.schema.with_columns(sigs.outputs(parsed))
         remake = lambda t, ins: t.lm_map(sig, instructions=ins, lm=lm, module=module, on_error=on_error)
-        return self._then(lambda: ops.LMMapOp(parsed, lm=lm, module=module, on_error=on_error, records=records),
-                          schema, "lm_map", _spec("lm_map", parsed, remake))
+        return self._then(
+            lambda: ops.LMMapOp(parsed, lm=lm, module=module, on_error=on_error, records=records),
+            schema,
+            "lm_map",
+            _spec("lm_map", parsed, remake),
+        )
 
-    def lm_filter(self, sig: SigLike, *, instructions: str | None = None, lm=None,
-                  module: type[dspy.Module] = dspy.Predict, on_error: str = "skip") -> Table:
+    def lm_filter(
+        self,
+        sig: SigLike,
+        *,
+        instructions: str | None = None,
+        lm=None,
+        module: type[dspy.Module] = dspy.Predict,
+        on_error: str = "skip",
+    ) -> Table:
         """Keep rows where the signature's single bool output is true."""
         parsed, records = self._row_inputs(sigs.parse(sig, instructions))
         sigs.bool_output(parsed)
         self.schema.require(sigs.inputs(parsed), "lm_filter")
         remake = lambda t, ins: t.lm_filter(sig, instructions=ins, lm=lm, module=module, on_error=on_error)
-        return self._then(lambda: ops.LMFilterOp(parsed, lm=lm, module=module, on_error=on_error, records=records),
-                          self.schema, "lm_filter", _spec("lm_filter", parsed, remake))
+        return self._then(
+            lambda: ops.LMFilterOp(parsed, lm=lm, module=module, on_error=on_error, records=records),
+            self.schema,
+            "lm_filter",
+            _spec("lm_filter", parsed, remake),
+        )
 
-    def lm_extract(self, sig: SigLike, *, level: str | None = None, keep: tuple[str, ...] = (),
-                   instructions: str | None = None, lm=None, module: type[dspy.Module] = dspy.Predict,
-                   on_error: str = "skip") -> Table:
+    def lm_extract(
+        self,
+        sig: SigLike,
+        *,
+        level: str | None = None,
+        keep: tuple[str, ...] = (),
+        instructions: str | None = None,
+        lm=None,
+        module: type[dspy.Module] = dspy.Predict,
+        on_error: str = "skip",
+    ) -> Table:
         """One row per element of the signature's single list output, one level deeper.
 
         `"trace -> failures: list[str]"` makes a `failure` level with a `failure` column.
@@ -211,14 +263,22 @@ class Table:
         self.schema.require([*sigs.inputs(parsed), *keep], "lm_extract")
         level = level or output.rstrip("s")
         known = self.schema.columns or {}
-        schema = Schema((*self.schema.levels, level), {**{k: known.get(k, Any) for k in keep}, level: Any},
-                        self._kept_grain(keep))
+        schema = Schema(
+            (*self.schema.levels, level), {**{k: known.get(k, Any) for k in keep}, level: Any}, self._kept_grain(keep)
+        )
         return self._then(
-            lambda: ops.LMExtractOp(parsed, level, list(keep), lm=lm, module=module, on_error=on_error,
-                                    records=records),
-            schema, "lm_extract",
-            _spec("lm_extract", parsed, lambda t, ins: t.lm_extract(sig, level=level, keep=keep, instructions=ins,
-                                                                   lm=lm, module=module, on_error=on_error)),
+            lambda: ops.LMExtractOp(
+                parsed, level, list(keep), lm=lm, module=module, on_error=on_error, records=records
+            ),
+            schema,
+            "lm_extract",
+            _spec(
+                "lm_extract",
+                parsed,
+                lambda t, ins: t.lm_extract(
+                    sig, level=level, keep=keep, instructions=ins, lm=lm, module=module, on_error=on_error
+                ),
+            ),
         )
 
     def _row_inputs(self, parsed):
@@ -253,8 +313,18 @@ class Table:
 
     # --- Tuning -------------------------------------------------------------------------
 
-    def optimize(self, labels, metric, *, optimizer: str = "gepa", budget: int = 60, val_frac: float = 0.3,
-                 seed: int = 0, reflection_lm=None, max_concurrency: int | None = None) -> Table:
+    def optimize(
+        self,
+        labels,
+        metric,
+        *,
+        optimizer: str = "gepa",
+        budget: int = 60,
+        val_frac: float = 0.3,
+        seed: int = 0,
+        reflection_lm=None,
+        max_concurrency: int | None = None,
+    ) -> Table:
         """Tune this LM step's instructions against labeled rows, with GEPA.
 
         `labels` is a DataFrame (or list of dicts) with this table's key column(s), e.g. `trial`,
@@ -268,8 +338,17 @@ class Table:
         """
         from .optimize import optimize
 
-        return optimize(self, labels, metric, optimizer=optimizer, budget=budget, val_frac=val_frac,
-                        seed=seed, reflection_lm=reflection_lm, max_concurrency=max_concurrency)
+        return optimize(
+            self,
+            labels,
+            metric,
+            optimizer=optimizer,
+            budget=budget,
+            val_frac=val_frac,
+            seed=seed,
+            reflection_lm=reflection_lm,
+            max_concurrency=max_concurrency,
+        )
 
     # --- What-if ------------------------------------------------------------------------
 
@@ -299,7 +378,7 @@ class Table:
             if copies:
                 rows = runtime.run([target])[0]
                 for key, other in copies.items():
-                    match = [r for r in rows if r.key[-len(other):] == other]
+                    match = [r for r in rows if r.key[-len(other) :] == other]
                     if not match:
                         raise ValueError(f"rerun: no row with key {dict(other)} to copy from")
                     edits[key] = dict(match[0].values)
@@ -339,8 +418,9 @@ class GroupedTable:
 
         return self._table._then(build, schema, label, spec)
 
-    def reduce(self, fn: Callable[[list[Row]], dict[str, Any]], columns: dict[str, Any] | None = None,
-               on_error: str = "raise") -> Table:
+    def reduce(
+        self, fn: Callable[[list[Row]], dict[str, Any]], columns: dict[str, Any] | None = None, on_error: str = "raise"
+    ) -> Table:
         """Plain Python reduce: `fn(rows) -> dict` per group."""
         hier, extra = self._hier, self._extra
         return self._then(lambda: ops.PyReduceOp(fn, hier, extra, on_error=on_error), columns, "reduce")
@@ -350,7 +430,8 @@ class GroupedTable:
         child = self._table.schema
         return {
             n: str if n in child.levels else (child.columns or {}).get(n, str)
-            for n in names if n in self._key_names or n in self._constants
+            for n in names
+            if n in self._key_names or n in self._constants
         }
 
     def _record(self, names) -> tuple[str, tuple[str, ...] | None] | None:
@@ -361,9 +442,17 @@ class GroupedTable:
             return None
         return name, child.record
 
-    def lm_reduce(self, sig: SigLike, *, emit: str | every = "close", instructions: str | None = None, lm=None,
-                  module: type[dspy.Module] = dspy.Predict, chunk_chars: int | None = None,
-                  on_error: str = "skip") -> Table:
+    def lm_reduce(
+        self,
+        sig: SigLike,
+        *,
+        emit: str | every = "close",
+        instructions: str | None = None,
+        lm=None,
+        module: type[dspy.Module] = dspy.Predict,
+        chunk_chars: int | None = None,
+        on_error: str = "skip",
+    ) -> Table:
         """One LM call per group (a tree of calls for groups too big for one prompt).
 
         Inputs naming a group key, or a column with one value per group (a trial's reward
@@ -397,18 +486,43 @@ class GroupedTable:
         hier, extra = self._hier, self._extra
         chunk = chunk_chars or lm_config.config().reduce_chunk_chars
         return self._then(
-            lambda: ops.LMReduceOp(parsed, key_inputs, child_columns, children_name, hier, extra,
-                                   lm=lm, module=module, chunk_chars=chunk, on_error=on_error,
-                                   emit_every=emit_every, constants=constants, record=record),
-            sigs.outputs(parsed), "lm_reduce",
-            _spec("lm_reduce", parsed, lambda t, ins: GroupedTable(t, self._names).lm_reduce(
-                sig, emit=emit, instructions=ins, lm=lm, module=module, chunk_chars=chunk_chars,
-                on_error=on_error)),
+            lambda: ops.LMReduceOp(
+                parsed,
+                key_inputs,
+                child_columns,
+                children_name,
+                hier,
+                extra,
+                lm=lm,
+                module=module,
+                chunk_chars=chunk,
+                on_error=on_error,
+                emit_every=emit_every,
+                constants=constants,
+                record=record,
+            ),
+            sigs.outputs(parsed),
+            "lm_reduce",
+            _spec(
+                "lm_reduce",
+                parsed,
+                lambda t, ins: GroupedTable(t, self._names).lm_reduce(
+                    sig, emit=emit, instructions=ins, lm=lm, module=module, chunk_chars=chunk_chars, on_error=on_error
+                ),
+            ),
         )
 
-    def lm_fold(self, sig: str, *, init: dict[str, Any] | None = None, emit: str | every = "close",
-                instructions: str | None = None, lm=None, module: type[dspy.Module] = dspy.Predict,
-                on_error: str = "skip") -> Table:
+    def lm_fold(
+        self,
+        sig: str,
+        *,
+        init: dict[str, Any] | None = None,
+        emit: str | every = "close",
+        instructions: str | None = None,
+        lm=None,
+        module: type[dspy.Module] = dspy.Predict,
+        on_error: str = "skip",
+    ) -> Table:
         """Carry state through each group's children, one LM call per child, in key order.
 
         Fields on both sides of the arrow are state: `"progress, step -> progress, stuck: bool"`
@@ -428,8 +542,10 @@ class GroupedTable:
         child.require(child_names, "lm_fold")
         known = child.columns or {}
         record = self._record(child_names)
-        child_inputs = {n: dict if record and n == record[0] else known.get(n, str) if n not in child.levels else str
-                        for n in child_names}
+        child_inputs = {
+            n: dict if record and n == record[0] else known.get(n, str) if n not in child.levels else str
+            for n in child_names
+        }
         init = dict(init or {})
         unknown = set(init) - set(spec.state)
         if unknown:
@@ -438,13 +554,31 @@ class GroupedTable:
         child_name = child.levels[-1] if child.levels else "row"
         hier, extra = self._hier, self._extra
         return self._then(
-            lambda: ops.FoldOp(spec, init, key_inputs, child_inputs, child_name, hier, extra,
-                               lm=lm, module=module, on_error=on_error, emit_every=emit_every,
-                               constants=constants, record=record),
-            dict(spec.outputs), "lm_fold",
-            LMSpec("lm_fold", instructions or "", tuple(spec.outputs),
-                   lambda t, ins: GroupedTable(t, self._names).lm_fold(
-                       sig, init=init, emit=emit, instructions=ins, lm=lm, module=module, on_error=on_error)),
+            lambda: ops.FoldOp(
+                spec,
+                init,
+                key_inputs,
+                child_inputs,
+                child_name,
+                hier,
+                extra,
+                lm=lm,
+                module=module,
+                on_error=on_error,
+                emit_every=emit_every,
+                constants=constants,
+                record=record,
+            ),
+            dict(spec.outputs),
+            "lm_fold",
+            LMSpec(
+                "lm_fold",
+                instructions or "",
+                tuple(spec.outputs),
+                lambda t, ins: GroupedTable(t, self._names).lm_fold(
+                    sig, init=init, emit=emit, instructions=ins, lm=lm, module=module, on_error=on_error
+                ),
+            ),
         )
 
 
@@ -520,8 +654,11 @@ def _replace_node(node: Node, old: Node, new: Node, memo: dict | None = None) ->
         return memo[id(node)]
     parent = _replace_node(node.parent, old, new, memo) if node.parent is not None else None
     others = tuple(_replace_node(o, old, new, memo) for o in node.others)
-    out = node if parent is node.parent and all(a is b for a, b in zip(others, node.others)) \
+    out = (
+        node
+        if parent is node.parent and all(a is b for a, b in zip(others, node.others))
         else replace(node, parent=parent, others=others)
+    )
     memo[id(node)] = out
     return out
 

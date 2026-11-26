@@ -31,6 +31,8 @@ class _Log:
 
     def log(self, message: str) -> None:
         log.debug("gepa: %s", message)
+
+
 Metric = str | Callable[[Row | None, dict[str, Any]], Any]
 
 
@@ -52,9 +54,11 @@ class OptimizeReport:
     history: list[tuple[str, float]] = field(default_factory=list)  # each kept prompt and its held-out score, in order
 
     def __str__(self) -> str:
-        return (f"val {self.val_before:.2f} -> {self.val_after:.2f}, train {self.train_before:.2f} -> "
-                f"{self.train_after:.2f}, kept {self.candidates} of {self.tried} prompts tried, "
-                f"{self.lm_calls} LM calls, ${self.cost_usd:.4f}, {self.seconds:.0f}s")
+        return (
+            f"val {self.val_before:.2f} -> {self.val_after:.2f}, train {self.train_before:.2f} -> "
+            f"{self.train_after:.2f}, kept {self.candidates} of {self.tried} prompts tried, "
+            f"{self.lm_calls} LM calls, ${self.cost_usd:.4f}, {self.seconds:.0f}s"
+        )
 
 
 @dataclass
@@ -74,8 +78,10 @@ class LabeledTask:
         self.parent_schema = table._node.parent.schema
         self.keys = [c for c in table.schema.levels if c in labels[0]]
         if not self.keys or self.keys[-1] != table.schema.levels[-1]:
-            raise ValueError(f"optimize: labels need a {table.schema.levels[-1]!r} column to match rows to labels "
-                             f"(the table is keyed by {list(table.schema.levels)})")
+            raise ValueError(
+                f"optimize: labels need a {table.schema.levels[-1]!r} column to match rows to labels "
+                f"(the table is keyed by {list(table.schema.levels)})"
+            )
         self.labels = labels
         by_key: dict[tuple, list[Row]] = {}
         for row in runtime.run([table._node.parent], max_concurrency)[0]:
@@ -115,8 +121,11 @@ class LabeledTask:
             return Scored(0.0, None, f"The step produced no output; expected {self.metric}={want!r}.")
         have = row.get(self.metric, None)
         ok = _same(have, want)
-        return Scored(1.0 if ok else 0.0, output,
-                      f"Correct: {self.metric}={want!r}." if ok else f"Expected {self.metric}={want!r}, got {have!r}.")
+        return Scored(
+            1.0 if ok else 0.0,
+            output,
+            f"Correct: {self.metric}={want!r}." if ok else f"Expected {self.metric}={want!r}, got {have!r}.",
+        )
 
     def mean(self, instructions: str, examples: list[int]) -> float:
         scored = self.evaluate(instructions, examples) if examples else []
@@ -141,12 +150,17 @@ class GEPAAdapter:
         from gepa import EvaluationBatch
 
         scored = self.task.evaluate(candidate[COMPONENT], batch)
-        return EvaluationBatch(outputs=[s.output for s in scored], scores=[s.score for s in scored],
-                               trajectories=scored if capture_traces else None)
+        return EvaluationBatch(
+            outputs=[s.output for s in scored],
+            scores=[s.score for s in scored],
+            trajectories=scored if capture_traces else None,
+        )
 
     def make_reflective_dataset(self, candidate, eval_batch, components_to_update):
-        records = [{"Generated Outputs": s.output if s.output is not None else "(no output)", "Feedback": s.feedback}
-                   for s in eval_batch.trajectories]
+        records = [
+            {"Generated Outputs": s.output if s.output is not None else "(no output)", "Feedback": s.feedback}
+            for s in eval_batch.trajectories
+        ]
         return {COMPONENT: records}
 
 
@@ -160,13 +174,24 @@ def lm_text(lm) -> Callable[[str], str]:
     return call
 
 
-def optimize(table: Table, labels, metric: Metric, *, optimizer: str = "gepa", budget: int = 60,
-             val_frac: float = 0.3, seed: int = 0, reflection_lm=None,
-             max_concurrency: int | None = None) -> Table:
+def optimize(
+    table: Table,
+    labels,
+    metric: Metric,
+    *,
+    optimizer: str = "gepa",
+    budget: int = 60,
+    val_frac: float = 0.3,
+    seed: int = 0,
+    reflection_lm=None,
+    max_concurrency: int | None = None,
+) -> Table:
     spec = table._node.spec
     if spec is None:
-        raise ValueError("optimize: this table isn't an LM step (lm_map, lm_filter, lm_extract, lm_reduce or "
-                         "lm_fold); call it on the step whose prompt you want to tune")
+        raise ValueError(
+            "optimize: this table isn't an LM step (lm_map, lm_filter, lm_extract, lm_reduce or "
+            "lm_fold); call it on the step whose prompt you want to tune"
+        )
     if optimizer != "gepa":
         raise ValueError(f"optimize: optimizer={optimizer!r} isn't supported; use 'gepa'")
     records = labels.to_dict("records") if hasattr(labels, "to_dict") else [dict(r) for r in labels]
@@ -206,19 +231,34 @@ def optimize(table: Table, labels, metric: Metric, *, optimizer: str = "gepa", b
             seconds = time.monotonic() - start
             history = [(c[COMPONENT], float(v)) for c, v in zip(result.candidates, result.val_aggregate_scores)]
             report = OptimizeReport(
-                before=spec.instructions, after=best,
-                train_before=task.mean(spec.instructions, train), train_after=task.mean(best, train),
-                val_before=task.mean(spec.instructions, val), val_after=task.mean(best, val),
-                candidates=len(result.candidates), tried=len(task.tried), lm_calls=task.calls, cost_usd=task.cost,
-                seconds=seconds, history=history)
+                before=spec.instructions,
+                after=best,
+                train_before=task.mean(spec.instructions, train),
+                train_after=task.mean(best, train),
+                val_before=task.mean(spec.instructions, val),
+                val_after=task.mean(best, val),
+                candidates=len(result.candidates),
+                tried=len(task.tried),
+                lm_calls=task.calls,
+                cost_usd=task.cost,
+                seconds=seconds,
+                history=history,
+            )
     except BaseException as e:
         error = e
         raise
     finally:
         telemetry.report_optimize(
-            optimizer=optimizer, step_op=spec.op, metric="column" if isinstance(metric, str) else "callable",
-            n_labels=len(records), n_val=n_val, budget=budget, result=report,
-            seconds=time.monotonic() - clock, error=error)
+            optimizer=optimizer,
+            step_op=spec.op,
+            metric="column" if isinstance(metric, str) else "callable",
+            n_labels=len(records),
+            n_val=n_val,
+            budget=budget,
+            result=report,
+            seconds=time.monotonic() - clock,
+            error=error,
+        )
     from .plan import Table
 
     tuned = spec.remake(Table(table._node.parent), best)

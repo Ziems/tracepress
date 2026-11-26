@@ -61,12 +61,14 @@ def step_rows(trajectory: dict, prefix: Key, carried: dict[str, Any]) -> list[tu
         }
         calls = []
         for call in step.get("tool_calls") or []:
-            calls.append({
-                "id": call.get("tool_call_id"),
-                "name": call.get("function_name"),
-                "arguments": call.get("arguments"),
-                "result": results.pop(call.get("tool_call_id"), None),
-            })
+            calls.append(
+                {
+                    "id": call.get("tool_call_id"),
+                    "name": call.get("function_name"),
+                    "arguments": call.get("arguments"),
+                    "result": results.pop(call.get("tool_call_id"), None),
+                }
+            )
         unmatched = [str(v) for v in results.values() if v is not None]
         values = {
             **carried,
@@ -81,8 +83,10 @@ def step_rows(trajectory: dict, prefix: Key, carried: dict[str, Any]) -> list[tu
             "is_sidechain": bool((step.get("extra") or {}).get("is_sidechain")),
         }
         call_rows = [
-            Row((*key, ("call", i)), {**carried, **{k: c[k] for k in ("name", "arguments", "result")},
-                                       "timestamp": step.get("timestamp")})
+            Row(
+                (*key, ("call", i)),
+                {**carried, **{k: c[k] for k in ("name", "arguments", "result")}, "timestamp": step.get("timestamp")},
+            )
             for i, c in enumerate(calls)
         ]
         out.append((Row(key, values), call_rows))
@@ -95,6 +99,7 @@ async def load_json(path: Path) -> dict:
 
 async def load_jsonl(path: Path) -> list[dict]:
     """One trajectory per line, as in exported trajectory bundles."""
+
     def read() -> list[dict]:
         with path.open() as f:
             return [json.loads(line) for line in f if line.strip()]
@@ -115,7 +120,9 @@ class ATIFAdapter(Adapter):
 
     def tables(self) -> dict[str, Schema]:
         return {
-            "trajectories": Schema(("trajectory",), {"agent": str, "model": str, "n_steps": int, "final_metrics": dict}),
+            "trajectories": Schema(
+                ("trajectory",), {"agent": str, "model": str, "n_steps": int, "final_metrics": dict}
+            ),
             "steps": Schema(("trajectory", "step"), dict(STEP_COLUMNS), {}, STEP_RECORD),
             "tool_calls": Schema(("trajectory", "step", "call"), dict(TOOL_CALL_COLUMNS)),
         }
@@ -136,12 +143,17 @@ class ATIFAdapter(Adapter):
             prefix = (("trajectory", self.trajectory_id(path, data)),)
             if table == "trajectories":
                 agent = data.get("agent") or {}
-                yield RowAdded(Row(prefix, {
-                    "agent": agent.get("name"),
-                    "model": agent.get("model_name"),
-                    "n_steps": len(data.get("steps", [])),
-                    "final_metrics": data.get("final_metrics"),
-                }))
+                yield RowAdded(
+                    Row(
+                        prefix,
+                        {
+                            "agent": agent.get("name"),
+                            "model": agent.get("model_name"),
+                            "n_steps": len(data.get("steps", [])),
+                            "final_metrics": data.get("final_metrics"),
+                        },
+                    )
+                )
             else:
                 for step, calls in step_rows(data, prefix, {}):
                     if table == "steps":

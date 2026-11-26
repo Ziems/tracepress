@@ -2,14 +2,12 @@ import json
 
 import dspy
 import pytest
+from fakes import FuncLM
 
 import tracepress as tp
 from tracepress import lm as lm_config
 from tracepress import telemetry
 from tracepress.lm import RunStats
-from tracepress.pipelines import harbor as pipes
-
-from fakes import FuncLM
 
 SECRET = "zz_secret_zz"
 
@@ -38,7 +36,8 @@ def _wait():
 def secret_table():
     rows = [tp.Row(((f"{SECRET}_task", f"{SECRET}_{i}"),), {f"{SECRET}_col": f"{SECRET} value {i}"}) for i in range(3)]
     return tp.from_rows(rows).lm_map(
-        f"{SECRET}_col -> {SECRET}_out", instructions=f"Classify {SECRET}.",
+        f"{SECRET}_col -> {SECRET}_out",
+        instructions=f"Classify {SECRET}.",
         lm=FuncLM(lambda f: {f"{SECRET}_out": "x"}),
     )
 
@@ -66,7 +65,8 @@ def test_one_event_per_run_with_counts(sent, harbor_dir):
 def test_nothing_private_is_sent(sent, monkeypatch):
     with pytest.raises(RuntimeError):
         tp.from_rows([tp.Row((("row", 0),), {"x": SECRET})]).map(
-            lambda r: (_ for _ in ()).throw(RuntimeError(SECRET))).collect()
+            lambda r: (_ for _ in ()).throw(RuntimeError(SECRET))
+        ).collect()
     secret_table().collect()
     monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
     stats = RunStats()
@@ -185,7 +185,8 @@ def test_optimize_sends_one_event_for_the_whole_search(sent, harbor_dir):
 
     labels = pd.DataFrame({"trial": list(TRUTH), "doom_loop": list(TRUTH.values())})
     tuned = detector(tp.read.harbor(harbor_dir), InstructionLM(lambda f: {})).optimize(
-        labels, metric="doom_loop", budget=20, reflection_lm=Reflector())
+        labels, metric="doom_loop", budget=20, reflection_lm=Reflector()
+    )
     _wait()
     assert _events(sent, "run_completed") == []  # GEPA's runs inside don't report one by one
     (props,) = _events(sent, "optimize_completed")

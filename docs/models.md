@@ -4,8 +4,8 @@ TracePress has no default model. Every LM operator needs one, and you pick it in
 three ways:
 
 ```python
-tp.configure(lm="openrouter:openai/gpt-6-luna")         # for everything
-notes = steps.lm_map("step_text -> summary", lm="...")   # for one operator
+tp.configure(lm="openrouter:openai/gpt-6-luna")  # for everything
+notes = steps.lm_map("step_text -> summary", lm="...")  # for one operator
 ```
 
 or by setting the `TRACEPRESS_LM` environment variable. A run without a model fails before it
@@ -56,12 +56,16 @@ from typing import Annotated, Literal
 import dspy
 from dspy.experimental import Choice, Noul
 
+
 class Triage(dspy.Signature):
     """Judge one step of an agent's trace."""
+
     step_text: str = dspy.InputField()
     failed: Noul = dspy.OutputField(desc="Did this step fail?")
     kind: Annotated[Literal["tool", "reasoning", "planning"], Choice] = dspy.OutputField(
-        desc="What kind of mistake it is, if any")
+        desc="What kind of mistake it is, if any"
+    )
+
 
 judged = steps.lm_map(Triage, lm="typesafe:jev-latest")
 ```

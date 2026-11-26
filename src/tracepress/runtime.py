@@ -6,9 +6,8 @@ Batch and streaming share this runtime. A bounded source simply ends.
 from __future__ import annotations
 
 import asyncio
-import time
-from dataclasses import replace
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from . import telemetry
@@ -43,9 +42,12 @@ class CollectSink:
 
     async def consume(self, queue: asyncio.Queue) -> None:
         while (event := await queue.get()) is not END:
-            if isinstance(event, (RowAdded, RowUpdated)) and event.row.final:
-                if supersedes(event.row, self.rows.get(event.row.key)):
-                    self.rows[event.row.key] = event.row
+            if (
+                isinstance(event, (RowAdded, RowUpdated))
+                and event.row.final
+                and supersedes(event.row, self.rows.get(event.row.key))
+            ):
+                self.rows[event.row.key] = event.row
 
     def result(self) -> list[Row]:
         return sorted(self.rows.values(), key=lambda r: sort_key(r.key))
@@ -68,8 +70,9 @@ class QueueSink:
         return None
 
 
-async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks: list | None = None,
-                    lineage: bool = False) -> list:
+async def run_async(
+    nodes: list[Node], max_concurrency: int | None = None, sinks: list | None = None, lineage: bool = False
+) -> list:
     global last_run
     executor = Executor(max_concurrency)
     ops: dict[int, Operator] = {}

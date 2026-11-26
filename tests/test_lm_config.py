@@ -44,13 +44,13 @@ def test_typesafe_prefix_builds_a_decision_client(monkeypatch):
     assert lm_config.call_cost(lm.model, 1_000_000, 0) == 0.042
 
 
-
 def test_configuring_a_price_keeps_the_built_in_prices(monkeypatch):
     monkeypatch.setattr(tp.configure(), "prices", dict(lm_config.PRICES))  # restored after the test
     tp.configure(prices={"openai/my-model": (0.50, 2.00)})
     assert lm_config.call_cost("openai/my-model", 1_000_000, 0) == 0.50
     assert lm_config.call_cost("openrouter/openai/gpt-6-luna", 1_000_000, 0) == 0.10
     assert lm_config.call_cost("typesafe:jev-latest", 1_000_000, 0) == 0.042
+
 
 def test_portkey_prefix_targets_the_gateway_with_a_provider_slug(monkeypatch):
     monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")

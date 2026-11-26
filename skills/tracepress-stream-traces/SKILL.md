@@ -42,9 +42,9 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
    ```python
    import tracepress as tp
 
-   tp.configure(lm="openrouter:openai/gpt-6-luna")         # required; suggested model, or the user's choice
+   tp.configure(lm="openrouter:openai/gpt-6-luna")  # required; suggested model, or the user's choice
    src = tp.read.harbor("path/to/trials", tasks=["some-task"], limit=2)
-   live = tp.replay(src, speed=60)      # 60x real time; speed=None = as fast as possible
+   live = tp.replay(src, speed=60)  # 60x real time; speed=None = as fast as possible
    ```
 
    Fault injection (seeded with `seed=`) tests robustness: `shuffle_within=k` (out-of-order rows),
@@ -57,11 +57,15 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 
    ```python
    # Keep the user step (the task) so the note knows what the agent is meant to be doing.
-   monitor = src_or_live.table("steps").group_by("trial").lm_fold(
-       "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool, concern",
-       instructions="Update your running note on the agent (max 3 sentences); flag stuck/looping.",
-       emit="update",            # provisional row after every step (live sources only)
-       init={"progress": ""},    # optional; defaults to "", [], 0 or False by type
+   monitor = (
+       src_or_live.table("steps")
+       .group_by("trial")
+       .lm_fold(
+           "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool, concern",
+           instructions="Update your running note on the agent (max 3 sentences); flag stuck/looping.",
+           emit="update",  # provisional row after every step (live sources only)
+           init={"progress": ""},  # optional; defaults to "", [], 0 or False by type
+       )
    )
    ```
 
@@ -89,10 +93,10 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 4. **Consume events.**
 
    ```python
-   async for event in monitor.events():          # inside asyncio / Jupyter
+   async for event in monitor.events():  # inside asyncio / Jupyter
        if isinstance(event, tp.Closed):
            continue
-       row = event.row                           # row.final, row.version, row.trial, row.progress...
+       row = event.row  # row.final, row.version, row.trial, row.progress...
        print(row.trial, "FINAL" if row.final else f"v{row.version}", row.progress)
    ```
 
@@ -107,6 +111,7 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
    ```python
    def contents(rows):
        return [(r.key, r.values) for r in rows]
+
 
    batch = contents(pipeline(src).collect())
    for seed in range(3):
@@ -128,10 +133,11 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 
    ```python
    client = tp.connect("localhost:7700")
-   client.stream(tp.watch.otlp())           # background; or tp.replay(src) to test, .wait() for it to finish
-   live = client.source                     # the server's stream: build pipelines on this, not on src
+   client.stream(tp.watch.otlp())  # background; or tp.replay(src) to test, .wait() for it to finish
+   live = client.source  # the server's stream: build pipelines on this, not on src
    doom_loops = live.steps.group_by("trace").lm_fold(
-       "notes, source, message, tool_calls -> notes, doom_loop: bool", emit="update")
+       "notes, source, message, tool_calls -> notes, doom_loop: bool", emit="update"
+   )
    client.register(name="doom_loops", pipeline=doom_loops)
 
    # in any other process

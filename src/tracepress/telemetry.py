@@ -51,11 +51,29 @@ NOTICE = (
 )
 
 # Plan node labels (see plan.py); anything else is reported as "other".
-OPS = {"map", "filter", "select", "explode", "reduce", "lm_map", "lm_filter", "lm_extract", "lm_reduce", "lm_fold", "join",
-       "edit"}  # edit: the node `Table.rerun` inserts
+OPS = {
+    "map",
+    "filter",
+    "select",
+    "explode",
+    "reduce",
+    "lm_map",
+    "lm_filter",
+    "lm_extract",
+    "lm_reduce",
+    "lm_fold",
+    "join",
+    "edit",
+}  # edit: the node `Table.rerun` inserts
 SOURCES = {
-    "HarborAdapter": "harbor", "ATIFAdapter": "atif", "RowsAdapter": "rows", "ReplayAdapter": "replay",
-    "ClaudeCodeAdapter": "claude_code", "CodexAdapter": "codex", "OTelAdapter": "otel", "OTLPReceiver": "otlp",
+    "HarborAdapter": "harbor",
+    "ATIFAdapter": "atif",
+    "RowsAdapter": "rows",
+    "ReplayAdapter": "replay",
+    "ClaudeCodeAdapter": "claude_code",
+    "CodexAdapter": "codex",
+    "OTelAdapter": "otel",
+    "OTLPReceiver": "otlp",
     "ServerSource": "server",
 }
 PUBLIC_ERROR_MODULES = ("builtins", "asyncio", "concurrent", "tracepress", "dspy", "litellm", "pydantic", "json")
@@ -126,11 +144,11 @@ def install_id() -> str | None:
 
 
 def _version(dist: str) -> str:
-    try:
-        from importlib.metadata import version
+    from importlib.metadata import PackageNotFoundError, version
 
+    try:
         return version(dist)
-    except Exception:
+    except PackageNotFoundError:
         return "unknown"
 
 
@@ -191,17 +209,31 @@ def _op_counts(plan: list[Node]) -> dict[str, int]:
     return _count(n.label if n.label in OPS else "other" for n in plan if n.parent is not None)
 
 
-def payload(stats: RunStats, nodes: list[Node], operators: dict[int, Any] | None = None,
-            error: BaseException | None = None, lineage: bool = False) -> dict[str, Any]:
+def payload(
+    stats: RunStats,
+    nodes: list[Node],
+    operators: dict[int, Any] | None = None,
+    error: BaseException | None = None,
+    lineage: bool = False,
+) -> dict[str, Any]:
     """The event properties for a run: exactly what `report` would send."""
     operators = operators or {}
     plan = _walk(nodes)
     built = [operators[id(n)] for n in plan if id(n) in operators]
     sources = sorted({k for op in built for k in _source_kinds(op)})
     models = sorted(
-        ({"gateway": m.label[0], "model": m.label[1], "calls": m.calls, "cached_calls": m.cached_calls,
-          "prompt_tokens": m.prompt_tokens, "completion_tokens": m.completion_tokens,
-          "cost_usd": None if m.cost_usd is None else round(m.cost_usd, 6)} for m in stats.by_model.values()),
+        (
+            {
+                "gateway": m.label[0],
+                "model": m.label[1],
+                "calls": m.calls,
+                "cached_calls": m.cached_calls,
+                "prompt_tokens": m.prompt_tokens,
+                "completion_tokens": m.completion_tokens,
+                "cost_usd": None if m.cost_usd is None else round(m.cost_usd, 6),
+            }
+            for m in stats.by_model.values()
+        ),
         key=lambda m: -m["calls"],
     )
     latency = stats.latency()
@@ -234,26 +266,57 @@ def payload(stats: RunStats, nodes: list[Node], operators: dict[int, Any] | None
     }
 
 
-def report(stats: RunStats, nodes: list[Node], operators: dict[int, Any] | None = None,
-           error: BaseException | None = None, lineage: bool = False) -> None:
+def report(
+    stats: RunStats,
+    nodes: list[Node],
+    operators: dict[int, Any] | None = None,
+    error: BaseException | None = None,
+    lineage: bool = False,
+) -> None:
     """Send (or, in debug mode, print) the run's event. Never raises."""
     if _quiet:
         return
     _emit(EVENT, lambda: payload(stats, nodes, operators, error, lineage))
 
 
-def report_optimize(*, optimizer: str, step_op: str, metric: str, n_labels: int, n_val: int, budget: int,
-                    result: Any = None, seconds: float, error: BaseException | None = None) -> None:
+def report_optimize(
+    *,
+    optimizer: str,
+    step_op: str,
+    metric: str,
+    n_labels: int,
+    n_val: int,
+    budget: int,
+    result: Any = None,
+    seconds: float,
+    error: BaseException | None = None,
+) -> None:
     """One event for a whole `optimize()`: what was tuned and what it cost, never the prompts."""
 
     def properties() -> dict[str, Any]:
-        out = {**_common(), "ok": error is None, "error_type": _error_type(error), "optimizer": optimizer,
-               "step_op": step_op if step_op in OPS else "other", "metric": metric, "n_labels": n_labels,
-               "n_val": n_val, "budget": budget, "duration_s": round(seconds, 3)}
+        out = {
+            **_common(),
+            "ok": error is None,
+            "error_type": _error_type(error),
+            "optimizer": optimizer,
+            "step_op": step_op if step_op in OPS else "other",
+            "metric": metric,
+            "n_labels": n_labels,
+            "n_val": n_val,
+            "budget": budget,
+            "duration_s": round(seconds, 3),
+        }
         if result is not None:
-            out.update({"prompts_tried": result.tried, "prompts_kept": result.candidates,
-                        "lm_calls": result.lm_calls, "cost_usd": round(result.cost_usd, 6),
-                        "val_before": round(result.val_before, 4), "val_after": round(result.val_after, 4)})
+            out.update(
+                {
+                    "prompts_tried": result.tried,
+                    "prompts_kept": result.candidates,
+                    "lm_calls": result.lm_calls,
+                    "cost_usd": round(result.cost_usd, 6),
+                    "val_before": round(result.val_before, 4),
+                    "val_after": round(result.val_after, 4),
+                }
+            )
         return out
 
     _emit("optimize_completed", properties)
@@ -261,14 +324,23 @@ def report_optimize(*, optimizer: str, step_op: str, metric: str, n_labels: int,
 
 def report_server_started(*, local: bool, token: bool, retain: bool, default_lm: bool) -> None:
     """A TracePress server started: where it listens (local or not) and how it's set up, never the address."""
-    _emit("server_started", lambda: {**_common(), "local": local, "token": token, "retain": retain,
-                                     "default_lm": default_lm})
+    _emit(
+        "server_started",
+        lambda: {**_common(), "local": local, "token": token, "retain": retain, "default_lm": default_lm},
+    )
 
 
 def report_pipeline_registered(node: Node, *, replaced: bool) -> None:
     """A client registered a pipeline on a server: its shape, counted when it starts, not when it ends."""
-    _emit("pipeline_registered", lambda: {**_common(), "ops": _op_counts(_walk([node])), "replaced": replaced,
-                                          "pipelines": sorted({n.pipeline for n in _walk([node]) if n.pipeline})})
+    _emit(
+        "pipeline_registered",
+        lambda: {
+            **_common(),
+            "ops": _op_counts(_walk([node])),
+            "replaced": replaced,
+            "pipelines": sorted({n.pipeline for n in _walk([node]) if n.pipeline}),
+        },
+    )
 
 
 def _emit(event: str, properties) -> None:
@@ -297,8 +369,12 @@ def _emit(event: str, properties) -> None:
 def _send(body: dict[str, Any]) -> None:
     try:
         host = os.environ.get("TRACEPRESS_TELEMETRY_HOST", POSTHOG_HOST).rstrip("/")
-        request = urllib.request.Request(f"{host}/i/v0/e/", data=json.dumps(body).encode(),
-                                         headers={"Content-Type": "application/json"}, method="POST")
+        request = urllib.request.Request(
+            f"{host}/i/v0/e/",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
         urllib.request.urlopen(request, timeout=TIMEOUT).close()
     except Exception:
         pass
@@ -307,5 +383,5 @@ def _send(body: dict[str, Any]) -> None:
 @atexit.register
 def _flush() -> None:
     """Give in-flight events up to a second at exit; never hold up shutdown longer."""
-    for thread in list(_pending):
+    for thread in _pending:
         thread.join(timeout=1.0 / max(1, len(_pending)))

@@ -19,11 +19,14 @@ FAULTS = [
 
 def trail_lm():
     """Appends the newest step to the trail, so the result records the order steps were folded in."""
-    return FuncLM(lambda f: {"trail": f"{f['previous_trail']}|{f['text']}", "count": f["previous_trail"].count("|") + 1})
+    return FuncLM(
+        lambda f: {"trail": f"{f['previous_trail']}|{f['text']}", "count": f["previous_trail"].count("|") + 1}
+    )
 
 
 def count_lm():
     """Running updates say 'partial'; the full reduce counts the steps it was given."""
+
     def answer(f):
         if "current" in f:
             return {"summary": f"partial+{f['new_steps'].count('text')}"}
@@ -53,14 +56,23 @@ def collect_events(table):
 
 def test_fold_runs_children_in_order(harbor_dir):
     lm = trail_lm()
-    rows = steps_of(tp.read.harbor(harbor_dir)).group_by("trial").lm_fold("trail, text -> trail, count: int", lm=lm).collect()
+    rows = (
+        steps_of(tp.read.harbor(harbor_dir))
+        .group_by("trial")
+        .lm_fold("trail, text -> trail, count: int", lm=lm)
+        .collect()
+    )
     assert [(r.trial, r.trail, r.count) for r in rows] == [(t, "|1|2|3", 3) for t in TRIALS]
     assert lm.calls == 9
 
 
 def test_fold_init_and_validation(harbor_dir):
     steps = steps_of(tp.read.harbor(harbor_dir))
-    rows = steps.group_by("trial").lm_fold("trail, text -> trail, count: int", init={"trail": "start"}, lm=trail_lm()).collect()
+    rows = (
+        steps.group_by("trial")
+        .lm_fold("trail, text -> trail, count: int", init={"trail": "start"}, lm=trail_lm())
+        .collect()
+    )
     assert rows[0].trail == "start|1|2|3"
     with pytest.raises(ValueError, match="state field"):
         steps.group_by("trial").lm_fold("text -> trail")
@@ -73,7 +85,9 @@ def test_fold_init_and_validation(harbor_dir):
 @pytest.mark.parametrize("faults", FAULTS)
 def test_fold_replay_matches_batch(harbor_dir, faults):
     src = tp.read.harbor(harbor_dir)
-    fold = lambda s: steps_of(s).group_by("trial").lm_fold("trail, text -> trail, count: int", emit="update", lm=trail_lm())
+    fold = lambda s: (
+        steps_of(s).group_by("trial").lm_fold("trail, text -> trail, count: int", emit="update", lm=trail_lm())
+    )
     batch = contents(fold(src).collect())
     for seed in range(3):
         assert contents(fold(tp.replay(src, seed=seed, **faults)).collect()) == batch
@@ -81,7 +95,9 @@ def test_fold_replay_matches_batch(harbor_dir, faults):
 
 def test_fold_emits_provisional_rows_only_when_live(harbor_dir):
     src = tp.read.harbor(harbor_dir)
-    fold = lambda s: steps_of(s).group_by("trial").lm_fold("trail, text -> trail, count: int", emit="update", lm=trail_lm())
+    fold = lambda s: (
+        steps_of(s).group_by("trial").lm_fold("trail, text -> trail, count: int", emit="update", lm=trail_lm())
+    )
 
     batch_rows = [e.row for e in collect_events(fold(src)) if not isinstance(e, Closed)]
     assert all(r.final for r in batch_rows) and len(batch_rows) == 3
@@ -89,7 +105,10 @@ def test_fold_emits_provisional_rows_only_when_live(harbor_dir):
     live_rows = [e.row for e in collect_events(fold(tp.replay(src))) if not isinstance(e, Closed)]
     alpha = [r for r in live_rows if r.trial == "alpha__1"]
     assert [(r.trail, r.final, r.version) for r in alpha] == [
-        ("|1", False, 1), ("|1|2", False, 2), ("|1|2|3", False, 3), ("|1|2|3", True, 4),
+        ("|1", False, 1),
+        ("|1|2", False, 2),
+        ("|1|2|3", False, 3),
+        ("|1|2|3", True, 4),
     ]
 
 
@@ -137,7 +156,10 @@ def test_update_reduce_streams_provisional_then_full(harbor_dir):
     events = collect_events(update_reduce(tp.replay(tp.read.harbor(harbor_dir)), lm=lm))
     alpha = [e.row for e in events if not isinstance(e, Closed) and e.row.trial == "alpha__1"]
     assert [(r.summary, r.final) for r in alpha] == [
-        ("partial+1", False), ("partial+1", False), ("partial+1", False), ("full:3", True),
+        ("partial+1", False),
+        ("partial+1", False),
+        ("partial+1", False),
+        ("full:3", True),
     ]
     assert lm.calls == 3 * 3 + 3  # a running update per step, then a full reduce per trial
 
@@ -172,7 +194,9 @@ def test_emit_validation(harbor_dir):
 def test_downstream_reduce_uses_final_rows(harbor_dir):
     """A task-level reduce over provisional trial rows still sees only the final versions."""
     src = tp.replay(tp.read.harbor(harbor_dir), shuffle_within=4, seed=1)
-    per_trial = steps_of(src).group_by("trial").lm_fold("trail, text -> trail, count: int", emit="update", lm=trail_lm())
+    per_trial = (
+        steps_of(src).group_by("trial").lm_fold("trail, text -> trail, count: int", emit="update", lm=trail_lm())
+    )
     per_task = per_trial.group_by("task").reduce(lambda rows: {"trails": [r.trail for r in rows]})
     assert [r.trails for r in per_task.collect()] == [["|1|2|3", "|1|2|3"], ["|1|2|3"]]
 

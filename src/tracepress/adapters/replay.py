@@ -32,8 +32,16 @@ def _time(row: Row, columns: tuple[str, ...]) -> float | None:
 class ReplayAdapter(Adapter):
     bounded = False
 
-    def __init__(self, source: Adapter, speed: float | None, seed: int, drop_closes: float,
-                 shuffle_within: int, duplicates: float, time_columns: tuple[str, ...]):
+    def __init__(
+        self,
+        source: Adapter,
+        speed: float | None,
+        seed: int,
+        drop_closes: float,
+        shuffle_within: int,
+        duplicates: float,
+        time_columns: tuple[str, ...],
+    ):
         self.source = source
         self.levels = source.levels
         self.speed = speed
@@ -127,9 +135,15 @@ class ReplayAdapter(Adapter):
         return out
 
 
-def replay(source: Adapter, speed: float | None = None, seed: int = 0, drop_closes: float = 0.0,
-           shuffle_within: int = 0, duplicates: float = 0.0,
-           time_columns: tuple[str, ...] = TIME_COLUMNS) -> ReplayAdapter:
+def replay(
+    source: Adapter,
+    speed: float | None = None,
+    seed: int = 0,
+    drop_closes: float = 0.0,
+    shuffle_within: int = 0,
+    duplicates: float = 0.0,
+    time_columns: tuple[str, ...] = TIME_COLUMNS,
+) -> ReplayAdapter:
     """Replay a bounded source as a stream, in timestamp order.
 
     `speed=100` plays 100x faster than real time; `None` plays as fast as possible but

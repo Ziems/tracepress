@@ -149,14 +149,19 @@ class HarborAdapter(Adapter):
             if ctrf.exists():
                 data = await load_json(ctrf)
                 for test in (data.get("results") or {}).get("tests", []):
-                    yield RowAdded(Row((*trial.key, ("test", test.get("name"))), {
-                        **carried,
-                        "name": test.get("name"),
-                        "status": test.get("status"),
-                        "duration_ms": test.get("duration"),
-                        "message": test.get("message"),
-                        "trace": test.get("trace"),
-                    }))
+                    yield RowAdded(
+                        Row(
+                            (*trial.key, ("test", test.get("name"))),
+                            {
+                                **carried,
+                                "name": test.get("name"),
+                                "status": test.get("status"),
+                                "duration_ms": test.get("duration"),
+                                "message": test.get("message"),
+                                "trace": test.get("trace"),
+                            },
+                        )
+                    )
         else:
             path = trial.path / "agent" / "trajectory.json"
             if not path.exists():
@@ -175,8 +180,10 @@ async def _instruction(trial: Trial) -> str | None:
     if not path.exists():
         return None
     steps = step_rows(await load_json(path), trial.key, {})
-    return next((step.values["message"] for step, _ in steps
-                 if step.values["source"] == "user" and step.values["message"]), None)
+    return next(
+        (step.values["message"] for step, _ in steps if step.values["source"] == "user" and step.values["message"]),
+        None,
+    )
 
 
 def _is_trial_result(path: Path) -> dict | None:

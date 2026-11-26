@@ -14,15 +14,19 @@ from tracepress.pipelines.harbor import clip
 
 
 def pipeline(src):
-    return src.table("steps").group_by("trial").lm_fold(
-        "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool, concern",
-        instructions=(
-            "You are monitoring a coding agent live. The first step is the task it was given. "
-            "`previous_progress` is your running note on what the agent has done so far. Update it (at most "
-            "3 sentences) with the newest step. Set `stuck` if the agent seems to be looping or making no "
-            "headway, and give a short `concern` (or 'none')."
-        ),
-        emit="update",
+    return (
+        src.table("steps")
+        .group_by("trial")
+        .lm_fold(
+            "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool, concern",
+            instructions=(
+                "You are monitoring a coding agent live. The first step is the task it was given. "
+                "`previous_progress` is your running note on what the agent has done so far. Update it (at most "
+                "3 sentences) with the newest step. Set `stuck` if the agent seems to be looping or making no "
+                "headway, and give a short `concern` (or 'none')."
+            ),
+            emit="update",
+        )
     )
 
 
@@ -40,8 +44,11 @@ async def watch(table) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("path")
-    parser.add_argument("--lm", default="openrouter:openai/gpt-6-luna",
-                        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a plain DSPy model string")
+    parser.add_argument(
+        "--lm",
+        default="openrouter:openai/gpt-6-luna",
+        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a plain DSPy model string",
+    )
     parser.add_argument("--tasks", nargs="*")
     parser.add_argument("--limit", type=int, default=2)
     parser.add_argument("--speed", type=float, help="replay speed multiplier (default: as fast as possible)")
@@ -52,7 +59,9 @@ def main() -> None:
     src = tp.read.harbor(args.path, tasks=args.tasks, limit=args.limit)
     if args.batch:
         for row in pipeline(src).collect():
-            print(f"[{row.trial} FINAL] {'STUCK ' if row.stuck else ''}{clip(row.progress, 160)}  | concern: {clip(row.concern, 80)}")
+            print(
+                f"[{row.trial} FINAL] {'STUCK ' if row.stuck else ''}{clip(row.progress, 160)}  | concern: {clip(row.concern, 80)}"
+            )
         print(tp.last_run())
     else:
         asyncio.run(watch(pipeline(tp.replay(src, speed=args.speed))))
