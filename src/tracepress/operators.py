@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import itertools
 import json
 import logging
 from collections.abc import Callable
@@ -632,11 +633,17 @@ class JoinOp(Operator):
         self.columns = columns
         self.suffix = suffix
         self.right: dict[Any, Row] = {}  # match key -> right row
-        self.right_closed: list[Key] = []
+        self.right_closed: set[Key] = set()  # prefixes the right side has closed
         self.right_done = asyncio.Event()
         self.waiting: dict[Any, list[tuple[Row, bool]]] = {}  # match key -> rows waiting for it
+        self.waiting_under: dict[Key, int] = {}  # key prefix -> how many waiting rows are under it
         self.joined: dict[Any, dict[Key, Row]] = {}  # match key -> rows emitted, for re-emits
-        self.held: list[Key] = []  # closes held back behind waiting rows
+        self.joined_under: dict[Key, dict[Key, set]] = {}  # key prefix -> joined row keys under it -> their matches
+        self.unsettled: set = set()  # joined matches whose right row can still change
+        self.unsettled_under: dict[Key, int] = {}  # key prefix -> how many rows under it are joined to one
+        self.held: dict[int, Key] = {}  # closes held back behind their rows, numbered in arrival order
+        self.held_at: dict[Key, list[int]] = {}  # prefix -> the numbers of its held closes
+        self.holds = itertools.count()
 
     def left_match(self, row: Row) -> Any:
         return row.key[: self.depth] if self.on is None else tuple(row.get(n, None) for n in self.on)
@@ -649,14 +656,18 @@ class JoinOp(Operator):
             return True
         if self.on is not None:
             return False  # a column join can't know a value is missing until the right side ends
-        return match in self.right or any(is_prefix(p, match) for p in self.right_closed)
+        return match in self.right or self.closed_on_right(match)
+
+    def closed_on_right(self, match: Any) -> bool:
+        """Whether the right side closed `match` or a prefix of it: one set lookup per level."""
+        return any(match[:i] in self.right_closed for i in range(len(match) + 1))
 
     def settled(self, match: Any) -> bool:
         """Whether the right row for `match` can no longer change, so rows joined to it are done."""
         if self.right_done.is_set():
             return True
         right = self.right.get(match)
-        return (right is not None and right.final) or any(is_prefix(p, match) for p in self.right_closed)
+        return (right is not None and right.final) or self.closed_on_right(match)
 
     def merge(self, row: Row) -> Row | None:
         right = self.right.get(self.left_match(row))
@@ -674,7 +685,7 @@ class JoinOp(Operator):
         return Row(row.key, values, row.final and right.final, row.version, row._sources)
 
     def send(self, row: Row, updated: bool) -> None:
-        self.joined.setdefault(self.left_match(row), {})[row.key] = row
+        self.add_joined(self.left_match(row), row)
         merged = self.merge(row)
         if merged is not None:
             self.emit_row(merged, updated)
@@ -684,41 +695,143 @@ class JoinOp(Operator):
         if self.ready(match):
             self.send(row, updated)
         else:
-            self.waiting.setdefault(match, []).append((row, updated))
+            self.add_waiting(match, row, updated)
+
+    # The indexes change only through the methods below, so they always match the rows:
+    # waiting_under[p] counts the waiting rows with prefix p, joined_under[p] holds the joined
+    # rows with prefix p and their matches, and unsettled_under[p] counts the joined rows with
+    # prefix p whose match is in `unsettled`.
+
+    def add_waiting(self, match: Any, row: Row, updated: bool) -> None:
+        self.waiting.setdefault(match, []).append((row, updated))
+        _count(self.waiting_under, row.key, 1)
+
+    def take_waiting(self, match: Any) -> list[tuple[Row, bool]]:
+        rows = self.waiting.pop(match)
+        for row, _ in rows:
+            _count(self.waiting_under, row.key, -1)
+        return rows
+
+    def add_joined(self, match: Any, row: Row) -> None:
+        if match not in self.joined and not self.settled(match):
+            self.unsettled.add(match)
+        rows = self.joined.setdefault(match, {})
+        if row.key not in rows and match in self.unsettled:
+            _count(self.unsettled_under, row.key, 1)
+        rows[row.key] = row
+        for i in range(len(row.key) + 1):
+            self.joined_under.setdefault(row.key[:i], {}).setdefault(row.key, set()).add(match)
+
+    def forget_joined(self, prefix: Key) -> None:
+        """Forget the joined rows under `prefix`, under every match they were joined to."""
+        for key, matches in self.joined_under.pop(prefix, {}).items():
+            for match in matches:
+                rows = self.joined[match]
+                del rows[key]
+                if match in self.unsettled:
+                    _count(self.unsettled_under, key, -1)
+                if not rows:
+                    del self.joined[match]
+                    self.unsettled.discard(match)
+            for i in range(len(key) + 1):
+                if key[:i] != prefix:
+                    under = self.joined_under[key[:i]]
+                    del under[key]
+                    if not under:
+                        del self.joined_under[key[:i]]
+
+    def resettle(self, event: Any) -> list[Key]:
+        """Recheck whether the matches a right-side event touches are settled.
+
+        Returns the keys of the rows joined to them, whose closes may now go out.
+        """
+        if event is END:
+            self.unsettled.clear()  # the right side has ended: every match is settled
+            self.unsettled_under.clear()
+            return []
+        if isinstance(event, Closed):
+            if self.on is None and len(event.prefix) >= self.depth:
+                matches = [event.prefix] if len(event.prefix) == self.depth else []
+            else:
+                matches = [m for m in self.joined if is_prefix(event.prefix, m)]
+        else:
+            matches = [self.right_match(event.row)]
+        keys = []
+        for match in matches:
+            rows = self.joined.get(match, {})
+            unsettled = not self.settled(match)
+            if rows and unsettled != (match in self.unsettled):
+                (self.unsettled.add if unsettled else self.unsettled.discard)(match)
+                for key in rows:
+                    _count(self.unsettled_under, key, 1 if unsettled else -1)
+            keys.extend(rows)
+        return keys
+
+    # A held close goes out once no row under its prefix is waiting or joined to a match that
+    # can still change. Every release sends all the closes that can go, so the ones still held
+    # are blocked, and only a change to a row under one can unblock it: a release need only
+    # recheck the closes over the rows that changed.
 
     async def on_close(self, prefix: Key) -> None:
-        self.held.append(prefix)
-        self.release()
+        number = next(self.holds)
+        self.held[number] = prefix
+        self.held_at.setdefault(prefix, []).append(number)
+        self.release([prefix])
 
     def blocked(self, prefix: Key) -> bool:
         """Whether rows under `prefix` are still waiting for a match, or joined to one that can still change."""
-        waiting = (row.key for rows in self.waiting.values() for row, _ in rows)
-        unsettled = (key for match, rows in self.joined.items() if not self.settled(match) for key in rows)
-        return any(is_prefix(prefix, key) for key in (*waiting, *unsettled))
+        return bool(self.waiting_under.get(prefix) or self.unsettled_under.get(prefix))
 
-    def release(self) -> None:
-        still = []
-        for prefix in self.held:
+    def release(self, changed: list[Key] | None = None) -> None:
+        """Send each held close that is no longer blocked, in the order they arrived.
+
+        `changed` holds the keys of every row that stopped waiting or whose match settled since
+        the last release; None rechecks every held close. A key left out holds its close back.
+        """
+        if changed is None:
+            numbers = list(self.held)
+        else:
+            numbers = sorted({n for key in changed for i in range(len(key) + 1) for n in self.held_at.get(key[:i], ())})
+        for number in numbers:
+            prefix = self.held[number]
             if self.blocked(prefix):
-                still.append(prefix)
                 continue
+            del self.held[number]
+            self.held_at[prefix].remove(number)
+            if not self.held_at[prefix]:
+                del self.held_at[prefix]
             self.emit(Closed(prefix))
-            for match, rows in list(self.joined.items()):  # nothing more is emitted under a closed prefix
-                for key in [k for k in rows if is_prefix(prefix, k)]:
-                    del rows[key]
-                if not rows:
-                    del self.joined[match]
-        self.held = still
+            self.forget_joined(prefix)  # nothing more is emitted under a closed prefix
 
-    def flush(self) -> None:
-        for match in [k for k in self.waiting if self.ready(k)]:
-            for row, updated in self.waiting.pop(match):
+    def flush(self, candidates: list | None = None) -> list[Key]:
+        """Send the waiting rows whose match is now ready, checking only `candidates` if given.
+
+        Returns the keys of the rows sent.
+        """
+        matches = self.waiting if candidates is None else [m for m in candidates if m in self.waiting]
+        sent = []
+        for match in [k for k in matches if self.ready(k)]:
+            for row, updated in self.take_waiting(match):
                 self.send(row, updated)
-        self.release()
+                sent.append(row.key)
+        return sent
+
+    def unblocked_by(self, event: Any) -> list | None:
+        """The waiting matches a right-side event can make ready, or None for all of them."""
+        if event is END:
+            return None
+        if self.on is not None:
+            return []  # a column join's rows all wait for the right side to end
+        if isinstance(event, Closed):
+            if len(event.prefix) >= self.depth:
+                return [event.prefix] if len(event.prefix) == self.depth else []
+            return [m for m in self.waiting if is_prefix(event.prefix, m)]
+        return [self.right_match(event.row)]
 
     async def on_end(self) -> None:
         await self.right_done.wait()
         self.flush()
+        self.release()
 
     async def consume_right(self, queue: asyncio.Queue) -> None:
         while True:
@@ -726,7 +839,7 @@ class JoinOp(Operator):
             if event is END:
                 self.right_done.set()
             elif isinstance(event, Closed):
-                self.right_closed.append(event.prefix)
+                self.right_closed.add(event.prefix)
             else:
                 row = event.row
                 match = self.right_match(row)
@@ -744,9 +857,25 @@ class JoinOp(Operator):
                         merged = self.merge(left)
                         if merged is not None:
                             self.emit_row(merged, updated=True)
-            self.flush()
+            # Sending rows, resettling matches and releasing closes run with no await between
+            # them, so no close is judged while the indexes are halfway through an event.
+            sent = self.flush(self.unblocked_by(event))
+            resettled = self.resettle(event)
+            self.release(None if event is END else [*sent, *resettled])
             if event is END:
                 return
+
+
+def _count(counts: dict[Key, int], key: Key, delta: int) -> None:
+    """Add `delta` to the count of every prefix of `key`, dropping counts that reach zero."""
+    for i in range(len(key) + 1):
+        count = counts.get(key[:i], 0) + delta
+        if count < 0:
+            raise AssertionError(f"join: the count under {key[:i]} went below zero")  # an index out of step
+        if count:
+            counts[key[:i]] = count
+        else:
+            del counts[key[:i]]
 
 
 def _plain(values: dict[str, Any]) -> dict[str, Any]:
