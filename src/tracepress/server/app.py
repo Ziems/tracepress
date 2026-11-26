@@ -230,10 +230,19 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
         p.listeners.add(queue)
         if p.task is not None and p.task.done():
             queue.put_nowait(None)
-        try:
+
+        async def send():
             while (message := await queue.get()) is not None:
                 await ws.send_json(message)
+            await ws.close()  # ends the read loop below
+
+        sending = asyncio.ensure_future(send())
+        try:
+            async for _ in ws:  # clients send nothing; reading is what answers their close
+                pass
         finally:
+            sending.cancel()
+            await asyncio.gather(sending, return_exceptions=True)  # a send to a gone client just ends it
             p.listeners.discard(queue)
             await ws.close()
         return ws

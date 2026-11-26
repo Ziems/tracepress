@@ -126,6 +126,32 @@ def test_pipelines_named_with_url_characters_can_be_listened_to_and_unregistered
     assert client.pipelines() == []
 
 
+def test_a_listener_that_hangs_up_is_let_go_at_once(server):
+    """On an idle pipeline: the client's close is answered, and the server drops the listener."""
+    import gc
+    import time
+
+    import aiohttp
+
+    from tracepress.server.app import Pipeline
+
+    client = tp.connect(server.address)
+    client.declare({"steps": STEPS})
+    client.register(name="hangs-up", pipeline=client.source.steps.map(record_step, columns={}))
+
+    async def connect_and_hang_up():
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(f"ws://{server.address}/listen/hangs-up")
+            start = time.monotonic()
+            await ws.close()
+            return time.monotonic() - start
+
+    assert asyncio.run(connect_and_hang_up()) < 5  # aiohttp gives up waiting for the answer after 10 s
+    time.sleep(0.2)
+    (pipeline,) = [o for o in gc.get_objects() if isinstance(o, Pipeline) and o.name == "hangs-up"]
+    assert pipeline.listeners == set()
+
+
 SEEN: list = []
 
 
