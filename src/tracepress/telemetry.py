@@ -60,7 +60,8 @@ SOURCES = {
 }
 PUBLIC_ERROR_MODULES = ("builtins", "asyncio", "concurrent", "tracepress", "dspy", "litellm", "pydantic", "json")
 
-_pending: list[threading.Thread] = []
+_pending: list[threading.Thread] = []  # sends still in flight, for _flush to wait on at exit
+_pending_lock = threading.Lock()
 _quiet = 0
 _quiet_lock = threading.Lock()
 
@@ -285,8 +286,10 @@ def _emit(event: str, properties) -> None:
             return
         body = {"api_key": POSTHOG_API_KEY, "event": event, "distinct_id": distinct_id, "properties": props}
         thread = threading.Thread(target=_send, args=(body,), daemon=True)
-        _pending.append(thread)
-        thread.start()
+        with _pending_lock:
+            _pending[:] = [t for t in _pending if t.is_alive()]  # finished sends would pile up for the process's life
+            _pending.append(thread)
+            thread.start()  # under the lock: a thread not started yet isn't alive, and would be pruned
     except Exception:
         pass
 
