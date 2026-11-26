@@ -74,8 +74,7 @@ def configure(**kwargs: Any) -> Config:
         if not hasattr(_config, name):
             raise TypeError(f"unknown setting {name!r}")
         if name == "prices":
-            # Added to the prices so far (built-ins included), not a new table. Keyed by `lm.model`,
-            # the name `call_cost` looks up.
+            # Added to the prices so far (built-ins included), keyed by `lm.model`.
             value = {**_config.prices, **{model_name(model): price for model, price in value.items()}}
         setattr(_config, name, value)
     return _config
