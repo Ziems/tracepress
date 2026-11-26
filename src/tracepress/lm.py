@@ -28,7 +28,8 @@ SUGGESTED_LM = "openrouter:openai/gpt-6-luna"
 PORTKEY_BASE_URL = "https://api.portkey.ai/v1"
 
 # USD per million (input, output) tokens, for models DSPy's price table doesn't cover.
-# Extend with `tp.configure(prices={...})`, keyed by the model name (`lm.model`).
+# Keyed by `lm.model`. Extend with `tp.configure(prices={...})`, keyed by the model string you
+# configure (`openrouter:acme/x`) or by `lm.model` (`openrouter/acme/x`).
 PRICES = {
     "openrouter/openai/gpt-6-luna": (0.10, 0.50),
     # typesafe.ai lists $42 per billion input tokens; it lists no output price, so this assumes
@@ -73,7 +74,9 @@ def configure(**kwargs: Any) -> Config:
         if not hasattr(_config, name):
             raise TypeError(f"unknown setting {name!r}")
         if name == "prices":
-            value = {**_config.prices, **value}  # added to the prices so far (built-ins included), not a new table
+            # Added to the prices so far (built-ins included), not a new table. Keyed by `lm.model`,
+            # the name `call_cost` looks up.
+            value = {**_config.prices, **{model_name(model): price for model, price in value.items()}}
         setattr(_config, name, value)
     return _config
 
@@ -163,13 +166,16 @@ def make_lm(spec: str) -> dspy.LM:
 
 
 def model_name(spec: str) -> str:
-    """The `lm.model` of the LM `make_lm(spec)` builds, without building it or reading API keys."""
+    """The `lm.model` of the LM `make_lm(spec)` builds, without building it or reading API keys.
+
+    A Portkey slug's `@` is optional: `portkey:openai-prod/gpt-5` is `portkey:@openai-prod/gpt-5`.
+    """
     provider, sep, model = spec.partition(":")
     if sep and provider == "openrouter":
         return f"openrouter/{model}"
-    if sep and provider == "portkey":  # `portkey:openai-prod/gpt-5` and `portkey:@openai-prod/gpt-5` are the same model
+    if sep and provider == "portkey":
         return f"openai/{model if model.startswith('@') else '@' + model}"
-    return spec  # `typesafe:` specs, plain DSPy model strings and `lm.model` names are already the name
+    return spec
 
 
 def _labeled(lm: dspy.LM, gateway: str, model: str) -> dspy.LM:
@@ -243,7 +249,7 @@ def prices(*models: str):
 
     With no names, the configured prices: the built-ins plus `configure(prices=...)`. Name models, as you
     configure them (`openrouter:openai/gpt-6-luna`) or as `lm.model` names them, to look them up in DSPy's
-    price table too. Rows show the `lm.model` name, the key for `configure(prices=...)` and `costs()`.
+    price table too. Rows show the `lm.model` name, as `costs()` does.
     A model with no price shows NaN.
     """
     import pandas as pd

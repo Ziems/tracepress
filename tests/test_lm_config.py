@@ -52,6 +52,26 @@ def test_configuring_a_price_keeps_the_built_in_prices(monkeypatch):
     assert lm_config.call_cost("typesafe:jev-latest", 1_000_000, 0) == 0.042
 
 
+def test_configured_prices_take_the_model_strings_people_configure_without_api_keys(monkeypatch):
+    monkeypatch.setattr(tp.configure(), "prices", dict(lm_config.PRICES))
+    for key in ("OPENROUTER_API_KEY", "PORTKEY_API_KEY", "TYPESAFE_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    tp.configure(
+        prices={
+            "openrouter:acme/x": (1.0, 2.0),
+            "portkey:openai-prod/acme-y": (3.0, 4.0),
+            "openai/my-model": (0.50, 2.00),
+        }
+    )
+    assert lm_config.call_cost("openrouter/acme/x", 1_000_000, 0) == 1.0
+    assert lm_config.call_cost("openai/@openai-prod/acme-y", 1_000_000, 0) == 3.0
+    assert lm_config.call_cost("openai/my-model", 1_000_000, 0) == 0.50
+    assert "openrouter:acme/x" not in lm_config.config().prices
+    x = tp.prices("openrouter:acme/x").iloc[0]
+    assert (x.model, x.usd_per_1m_input, x.usd_per_1m_output, x.source) == ("openrouter/acme/x", 1.0, 2.0, "configured")
+    assert tp.prices("portkey:@openai-prod/acme-y").iloc[0].source == "configured"
+
+
 def test_prices_show_what_a_run_charges_and_where_it_comes_from(monkeypatch):
     monkeypatch.setattr(tp.configure(), "prices", dict(lm_config.PRICES))  # restored after the test
     tp.configure(prices={"openai/my-model": (0.50, 2.00)})

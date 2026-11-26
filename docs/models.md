@@ -124,10 +124,10 @@ holds what ended a run that didn't complete. During a live run, `tp.last_run()` 
 Cost is estimated from token counts. Prices come from the price table bundled with DSPy, plus
 built-in entries for the suggested model and Jev. When a provider reports a call's cost (OpenRouter
 does for models with no listed price), that's used instead. Add your own prices, in USD per
-million input and output tokens, keyed by the model name:
+million input and output tokens, keyed by the model string you configure or by its `lm.model` name:
 
 ```python
-tp.configure(prices={"openai/my-model": (0.50, 2.00)})
+tp.configure(prices={"openrouter:acme/new-model": (1.00, 4.00), "openai/my-model": (0.50, 2.00)})
 ```
 
 These are added to the prices already configured; an entry for a model that already has a
@@ -144,7 +144,7 @@ in DSPy's table too, as you pass them to `tp.configure(lm=...)` or as `lm.model`
 2                 ollama/llama3               NaN                NaN       NaN
 ```
 
-The `model` column shows `lm.model`, the name `costs()` and `tp.configure(prices=...)` use.
+The `model` column shows `lm.model`, the name `costs()` shows.
 
 The source is `built-in`, `configured` or `dspy`. These are the prices a run charges. A model with
 NaN here is unpriced unless its provider reports the cost, as OpenRouter does. DSPy lists some
