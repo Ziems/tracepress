@@ -314,34 +314,44 @@ def test_openllmetry_and_tool_calls(otel_file):
     assert [(c.trace[0], c.name) for c in calls] == [("a", "get_weather"), ("b", "read_file"), ("b", "log")]
 
 
-def test_a_user_message_that_repeats_earlier_text_is_its_own_step(tmp_path):
-    say = lambda role, text: {"role": role, "parts": [{"type": "text", "content": text}]}
-    chat = lambda sid, start, inputs, answer: span(
+def say(role, text):
+    return {"role": role, "parts": [{"type": "text", "content": text}]}
+
+
+def chat(sid, start, inputs, answer, parent=None):
+    return span(
         "e" * 32,
         sid,
         "chat",
         start,
         start + 1,
+        parent=parent,
         **{
             "gen_ai.operation.name": "chat",
             "gen_ai.input.messages": json.dumps(inputs),
             "gen_ai.output.messages": json.dumps([say("assistant", answer)]),
         },
     )
-    first = [say("user", "Tell me a joke"), say("assistant", "Joke one."), say("user", "another")]
+
+
+JOKES = [
+    say("user", "Tell me a joke"),
+    say("assistant", "Joke one."),
+    say("user", "another"),
+    say("assistant", "Joke two."),
+    say("user", "another"),
+]
+
+
+def test_a_user_message_that_repeats_earlier_text_is_its_own_step(tmp_path):
     path = tmp_path / "traces.jsonl"
     path.write_text(
         json.dumps(
             request(
                 [
-                    chat("00000000000000e1", 0, first[:1], "Joke one."),
-                    chat("00000000000000e2", 2, first, "Joke two."),
-                    chat(
-                        "00000000000000e3",
-                        4,
-                        first + [say("assistant", "Joke two."), say("user", "another")],
-                        "Joke three.",
-                    ),
+                    chat("00000000000000e1", 0, JOKES[:1], "Joke one."),
+                    chat("00000000000000e2", 2, JOKES[:3], "Joke two."),
+                    chat("00000000000000e3", 4, JOKES, "Joke three."),
                 ]
             )
         )
@@ -354,6 +364,36 @@ def test_a_user_message_that_repeats_earlier_text_is_its_own_step(tmp_path):
         ("agent", "Joke two."),
         ("user", "another"),
         ("agent", "Joke three."),
+    ]
+
+
+def test_a_trimmed_or_resent_conversation_keeps_each_user_turn_once(tmp_path):
+    path = tmp_path / "traces.jsonl"
+    path.write_text(
+        json.dumps(
+            request(
+                [
+                    chat("00000000000000e1", 0, JOKES[:1], "Joke one.", parent="00000000000000d1"),
+                    chat("00000000000000e2", 2, JOKES[:3], "Joke two.", parent="00000000000000d1"),
+                    chat(
+                        "00000000000000e3", 4, JOKES[2:], "Joke three.", parent="00000000000000d1"
+                    ),  # history trimmed to 3 messages
+                    chat(
+                        "00000000000000e4", 6, JOKES[2:], "It's funny.", parent="00000000000000d2"
+                    ),  # another node, same input
+                ]
+            )
+        )
+    )
+    steps = tp.read.otel(path).table("steps").collect()
+    assert [(s.source, s.message) for s in steps] == [
+        ("user", "Tell me a joke"),
+        ("agent", "Joke one."),
+        ("user", "another"),
+        ("agent", "Joke two."),
+        ("user", "another"),
+        ("agent", "Joke three."),
+        ("agent", "It's funny."),
     ]
 
 

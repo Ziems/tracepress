@@ -502,11 +502,10 @@ class TraceSteps:
     """Builds one trace's steps as its spans arrive, in start order (a file) or end order (live).
 
     An LLM span becomes an agent step: its output's text, reasoning and tool calls, preceded by
-    a user step for each user message its input adds to the conversation of its scope (parent
-    span). A tool span fills in the result of the call that requested it, or becomes a step of
-    its own if no LLM span asked for it. A step is released once all its calls have results, a
-    later LLM call of the same agent arrives, or the trace finishes, and steps are released in
-    order.
+    a user step for any new user message in its input. A tool span fills in the result of the
+    call that requested it, or becomes a step of its own if no LLM span asked for it. A step is
+    released once all its calls have results, a later LLM call of the same agent arrives, or
+    the trace finishes, and steps are released in order.
     """
 
     def __init__(self, service_name: str | None = None):
@@ -514,7 +513,7 @@ class TraceSteps:
         self.steps: list[dict] = []
         self.released = 0
         self.calls: dict[str, dict] = {}
-        self.heard: dict[str | None, int] = {}  # scope -> input messages its LLM calls have already sent
+        self.said: Counter[str] = Counter()  # user message text -> user steps with that text
         self.agents: dict[str | None, str | None] = {}  # span id -> agent name, for agent spans seen so far
         self.parents: dict[str | None, str | None] = {}
 
@@ -583,15 +582,17 @@ class TraceSteps:
             if step["_scope"] == span.parent_id:
                 step["_open"] = False  # the agent moved on to its next call
         last_assistant = max((i for i, m in enumerate(inputs) if m["role"] == "assistant"), default=-1)
-        heard = self.heard.get(span.parent_id, 0)
-        self.heard[span.parent_id] = max(heard, len(inputs))
-        for i, m in enumerate(inputs[last_assistant + 1 :], last_assistant + 1):
+        sent = Counter(m["text"] for m in inputs[: last_assistant + 1] if m["role"] == "user")
+        for m in inputs[last_assistant + 1 :]:
             if m["role"] == "tool":
                 call = self.calls.get(m["tool_call_id"])
                 if call is not None and not call["_done"]:
                     call["result"], call["_done"] = m["text"], True
-            elif m["role"] == "user" and m["text"] and i >= heard:  # each call resends the conversation so far
-                self._step("user", span, message=m["text"], agent_name=None)
+            elif m["role"] == "user" and m["text"]:
+                sent[m["text"]] += 1
+                if sent[m["text"]] > self.said[m["text"]]:  # each call resends the conversation so far
+                    self.said[m["text"]] += 1
+                    self._step("user", span, message=m["text"], agent_name=None)
         answer = [m for m in outputs if m["role"] in ("assistant", "model", "")] or outputs
         tokens_in, tokens_out = _tokens(span)
         step = self._step(
