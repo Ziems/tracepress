@@ -1,7 +1,7 @@
 import asyncio
 
-import pandas as pd
 import dspy
+import pandas as pd
 import pytest
 from dspy.utils import DummyLM
 from fakes import FuncLM
@@ -340,8 +340,13 @@ def test_usage_counts_every_request_a_call_makes():
 
         def _answer(self, request):
             self.calls += 1
-            return Response(id=None, model="func", message=Message.assistant([TextPart("a topic")]),
-                            finish_reason="stop", usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2))
+            return Response(
+                id=None,
+                model="func",
+                message=Message.assistant([TextPart("a topic")]),
+                finish_reason="stop",
+                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+            )
 
     cases = [
         (FuncLM(lambda fields: {"topic": "t"}), dspy.JSONAdapter(), dspy.ChatAdapter()),  # parsed by the fallback

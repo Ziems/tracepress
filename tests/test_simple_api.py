@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from typing import Any
 
 import pytest
 from fakes import FuncLM
@@ -29,7 +30,7 @@ def test_tables_as_attributes(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     assert src.steps.schema == src.table("steps").schema
     with pytest.raises(AttributeError, match="no attribute or table 'stepz'"):
-        src.stepz
+        _ = src.stepz
 
 
 def test_step_input_is_the_whole_step(harbor_dir):
@@ -67,8 +68,11 @@ def test_join_needs_a_prefix(harbor_dir):
 def test_reduce_lifts_group_constants_and_carries_them(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     lm = echo(what_went_wrong="nothing")
-    per_trial = (src.steps.join(src.trials, on="trial").group_by("trial")
-                 .lm_reduce("instruction, reward, message -> what_went_wrong", lm=lm))
+    per_trial = (
+        src.steps.join(src.trials, on="trial")
+        .group_by("trial")
+        .lm_reduce("instruction, reward, message -> what_went_wrong", lm=lm)
+    )
     rows = per_trial.collect()
     assert len(rows) == 3
     call = next(f for f in lm.seen if f["instruction"] == "Please solve alpha.")
@@ -77,17 +81,21 @@ def test_reduce_lifts_group_constants_and_carries_them(harbor_dir):
     # Trial-level columns ride along onto the per-trial rows, for the next level up.
     assert {r.trial: r.reward for r in rows} == {"alpha__1": 1.0, "alpha__2": 0.0, "beta__1": 1.0}
     assert rows[0].model == "anthropic/claude-opus-5"
-    assert "reward" in per_trial.schema.columns
+    assert per_trial.schema.columns is not None and "reward" in per_trial.schema.columns
 
 
 def test_hierarchy_compares_trials_by_model(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     summaries = src.steps.lm_map("step -> summary", lm=echo(summary="s"))
-    trajectories = summaries.join(src.trials, on="trial").group_by("trial").lm_reduce(
-        "instruction, reward, summary -> trajectory_summary", lm=echo(trajectory_summary="t"))
+    trajectories = (
+        summaries.join(src.trials, on="trial")
+        .group_by("trial")
+        .lm_reduce("instruction, reward, summary -> trajectory_summary", lm=echo(trajectory_summary="t"))
+    )
     lm = echo(where_they_diverged="here")
     contrast = trajectories.group_by("task").lm_reduce(
-        "model, reward, trajectory_summary -> where_they_diverged", lm=lm)
+        "model, reward, trajectory_summary -> where_they_diverged", lm=lm
+    )
     rows = contrast.collect()
     assert [r.task for r in rows] == ["bench/alpha", "bench/beta"]
     trials = json.loads(next(f["trials"] for f in lm.seen if "1.0" in f["trials"] and "0.0" in f["trials"]))
@@ -106,8 +114,12 @@ def test_reduce_over_whole_steps(harbor_dir):
 def test_fold_reads_whole_step_and_constants(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     lm = echo(progress="p")
-    rows = (src.steps.join(src.trials, on="trial").group_by("trial")
-            .lm_fold("progress, instruction, step -> progress", lm=lm).collect())
+    rows = (
+        src.steps.join(src.trials, on="trial")
+        .group_by("trial")
+        .lm_fold("progress, instruction, step -> progress", lm=lm)
+        .collect()
+    )
     assert len(rows) == 3
     assert lm.seen[0]["instruction"] == "Please solve alpha."
     assert json.loads(lm.seen[0]["step"])["message"] == "Please solve alpha."
@@ -149,7 +161,13 @@ def test_join_waits_for_late_matches():
     joined = src.steps.join(src.trials, on="trial")
     rows = joined.collect()
     assert [(r.msg, r.get("reward", None)) for r in rows] == [
-        ("t1-1", 1.0), ("t1-2", 1.0), ("t2-1", 0.0), ("t2-2", 0.0), ("t3-1", None), ("t3-2", None)]
+        ("t1-1", 1.0),
+        ("t1-2", 1.0),
+        ("t2-1", 0.0),
+        ("t2-2", 0.0),
+        ("t3-1", None),
+        ("t3-2", None),
+    ]
     # Each trial's close comes after its joined rows, so reduces downstream see every step.
     counts = joined.group_by("trial").reduce(lambda rs: {"n": len(rs), "r": rs[0].get("reward", None)}).collect()
     assert [(r.trial, r.n, r.r) for r in counts] == [("t1", 2, 1.0), ("t2", 2, 0.0), ("t3", 2, None)]
@@ -199,8 +217,9 @@ def test_join_stops_cleanly_when_a_run_fails():
 
 def test_join_needs_on(harbor_dir):
     src = tp.read.harbor(harbor_dir)
+    options: dict[str, Any] = {}
     with pytest.raises(TypeError):
-        src.steps.join(src.trials)
+        src.steps.join(src.trials, **options)
 
 
 def test_join_on_a_level_must_be_the_others_deepest(harbor_dir):
@@ -227,7 +246,7 @@ def test_join_on_a_column(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     per_model = src.trials.group_by("model").reduce(lambda rs: {"runs": len(rs)}, columns={"runs": int})
     joined = src.trials.join(per_model, on="model")
-    assert joined.schema.columns["runs"] is int
+    assert joined.schema.columns is not None and joined.schema.columns["runs"] is int
     rows = joined.collect()
     assert len(rows) == 4 and {r.runs for r in rows} == {4}  # every fixture run uses the same model
 
@@ -238,8 +257,7 @@ class Kinds(Adapter):
     levels = ("trial", "step")
 
     def tables(self):
-        return {"steps": Schema(self.levels, {"kind": str}),
-                "kinds": Schema(("row",), {"kind": str, "label": str})}
+        return {"steps": Schema(self.levels, {"kind": str}), "kinds": Schema(("row",), {"kind": str, "label": str})}
 
     def __init__(self, kinds):
         self.lookup = kinds
@@ -260,8 +278,14 @@ def test_column_join_waits_for_the_whole_lookup_and_keeps_closes_in_order():
     src = Kinds([("read", "Read a file"), ("edit", "Edited a file")])
     joined = src.steps.join(src.kinds, on="kind")
     labels = [(r.trial, r.kind, r.get("label", None)) for r in joined.collect()]
-    assert labels == [("t1", "read", "Read a file"), ("t1", "edit", "Edited a file"), ("t1", "other", None),
-                      ("t2", "read", "Read a file"), ("t2", "edit", "Edited a file"), ("t2", "other", None)]
+    assert labels == [
+        ("t1", "read", "Read a file"),
+        ("t1", "edit", "Edited a file"),
+        ("t1", "other", None),
+        ("t2", "read", "Read a file"),
+        ("t2", "edit", "Edited a file"),
+        ("t2", "other", None),
+    ]
     counts = joined.group_by("trial").reduce(lambda rs: {"n": len(rs)}).collect()
     assert [r.n for r in counts] == [3, 3]
     inner = src.steps.join(src.kinds, on="kind", how="inner").collect()

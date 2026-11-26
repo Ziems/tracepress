@@ -2,7 +2,7 @@
 
 import pandas as pd
 import pytest
-from fakes import FIELD, FuncLM
+from fakes import FuncLM
 
 import tracepress as tp
 
@@ -26,8 +26,9 @@ class Reflector:
 
 
 def detector(src, lm):
-    return src.steps.group_by("trial").lm_reduce("trial, message -> doom_loop: bool", lm=lm,
-                                                instructions="Did the agent loop?")
+    return src.steps.group_by("trial").lm_reduce(
+        "trial, message -> doom_loop: bool", lm=lm, instructions="Did the agent loop?"
+    )
 
 
 def test_optimize_finds_better_instructions(harbor_dir):

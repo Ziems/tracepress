@@ -36,36 +36,38 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
   - `portkey:<provider slug>/<model>` (Portkey Model Catalog) needs `PORTKEY_API_KEY`.
   - `typesafe:jev-latest` (TypeSafe's Jev) needs `TYPESAFE_API_KEY`.
   - A plain DSPy model string, with no `provider:` prefix, also works.
-- **Strongly prefer Jev for every stage where classification alone is enough.** Whenever a
-  stage's job is to classify, flag, pick or score (did this step fail? which agent? which error
-  mode? how severe?), recommend `lm="typesafe:jev-latest"` for it by default. It's far cheaper
-  and faster than a generative model, and on Who&When Pro it matched GPT-6-luna's accuracy at
-  about a third of the cost, in seconds instead of minutes. Design pipelines so the deciding
-  stages are classification-only, and keep generative models for stages that must write text
-  (notes, summaries, explanations), mixing the two per operator with `lm=`: e.g. a generative
-  `lm_map` that writes notes, then a Jev stage that decides from them.
-  - Jev answers only decision outputs, with probabilities: `Noul` (yes/no),
-    `Annotated[Literal[...], Choice]` (one of fixed options) or `Score`, all from
-    `dspy.experimental`. Use a class signature, and give every decision output a `desc`, which Jev
-    reads as the question. A stage with any `str` output can't run on Jev.
-  - Don't add a free-text `reason` to a classification stage just to justify the label; that
-    forces a generative model. Add one only if the user wants explanations.
-  - Jev needs `TYPESAFE_API_KEY`. If it isn't set, tell the user Jev is the recommended choice
-    for these stages and ask them to add a key, or fall back to the generative model they chose.
+- **Decision stages can use typed outputs.** When a stage's job is to classify, flag, pick or
+  score (did this step fail? which agent? which error mode? how severe?), give it decision
+  outputs instead of free text: `Noul` (yes/no), `Annotated[Literal[...], Choice]` (one of fixed
+  options) or `Score`, all from `dspy.experimental`. Use a class signature, and give every
+  decision output a `desc` stating the question. These run on any configured model, and the
+  labels are easier to count and filter than prose.
+  - Don't add a free-text `reason` to a classification stage just to justify the label. Add one
+    only if the user wants explanations.
+  - Stages can use different models, set per operator with `lm=`: e.g. a generative `lm_map`
+    that writes notes, then a decision stage on another model. Use the model the user configured
+    unless they ask for a different one per stage.
+  - Classification-only models such as `typesafe:jev-latest` can run a stage only if every output
+    is a decision output (no `str`). Use one only if the user asks for it and its key is already
+    set.
 
   ```python
   from typing import Annotated, Literal
   import dspy
   from dspy.experimental import Choice, Noul
 
+
   class Triage(dspy.Signature):
       """Judge one step of an agent's trace."""
+
       message: str = dspy.InputField()
       failed: Noul = dspy.OutputField(desc="Did this step fail?")
       kind: Annotated[Literal["tool", "reasoning", "planning"], Choice] = dspy.OutputField(
-          desc="What kind of mistake it is, if any")
+          desc="What kind of mistake it is, if any"
+      )
 
-  judged = steps.lm_map(Triage, lm="typesafe:jev-latest")
+
+  judged = steps.lm_map(Triage)
   ```
 
   Keys are loaded from `.env` in the working directory. Override the model per operator with
@@ -78,8 +80,8 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    ```python
    import tracepress as tp
 
-   tp.configure(lm="openrouter:openai/gpt-6-luna")         # required; suggested model, or the user's choice
-   src = tp.read.harbor("path/to/job_or_trials_dir")      # or tasks=[...], limit=N
+   tp.configure(lm="openrouter:openai/gpt-6-luna")  # required; suggested model, or the user's choice
+   src = tp.read.harbor("path/to/job_or_trials_dir")  # or tasks=[...], limit=N
    trials = src.table("trials").to_pandas()
    trials.groupby("task").reward.mean().sort_values()
    ```
@@ -122,20 +124,31 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    ```python
    import dspy
 
-   failed_tests = (src.tests.filter(lambda r: r.status != "passed").group_by("trial")
-                   .reduce(lambda rs: {"failed_tests": ", ".join(r.name.split("::")[-1] for r in rs)},
-                           columns={"failed_tests": str}))
+   failed_tests = (
+       src.tests.filter(lambda r: r.status != "passed")
+       .group_by("trial")
+       .reduce(lambda rs: {"failed_tests": ", ".join(r.name.split("::")[-1] for r in rs)}, columns={"failed_tests": str})
+   )
 
-   notes = src.steps.lm_map("step -> what_happened, is_mistake: bool",
-                            instructions="Summarize this step in one sentence; was it a mistake? "
-                                         "For a user step (the first is the task), say what the agent was asked to do.")
-   per_trial = notes.join(src.trials, on="trial").join(failed_tests, on="trial").group_by("trial").lm_reduce(
-       "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
-       instructions="... explain the failure using the verifier's failed tests.")
+   notes = src.steps.lm_map(
+       "step -> what_happened, is_mistake: bool",
+       instructions="Summarize this step in one sentence; was it a mistake? "
+       "For a user step (the first is the task), say what the agent was asked to do.",
+   )
+   per_trial = (
+       notes.join(src.trials, on="trial")
+       .join(failed_tests, on="trial")
+       .group_by("trial")
+       .lm_reduce(
+           "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
+           instructions="... explain the failure using the verifier's failed tests.",
+       )
+   )
    per_task = per_trial.group_by("task").lm_reduce(
        "task, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
        instructions="Write each failure as what the agent was supposed to do and what it did instead.",
-       module=dspy.ChainOfThought)
+       module=dspy.ChainOfThought,
+   )
    ```
 
    Before writing it, read "Getting good output" below: which operators get Chain of Thought,
@@ -192,9 +205,9 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 
    ```python
    detector = src.steps.group_by("trial").lm_reduce("source, message, tool_calls -> doom_loop: bool")
-   tuned = detector.optimize(labels, metric="doom_loop")   # labels: DataFrame with trial, doom_loop
-   print(tuned.optimize_report)                            # held-out score before and after
-   tuned.instructions                                      # show the user the tuned prompt
+   tuned = detector.optimize(labels, metric="doom_loop")  # labels: DataFrame with trial, doom_loop
+   print(tuned.optimize_report)  # held-out score before and after
+   tuned.instructions  # show the user the tuned prompt
    ```
 
    Only that step reruns per candidate prompt, so it's cheap, but it needs enough labels to hold
@@ -205,8 +218,8 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 
    ```python
    notes_rows, trial_rows, task_rows = tp.collect(notes, per_trial, per_task)  # shared work runs once
-   tp.last_run()   # calls, errors, fallbacks, timeouts, tokens, seconds; .latency() for percentiles
-   tp.last_run().status   # "completed", "failed" or "cancelled"; .error says why
+   tp.last_run()  # calls, errors, fallbacks, timeouts, tokens, seconds; .latency() for percentiles
+   tp.last_run().status  # "completed", "failed" or "cancelled"; .error says why
    ```
 
    A run with skipped rows is still `completed`, so check `errors` as well as `status`.
@@ -218,8 +231,8 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    steps.
 
    ```python
-   df = tp.rows_to_pandas(notes_rows)                 # key levels become columns
-   df[(df.trial == "some-trial") & df.is_mistake]     # the steps behind a trial's failure
+   df = tp.rows_to_pandas(notes_rows)  # key levels become columns
+   df[(df.trial == "some-trial") & df.is_mistake]  # the steps behind a trial's failure
    ```
 
    To see exactly what a conclusion was built from, collect with lineage and walk down. Each
@@ -229,15 +242,15 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    top = overall.collect(lineage=True)[0]
    for task in top.inputs():
        print(task.task, task.common_failures)
-   task.inputs()[0].inputs()                          # a run's steps
+   task.inputs()[0].inputs()  # a run's steps
    ```
 
    To test a hypothesis ("would this cause go away if run t1 had passed?"), rerun with an edit.
    Only the reduces above the edited rows make new LM calls; check `tp.last_run()`:
 
    ```python
-   what_if = overall.rerun(edit={("trial", "t1"): ("trial", "t2")})   # t1 as if it had gone like t2
-   what_if = overall.rerun(edit={("trial", "t1"): {"reward": 1.0}})   # or just change columns
+   what_if = overall.rerun(edit={("trial", "t1"): ("trial", "t2")})  # t1 as if it had gone like t2
+   what_if = overall.rerun(edit={("trial", "t1"): {"reward": 1.0}})  # or just change columns
    ```
 
    To ask a new question without redoing the step-level work, feed results back in:
@@ -293,9 +306,9 @@ paper (arXiv:2601.11868). Try these before writing your own failure analysis whe
 ```python
 from tracepress.pipelines import harbor
 
-modes = harbor.trajectory_taxonomy(src)            # one row per (failed trial, failure mode)
-wide = harbor.trajectory_labels_wide(modes.collect())   # one dict per trial, plus class rollups
-commands = harbor.step_taxonomy(src)               # one row per failed tool call
+modes = harbor.trajectory_taxonomy(src)  # one row per (failed trial, failure mode)
+wide = harbor.trajectory_labels_wide(modes.collect())  # one dict per trial, plus class rollups
+commands = harbor.step_taxonomy(src)  # one row per failed tool call
 ```
 
 - `trajectory_taxonomy(src, failed_only=True, modes=TRAJECTORY_MODES)`: each agent step is

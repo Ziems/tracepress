@@ -55,11 +55,12 @@ the adapter's choice. Existing adapters to copy from:
    from tracepress.rows import Closed, Event, Row, RowAdded
    from tracepress.schema import Schema
 
+
    class MyAdapter(Adapter):
        levels = ("session", "message")
-       bounded = True                      # False for a live source
+       bounded = True  # False for a live source
 
-       def __init__(self, sessions):       # parsed or indexed input
+       def __init__(self, sessions):  # parsed or indexed input
            self.sessions = sessions
 
        def tables(self) -> dict[str, Schema]:
@@ -75,10 +76,13 @@ the adapter's choice. Existing adapters to copy from:
                    yield RowAdded(Row(key, {"agent": s["agent"], "succeeded": s["ok"]}))
                else:
                    for i, m in enumerate(s["messages"]):
-                       yield RowAdded(Row((*key, ("message", i)),
-                                          {"agent": s["agent"], "role": m["role"],
-                                           "content": m["text"], "timestamp": m["ts"]}))
-               yield Closed(key)           # this session is complete
+                       yield RowAdded(
+                           Row(
+                               (*key, ("message", i)),
+                               {"agent": s["agent"], "role": m["role"], "content": m["text"], "timestamp": m["ts"]},
+                           )
+                       )
+               yield Closed(key)  # this session is complete
    ```
 
    **Closure rules.** The engine depends on these; break them and reduces silently go wrong.
@@ -105,10 +109,15 @@ the adapter's choice. Existing adapters to copy from:
    - check closure by replay-vs-batch equivalence, which catches closes emitted too early:
      ```python
      src = read_myformat(fixture)
-     batch = [(r.key, r.values) for r in src.table("messages").group_by("session").reduce(lambda rs: {"n": len(rs)}).collect()]
+     batch = [
+         (r.key, r.values) for r in src.table("messages").group_by("session").reduce(lambda rs: {"n": len(rs)}).collect()
+     ]
      for seed in range(3):
          live = tp.replay(src, seed=seed, shuffle_within=4, duplicates=0.3)
-         assert [(r.key, r.values) for r in live.table("messages").group_by("session").reduce(lambda rs: {"n": len(rs)}).collect()] == batch
+         assert [
+             (r.key, r.values)
+             for r in live.table("messages").group_by("session").reduce(lambda rs: {"n": len(rs)}).collect()
+         ] == batch
      ```
    - run `uv run pytest`
 

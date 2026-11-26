@@ -1,6 +1,6 @@
 """The Terminal-Bench failure taxonomies over a Harbor job: per-trial failure modes and per-command errors.
 
-    uv run python examples/harbor_taxonomy.py example_harbor_jobs/trials --tasks wal-recovery-ordering --limit 4
+uv run python examples/harbor_taxonomy.py example_harbor_jobs/trials --tasks wal-recovery-ordering --limit 4
 """
 
 import argparse
@@ -15,8 +15,11 @@ from tracepress.pipelines import harbor
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("path")
-    parser.add_argument("--lm", default="openrouter:openai/gpt-6-luna",
-                        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a plain DSPy model string")
+    parser.add_argument(
+        "--lm",
+        default="openrouter:openai/gpt-6-luna",
+        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a plain DSPy model string",
+    )
     parser.add_argument("--tasks", nargs="*")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--all-trials", action="store_true", help="judge passing trials too")
@@ -45,10 +48,16 @@ def main() -> None:
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({
-        "trials": wide,
-        "commands": [r.to_dict() for r in command_rows],
-    }, indent=2, default=str))
+    out.write_text(
+        json.dumps(
+            {
+                "trials": wide,
+                "commands": [r.to_dict() for r in command_rows],
+            },
+            indent=2,
+            default=str,
+        )
+    )
     print(f"wrote {out}")
 
 

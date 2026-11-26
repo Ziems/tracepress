@@ -42,9 +42,9 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
    ```python
    import tracepress as tp
 
-   tp.configure(lm="openrouter:openai/gpt-6-luna")         # required; suggested model, or the user's choice
+   tp.configure(lm="openrouter:openai/gpt-6-luna")  # required; suggested model, or the user's choice
    src = tp.read.harbor("path/to/trials", tasks=["some-task"], limit=2)
-   live = tp.replay(src, speed=60)      # 60x real time; speed=None = as fast as possible
+   live = tp.replay(src, speed=60)  # 60x real time; speed=None = as fast as possible
    ```
 
    Fault injection (seeded with `seed=`) tests robustness: `shuffle_within=k` (out-of-order rows),
@@ -57,11 +57,15 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 
    ```python
    # Keep the user step (the task) so the note knows what the agent is meant to be doing.
-   monitor = src_or_live.table("steps").group_by("trial").lm_fold(
-       "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool, concern",
-       instructions="Update your running note on the agent (max 3 sentences); flag stuck/looping.",
-       emit="update",            # provisional row after every step (live sources only)
-       init={"progress": ""},    # optional; defaults to "", [], 0 or False by type
+   monitor = (
+       src_or_live.table("steps")
+       .group_by("trial")
+       .lm_fold(
+           "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool, concern",
+           instructions="Update your running note on the agent (max 3 sentences); flag stuck/looping.",
+           emit="update",  # provisional row after every step (live sources only)
+           init={"progress": ""},  # optional; defaults to "", [], 0 or False by type
+       )
    )
    ```
 
@@ -76,11 +80,10 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
      Then the note can say what the agent is meant to be doing, not only what it just did.
    - **No Chain of Thought on per-step folds.** Every step is a sequential call, so it slows the
      whole stream. Save it for a final reduce over the finished notes, if there is one.
-   - **Use Jev for live flags.** A fold's state is text, so the fold itself needs a generative
-     model. But any per-step check where classification alone is enough (is this step stuck?
-     risky? off-task?) should run on Jev by default: an `lm_map` with a `Noul` or `Choice` output
-     and `lm="typesafe:jev-latest"`. It returns in a fraction of the time, which matters most
-     when alerting as steps arrive. See the analyze-traces skill for decision signatures.
+   - **Typed outputs for live flags.** A fold's state is text, so the fold itself needs a
+     generative model. A per-step check where classification alone is enough (is this step
+     stuck? risky? off-task?) can be a separate `lm_map` with a `Noul` or `Choice` output, which
+     is easy to alert on as steps arrive. See the analyze-traces skill for decision signatures.
 
 3. **Or keep a provisional reduce.** `lm_reduce(..., emit="update")` (or `tp.every(n)`) updates a
    running result as children arrive, and finishes with a full reduce when the group closes. The
@@ -89,10 +92,10 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 4. **Consume events.**
 
    ```python
-   async for event in monitor.events():          # inside asyncio / Jupyter
+   async for event in monitor.events():  # inside asyncio / Jupyter
        if isinstance(event, tp.Closed):
            continue
-       row = event.row                           # row.final, row.version, row.trial, row.progress...
+       row = event.row  # row.final, row.version, row.trial, row.progress...
        print(row.trial, "FINAL" if row.final else f"v{row.version}", row.progress)
    ```
 
@@ -107,6 +110,7 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
    ```python
    def contents(rows):
        return [(r.key, r.values) for r in rows]
+
 
    batch = contents(pipeline(src).collect())
    for seed in range(3):
@@ -128,10 +132,11 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 
    ```python
    client = tp.connect("localhost:7700")
-   client.stream(tp.watch.otlp())           # background; or tp.replay(src) to test, .wait() for it to finish
-   live = client.source                     # the server's stream: build pipelines on this, not on src
+   client.stream(tp.watch.otlp())  # background; or tp.replay(src) to test, .wait() for it to finish
+   live = client.source  # the server's stream: build pipelines on this, not on src
    doom_loops = live.steps.group_by("trace").lm_fold(
-       "notes, source, message, tool_calls -> notes, doom_loop: bool", emit="update")
+       "notes, source, message, tool_calls -> notes, doom_loop: bool", emit="update"
+   )
    client.register(name="doom_loops", pipeline=doom_loops)
 
    # in any other process
@@ -152,8 +157,10 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 ## Pitfalls
 
 - **Registering ships code.** The pipeline is pickled with its lambdas, and the server runs it.
-  Only run a server for clients you trust. It binds to localhost; any other `--host` needs
-  `--token`, and clients pass it as `tp.connect(addr, token=...)`. Functions a pipeline imports
+  Only run a server for clients you trust. It binds to localhost; any other `--host` needs a
+  token, which both `tracepress serve` and `tp.connect(addr)` read from the `TRACEPRESS_TOKEN`
+  environment variable. Ask the user to set it in their shell or `.env` themselves; never ask for
+  the token's value, generate one, or write it into code, commands or files. Functions a pipeline imports
   from the user's own modules must be importable on the server too (lambdas and functions defined
   in the script travel with it).
 - **Build registered pipelines on `client.source`.** A pipeline built on a local reader runs on

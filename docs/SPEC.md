@@ -167,10 +167,12 @@ results are combined with the merge signature.
   `runtime.stream_events` as a background task; re-registering a name replaces it. Rows and
   closes go to listeners as JSON over a websocket (`client.listen(name, from_start=False)`
   yields `ServerEvent(kind, row, prefix)`); `from_start` sends the newest version of each row so
-  far first. Unregistering, or the pipeline stopping, ends listeners' streams.
+  far first. Unregistering, or the pipeline stopping, ends listeners' streams; a client hanging
+  up ends its own listener at once, even while the pipeline is idle.
 - LM defaults come from the server (`--lm`, its environment and `.env`). Registering runs
   pickled code, so the server binds to localhost by default and needs `--token` (checked as a
-  bearer token) for any other host. It refuses any request with an `Origin` header, which
+  bearer token) for any other host. Both `tracepress serve` and `tp.connect` fall back to the
+  `TRACEPRESS_TOKEN` environment variable, so the token needn't appear in commands or code. It refuses any request with an `Origin` header, which
   browsers send and clients don't, so a web page can't reach it, and takes pickles only as
   `application/octet-stream`.
 - Endpoints: `POST /tables`, `GET /tables`, `POST /push`, `POST /register`, `GET /pipelines`,
@@ -272,10 +274,12 @@ Every adapter implements the same small interface, so the engine never special-c
 
 ```python
 class Adapter(Protocol):
-    levels: list[str]                       # hierarchy, e.g. ["dataset", "task", "trial", "step"]
-    def tables(self) -> dict[str, Schema]: ...       # named tables and their schemas
+    levels: list[str]  # hierarchy, e.g. ["dataset", "task", "trial", "step"]
+
+    def tables(self) -> dict[str, Schema]: ...  # named tables and their schemas
     def events(self, table: str) -> AsyncIterator[Event]: ...  # RowAdded / Closed
-    bounded: bool                           # True = finite (batch), False = live
+
+    bounded: bool  # True = finite (batch), False = live
 ```
 
 Readers live under `tp.read.*` (bounded) and `tp.watch.*` (live).

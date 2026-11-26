@@ -1,9 +1,9 @@
 import asyncio
 
+from fakes import FuncLM
+
 import tracepress as tp
 from tracepress.pipelines import harbor as pipes
-
-from fakes import FuncLM
 
 
 def judge(fields):
@@ -38,9 +38,14 @@ def test_trajectory_digests_see_every_step_field_uncut(tmp_path):
     output = "line\n" * 5000 + "FATAL: disk full"
     steps = [
         {"step_id": 1, "source": "user", "message": "Please solve gamma."},
-        {"step_id": 2, "source": "agent", "message": "Writing.", "reasoning_content": "The disk might be full.",
-         "tool_calls": [{"tool_call_id": "c1", "function_name": "Bash", "arguments": {"command": "make"}}],
-         "observation": {"results": [{"source_call_id": "c1", "content": output}]}},
+        {
+            "step_id": 2,
+            "source": "agent",
+            "message": "Writing.",
+            "reasoning_content": "The disk might be full.",
+            "tool_calls": [{"tool_call_id": "c1", "function_name": "Bash", "arguments": {"command": "make"}}],
+            "observation": {"results": [{"source_call_id": "c1", "content": output}]},
+        },
         {"step_id": 3, "source": "user", "message": "[Image: original 1654x2339, displayed at 1414x2000.]"},
     ]
     write_trial(tmp_path / "trials", "gamma", "gamma__1", 0.0, steps=steps)
@@ -63,11 +68,22 @@ def test_trajectory_digests_see_every_step_field_uncut(tmp_path):
 
 def test_trajectory_taxonomy_all_trials_and_custom_modes(harbor_dir):
     modes = {"only": pipes.Mode("execution", "Only mode", "defn", "1. decide")}
-    rows = pipes.trajectory_taxonomy(tp.read.harbor(harbor_dir), failed_only=False, modes=modes,
-                                     lm=FuncLM(judge)).collect()
+    rows = pipes.trajectory_taxonomy(
+        tp.read.harbor(harbor_dir), failed_only=False, modes=modes, lm=FuncLM(judge)
+    ).collect()
     assert [r.trial for r in rows] == ["alpha__1", "alpha__2", "beta__1"]
     assert {r.failure_mode for r in rows} == {"only"}
     assert "Only mode" in rows[0].rubric
+
+
+def test_trials_with_one_name_in_two_tasks_keep_their_own_rewards(tmp_path):
+    from conftest import _step, write_trial
+
+    steps = [_step(1, "user", "Please solve it.")]
+    write_trial(tmp_path / "job-a" / "trials", "alpha", "run-1", 1.0, steps=steps)
+    write_trial(tmp_path / "job-b" / "trials", "beta", "run-1", 0.0, steps=steps)
+    rows = pipes.trajectory_taxonomy(tp.read.harbor(tmp_path), lm=FuncLM(judge)).collect()
+    assert {(r.task, r.reward) for r in rows} == {("bench/beta", 0.0)}
 
 
 def test_trajectory_labels_wide(harbor_dir):
@@ -83,12 +99,16 @@ def test_trajectory_labels_wide(harbor_dir):
 
 def test_trajectory_labels_wide_with_skipped_judges():
     """A trial whose judge calls for a whole class were skipped still gets every class."""
-    def row(trial, mode, cls, matched):
-        return tp.Row((("trial", trial), ("mode", mode)),
-                      {"failure_mode": mode, "mode_class": cls, "matched": matched, "rationale": "r"})
 
-    wide = pipes.trajectory_labels_wide([row("t1", "a", "execution", True), row("t1", "b", "coherence", False),
-                                         row("t2", "b", "coherence", True)])
+    def row(trial, mode, cls, matched):
+        return tp.Row(
+            (("trial", trial), ("mode", mode)),
+            {"failure_mode": mode, "mode_class": cls, "matched": matched, "rationale": "r"},
+        )
+
+    wide = pipes.trajectory_labels_wide(
+        [row("t1", "a", "execution", True), row("t1", "b", "coherence", False), row("t2", "b", "coherence", True)]
+    )
     assert wide[1] == {"trial": "t2", "execution": False, "coherence": True, "b": True, "b_rationale": "r"}
     assert "a" not in wide[1]  # the skipped mode's verdict is unknown, not false
 
@@ -98,8 +118,11 @@ def test_step_taxonomy_detects_then_classifies(harbor_dir):
         if fields["name"] != "Bash":
             return {"is_failure_present": "False"}
         # Detection and classification share the input; answer both field sets.
-        return {"is_failure_present": "True", "error_category": "Filesystem & Permissions",
-                "error_subcategory": "FILE NOT FOUND"}
+        return {
+            "is_failure_present": "True",
+            "error_category": "Filesystem & Permissions",
+            "error_subcategory": "FILE NOT FOUND",
+        }
 
     rows = pipes.step_taxonomy(tp.read.harbor(harbor_dir), lm=FuncLM(fn)).collect()
     # Three trials with trajectories, one Bash call each; the Read calls aren't failures.
@@ -110,8 +133,11 @@ def test_step_taxonomy_detects_then_classifies(harbor_dir):
 
 def test_step_taxonomy_snaps_unknown_subcategory_and_filters_failed(harbor_dir):
     def fn(fields):
-        return {"is_failure_present": "True", "error_category": "Network & Remote Access",
-                "error_subcategory": "gremlins"}
+        return {
+            "is_failure_present": "True",
+            "error_category": "Network & Remote Access",
+            "error_subcategory": "gremlins",
+        }
 
     rows = pipes.step_taxonomy(tp.read.harbor(harbor_dir), failed_only=True, lm=FuncLM(fn)).collect()
     assert {r.trial for r in rows} == {"alpha__2"}
@@ -136,4 +162,3 @@ def test_pipelines_build_inside_an_event_loop_and_over_replay(harbor_dir):
     rows, calls = asyncio.run(run())
     assert {r.trial for r in rows} == {"alpha__2"}
     assert calls == []
-

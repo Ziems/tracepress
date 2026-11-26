@@ -62,12 +62,14 @@ def test_register_from_one_client_listen_from_others(server):
     tp.connect(server.address).register(name="per_trace", pipeline=per_trace)  # any client can register
 
     def push():
-        tp.connect(server.address).push([step("a", 1), step("a", 2), step("a", 3), Closed((("trace", "a"),))],
-                                        table="steps")
+        tp.connect(server.address).push(
+            [step("a", 1), step("a", 2), step("a", 3), Closed((("trace", "a"),))], table="steps"
+        )
 
     bot, runner, oncall = (tp.connect(server.address) for _ in range(3))
-    seen_bot, seen_runner, totals = asyncio.run(after_listening(
-        push, take(bot, "summaries", 3), take(runner, "summaries", 3), take(oncall, "per_trace", 1)))
+    seen_bot, seen_runner, totals = asyncio.run(
+        after_listening(push, take(bot, "summaries", 3), take(runner, "summaries", 3), take(oncall, "per_trace", 1))
+    )
     assert [e.row.summary for e in seen_bot] == ["s"] * 3 == [e.row.summary for e in seen_runner]
     assert totals[0].row.overall == "o" and totals[0].row.trace == "a"
 
@@ -107,6 +109,50 @@ def test_unregister_ends_listeners(server):
 
     assert asyncio.run(listen_then_stop()) == []
     assert client.pipelines() == []
+
+
+def test_pipelines_named_with_url_characters_can_be_listened_to_and_unregistered(server):
+    client = tp.connect(server.address)
+    client.declare({"steps": STEPS})
+    names = ["team/a", "a?b", "a b", "50%", "a#b"]
+    for name in names:
+        client.register(name, client.source.steps.map(lambda r: {"x": 1}, columns={"x": int}))
+
+    async def listen_to_each():
+        await after_listening(
+            lambda: client.push([step("a", 1)], table="steps"), *(take(client, name, 1) for name in names)
+        )
+
+    asyncio.run(listen_to_each())
+    for name in names:
+        client.unregister(name)
+    assert client.pipelines() == []
+
+
+def test_a_listener_that_hangs_up_is_let_go_at_once(server):
+    """On an idle pipeline: the client's close is answered, and the server drops the listener."""
+    import gc
+    import time
+
+    import aiohttp
+
+    from tracepress.server.app import Pipeline
+
+    client = tp.connect(server.address)
+    client.declare({"steps": STEPS})
+    client.register(name="hangs-up", pipeline=client.source.steps.map(record_step, columns={}))
+
+    async def connect_and_hang_up():
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(f"ws://{server.address}/listen/hangs-up")
+            start = time.monotonic()
+            await ws.close()
+            return time.monotonic() - start
+
+    assert asyncio.run(connect_and_hang_up()) < 5  # aiohttp gives up waiting for the answer after 10 s
+    time.sleep(0.2)
+    (pipeline,) = [o for o in gc.get_objects() if isinstance(o, Pipeline) and o.name == "hangs-up"]
+    assert pipeline.listeners == set()
 
 
 SEEN: list = []
@@ -158,6 +204,23 @@ def test_tokens(server):
         guarded.stop()
 
 
+def test_token_from_environment(monkeypatch):
+    monkeypatch.setenv("TRACEPRESS_TOKEN", "secret")
+    guarded = serve_in_thread(token="secret")
+    try:
+        assert tp.connect(guarded.address).pipelines() == []
+        with pytest.raises(RuntimeError, match="401"):
+            tp.connect(guarded.address, token="wrong").pipelines()
+    finally:
+        guarded.stop()
+    # The CLI takes it as the default --token, so a non-local host is allowed.
+    from unittest import mock
+
+    with mock.patch("tracepress.server.app.serve") as run:
+        main(["serve", "--host", "0.0.0.0"])
+    assert run.call_args.args[2] == "secret"
+
+
 class Marker:
     """Unpickling this records that the server ran it."""
 
@@ -176,8 +239,9 @@ def test_web_pages_cant_reach_the_server(server):
     import aiohttp
 
     def post(headers):
-        req = urllib.request.Request(f"http://{server.address}/register", data=pickle.dumps(Marker()),
-                                     method="POST", headers=headers)
+        req = urllib.request.Request(
+            f"http://{server.address}/register", data=pickle.dumps(Marker()), method="POST", headers=headers
+        )
         try:
             urllib.request.urlopen(req)
         except urllib.error.HTTPError as e:
@@ -199,9 +263,38 @@ def test_web_pages_cant_reach_the_server(server):
     asyncio.run(listen_from_a_page())
 
 
+def test_stopping_a_server_twice_returns_at_once():
+    import time
+
+    srv = serve_in_thread()
+    srv.stop()
+    start = time.monotonic()
+    srv.stop()
+    assert time.monotonic() - start < 2  # the stopped loop never ran the second cleanup: 10 s, then TimeoutError
+
+
 def test_stream_an_adapter(server, harbor_dir):
     client = tp.connect(server.address)
     src = tp.read.harbor(harbor_dir)
     sent = client.stream(src, tables=["steps"]).wait(10)
     assert sent > 0
     assert sorted(client.source.tables()) == ["steps"]
+
+
+class OneThenQuiet(tp.Adapter):
+    """A live source that sends one step, then nothing."""
+
+    bounded, levels = False, ("trace", "step")
+
+    def tables(self):
+        return {"steps": STEPS}
+
+    async def events(self, table):
+        yield tp.RowAdded(step("a", 1))
+        await asyncio.Event().wait()
+
+
+def test_waiting_on_a_stream_that_is_still_going_raises_timeout(server):
+    streaming = tp.connect(server.address).stream(OneThenQuiet(), every=0.05)
+    with pytest.raises(TimeoutError):
+        streaming.wait(0.5)

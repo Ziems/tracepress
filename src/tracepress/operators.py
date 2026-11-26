@@ -115,12 +115,12 @@ class AsyncOperator(Operator):
 
     def _done(self, task: asyncio.Task) -> None:
         self.pending.pop(task, None)
-        if not task.cancelled() and task.exception() and self.failure is None:
-            self.failure = task.exception()
+        if not task.cancelled() and (failure := task.exception()) and self.failure is None:
+            self.failure = failure
             # Stop the run now, not once this operator's input ends.
             stop = self.executor.stop if self.executor else None
             if stop is not None and not stop.done():
-                stop.set_exception(self.failure)
+                stop.set_exception(failure)
 
     def waiting_on(self, prefix: Key) -> list[asyncio.Task]:
         return [t for t, k in self.pending.items() if is_prefix(prefix, k)]
@@ -145,6 +145,7 @@ class AsyncOperator(Operator):
         except Exception as exc:
             if self.on_error == "raise" or isinstance(exc, STOP_RUN):
                 raise
+            assert self.executor is not None
             self.executor.stats.errors += 1
             log.warning("tracepress: skipping %s after error: %s: %s", what, type(exc).__name__, exc)
             return None
@@ -176,7 +177,7 @@ class EditOp(Operator):
 
     async def on_row(self, row: Row, updated: bool) -> None:
         for suffix, values in self.edits.items():
-            if row.key[-len(suffix):] == suffix:
+            if row.key[-len(suffix) :] == suffix:
                 self.seen.add(suffix)
                 row = Row(row.key, {**row.values, **values}, row.final, row.version, row._sources)
                 break
@@ -241,8 +242,14 @@ class LMRowOp(AsyncOperator):
     delivery) or a higher version (a stale update) is skipped, so duplicates cost nothing.
     """
 
-    def __init__(self, sig, lm=None, module: type[dspy.Module] = dspy.Predict, on_error: str = "skip",
-                 records: dict[str, tuple[str, ...] | None] | None = None):
+    def __init__(
+        self,
+        sig,
+        lm=None,
+        module: type[dspy.Module] = dspy.Predict,
+        on_error: str = "skip",
+        records: dict[str, tuple[str, ...] | None] | None = None,
+    ):
         super().__init__(on_error)
         self.sig = sig
         self.inputs = sigs.inputs(sig)
@@ -264,8 +271,11 @@ class LMRowOp(AsyncOperator):
         await super().on_close(prefix)
 
     async def _run(self, row: Row, updated: bool) -> None:
-        inputs = {name: whole_record(row, self.records[name]) if name in self.records else row.get(name)
-                  for name in self.inputs}
+        inputs = {
+            name: whole_record(row, self.records[name]) if name in self.records else row.get(name)
+            for name in self.inputs
+        }
+        assert self.executor is not None
         pred = await self.guarded(f"row {row.key}", self.executor.call(self.module, self.lm, inputs, op=self.label))
         if pred is not None:
             self.handle(row, pred, updated)
@@ -332,8 +342,13 @@ class GroupOp(AsyncOperator):
     batch = 1
     carry: tuple[str, ...] = ()  # group constants copied onto each output row
 
-    def __init__(self, hier_levels: tuple[str, ...], extra: tuple[str, ...], on_error: str = "skip",
-                 emit_every: int | None = None):
+    def __init__(
+        self,
+        hier_levels: tuple[str, ...],
+        extra: tuple[str, ...],
+        on_error: str = "skip",
+        emit_every: int | None = None,
+    ):
         super().__init__(on_error)
         self.depth = len(hier_levels)
         self.extra = extra
@@ -518,6 +533,7 @@ class LMReduceOp(GroupOp):
         return partials[0]
 
     async def _call(self, module, keys, extra, timeout: float | None = None) -> dict[str, Any]:
+        assert self.executor is not None
         pred = await self.executor.call(module, self.lm, {**keys, **extra}, timeout, op=self.label)
         return {name: pred[name] for name in self.outputs_names}
 
@@ -576,6 +592,7 @@ class FoldOp(GroupOp):
                 inputs[name] = whole_record(row, self.record[1])
             else:
                 inputs[name] = row.get(name)
+        assert self.executor is not None
         pred = await self.executor.call(self.module, self.lm, inputs, op=self.label)
         return {name: pred[name] for name in self.spec.outputs}
 
@@ -600,8 +617,14 @@ class JoinOp(Operator):
     when there's no suffix. A newer version of a right row re-emits the rows it was joined onto.
     """
 
-    def __init__(self, depth: int, on: tuple[str, ...] | None = None, inner: bool = False,
-                 columns: tuple[str, ...] | None = None, suffix: str | None = None):
+    def __init__(
+        self,
+        depth: int,
+        on: tuple[str, ...] | None = None,
+        inner: bool = False,
+        columns: tuple[str, ...] | None = None,
+        suffix: str | None = None,
+    ):
         super().__init__()
         self.depth = depth
         self.on = on
@@ -708,9 +731,11 @@ class JoinOp(Operator):
                 row = event.row
                 match = self.right_match(row)
                 current = self.right.get(match)
-                if current is not None and current.key != row.key:
-                    raise ValueError(f"join: the other table has more than one row with {dict(zip(self.on, match))}, "
-                                     "so a row could match several. Join on columns that identify one row.")
+                if self.on is not None and current is not None and current.key != row.key:
+                    raise ValueError(
+                        f"join: the other table has more than one row with {dict(zip(self.on, match))}, "
+                        "so a row could match several. Join on columns that identify one row."
+                    )
                 if not supersedes(row, current):
                     continue
                 self.right[match] = row

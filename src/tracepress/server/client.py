@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import pickle
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
@@ -69,7 +71,7 @@ class Streaming:
     def _main(self) -> None:
         try:
             asyncio.run(self._pump())
-        except BaseException as e:  # reported by wait()
+        except BaseException as e:  # noqa: BLE001 - reported by wait()
             self.error = e
 
     async def _pump(self) -> None:
@@ -104,14 +106,24 @@ class Streaming:
             await flush()
 
     def wait(self, timeout: float | None = None) -> int:
-        """Block until a bounded source has been streamed in full; returns the events sent."""
+        """Block until a bounded source has been streamed in full; returns the events sent.
+
+        Raises `TimeoutError` if the stream is still going after `timeout` seconds.
+        """
         self._thread.join(timeout)
         if self.error is not None:
             raise self.error
+        if self._thread.is_alive():
+            raise TimeoutError(f"still streaming after {timeout}s ({self.sent} events sent so far)")
         return self.sent
 
     def stop(self) -> None:
         self._stop.set()
+
+
+def _quote(name: str) -> str:
+    """A pipeline name as one URL path segment: names may hold `/`, `?`, spaces and the like."""
+    return urllib.parse.quote(name, safe="")
 
 
 class Client:
@@ -122,8 +134,9 @@ class Client:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
-    def _request(self, method: str, path: str, data: bytes | None = None,
-                 content_type: str = "application/json") -> bytes:
+    def _request(
+        self, method: str, path: str, data: bytes | None = None, content_type: str = "application/json"
+    ) -> bytes:
         headers = {**self._headers(), **({"Content-Type": content_type} if data is not None else {})}
         req = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
@@ -146,8 +159,9 @@ class Client:
             raise RuntimeError("the server's stream has no tables yet; stream or declare some first")
         return RemoteSource(schemas)
 
-    def stream(self, adapter: Adapter, tables: Iterable[str] | None = None, batch: int = 200,
-               every: float = 0.2) -> Streaming:
+    def stream(
+        self, adapter: Adapter, tables: Iterable[str] | None = None, batch: int = 200, every: float = 0.2
+    ) -> Streaming:
         """Stream an adapter's events to the server in the background, e.g. `tp.watch.otlp()`.
 
         Returns at once. For a bounded source (a stored job, `tp.replay(...)`), `.wait()` blocks
@@ -181,7 +195,7 @@ class Client:
         return json.loads(self._request("POST", "/register", blob, "application/octet-stream"))
 
     def unregister(self, name: str) -> None:
-        self._request("DELETE", f"/pipelines/{name}")
+        self._request("DELETE", f"/pipelines/{_quote(name)}")
 
     def pipelines(self) -> list[dict[str, Any]]:
         """Registered pipelines: name, status (running, finished, failed or stopped) and rows so far."""
@@ -195,22 +209,24 @@ class Client:
         """
         import aiohttp
 
-        url = self.base.replace("http", "ws", 1) + f"/listen/{name}" + ("?from_start=1" if from_start else "")
-        async with aiohttp.ClientSession(headers=self._headers()) as session:
-            async with session.ws_connect(url) as ws:
-                async for msg in ws:
-                    if msg.type != aiohttp.WSMsgType.TEXT:
-                        break
-                    data = msg.json()
-                    if data["kind"] == "error":
-                        raise RuntimeError(f"pipeline {name!r} failed on the server: {data['error']}")
-                    event = decode(data)
-                    if isinstance(event, Closed):
-                        yield ServerEvent("closed", prefix=event.prefix)
-                    else:
-                        yield ServerEvent("updated" if isinstance(event, RowUpdated) else "added", row=event.row)
+        url = self.base.replace("http", "ws", 1) + f"/listen/{_quote(name)}" + ("?from_start=1" if from_start else "")
+        async with aiohttp.ClientSession(headers=self._headers()) as session, session.ws_connect(url) as ws:
+            async for msg in ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    break
+                data = msg.json()
+                if data["kind"] == "error":
+                    raise RuntimeError(f"pipeline {name!r} failed on the server: {data['error']}")
+                event = decode(data)
+                if isinstance(event, Closed):
+                    yield ServerEvent("closed", prefix=event.prefix)
+                else:
+                    yield ServerEvent("updated" if isinstance(event, RowUpdated) else "added", row=event.row)
 
 
 def connect(address: str = "localhost:7700", token: str | None = None) -> Client:
-    """A client for a TracePress server started with `tracepress serve`."""
-    return Client(address, token)
+    """A client for a TracePress server started with `tracepress serve`.
+
+    `token` defaults to the `TRACEPRESS_TOKEN` environment variable, so it needn't appear in code.
+    """
+    return Client(address, token if token is not None else os.environ.get("TRACEPRESS_TOKEN") or None)

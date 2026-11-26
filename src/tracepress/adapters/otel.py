@@ -82,8 +82,8 @@ STATUSES = {0: "unset", 1: "ok", 2: "error"}
 
 @dataclass
 class Span:
-    trace_id: str
-    span_id: str
+    trace_id: str | None
+    span_id: str | None
     parent_id: str | None
     name: str
     kind: str
@@ -190,8 +190,14 @@ def spans_from_otlp(data: dict) -> Iterator[Span]:
                     start_ns=_ns(s.get("startTimeUnixNano") or s.get("start_time_unix_nano")),
                     end_ns=_ns(s.get("endTimeUnixNano") or s.get("end_time_unix_nano")),
                     attributes=attributes(s.get("attributes")),
-                    events=[{"name": e.get("name"), "timestamp": iso(_ns(e.get("timeUnixNano") or e.get("time_unix_nano"))),
-                             "attributes": attributes(e.get("attributes"))} for e in s.get("events") or []],
+                    events=[
+                        {
+                            "name": e.get("name"),
+                            "timestamp": iso(_ns(e.get("timeUnixNano") or e.get("time_unix_nano"))),
+                            "attributes": attributes(e.get("attributes")),
+                        }
+                        for e in s.get("events") or []
+                    ],
                     status=_enum(status.get("code"), STATUSES, "status_code_"),
                     status_message=status.get("message") or None,
                     resource=resource,
@@ -211,8 +217,10 @@ def span_from_console(s: dict) -> Span:
         start_ns=_ns(s.get("start_time")),
         end_ns=_ns(s.get("end_time")),
         attributes=dict(s.get("attributes") or {}),
-        events=[{"name": e.get("name"), "timestamp": e.get("timestamp"), "attributes": dict(e.get("attributes") or {})}
-                for e in s.get("events") or []],
+        events=[
+            {"name": e.get("name"), "timestamp": e.get("timestamp"), "attributes": dict(e.get("attributes") or {})}
+            for e in s.get("events") or []
+        ],
         status=_enum(status.get("status_code"), STATUSES, "statuscode."),
         status_message=status.get("description") or None,
         resource=dict((s.get("resource") or {}).get("attributes") or {}),
@@ -265,8 +273,13 @@ def span_type(span: Span) -> str:
     oi = str(a.get("openinference.span.kind") or a.get("traceloop.span.kind") or "").lower()
     if operation == "execute_tool" or oi == "tool":
         return "tool"
-    if operation in LLM_OPERATIONS or oi == "llm" or a.get("llm.request.type") in ("chat", "completion") \
-            or any(k.startswith(("gen_ai.prompt.", "llm.input_messages.")) for k in a) or "gen_ai.input.messages" in a:
+    if (
+        operation in LLM_OPERATIONS
+        or oi == "llm"
+        or a.get("llm.request.type") in ("chat", "completion")
+        or any(k.startswith(("gen_ai.prompt.", "llm.input_messages.")) for k in a)
+        or "gen_ai.input.messages" in a
+    ):
         return "llm"
     if operation in ("invoke_agent", "create_agent") or oi == "agent":
         return "agent"
@@ -279,8 +292,10 @@ def _model(span: Span) -> str | None:
 
 def _tokens(span: Span) -> tuple[int | None, int | None]:
     a = span.attributes
-    return (_get(a, "gen_ai.usage.input_tokens", "llm.token_count.prompt", "gen_ai.usage.prompt_tokens"),
-            _get(a, "gen_ai.usage.output_tokens", "llm.token_count.completion", "gen_ai.usage.completion_tokens"))
+    return (
+        _get(a, "gen_ai.usage.input_tokens", "llm.token_count.prompt", "gen_ai.usage.prompt_tokens"),
+        _get(a, "gen_ai.usage.output_tokens", "llm.token_count.completion", "gen_ai.usage.completion_tokens"),
+    )
 
 
 def unflatten(attrs: dict, prefix: str) -> Any:
@@ -290,7 +305,7 @@ def unflatten(attrs: dict, prefix: str) -> Any:
     for key, value in attrs.items():
         if not key.startswith(dot):
             continue
-        node, parts = root, key[len(dot):].split(".")
+        node, parts = root, key[len(dot) :].split(".")
         for part in parts[:-1]:
             node = node.setdefault(part, {})
             if not isinstance(node, dict):
@@ -339,10 +354,16 @@ def _arguments(value: Any) -> Any:
     return value if isinstance(value, dict) or value is None else {"input": value}
 
 
-def _message(role: Any, text: Any = None, reasoning: Any = None, calls: Iterable[dict] = (),
-             tool_call_id: Any = None) -> dict:
-    return {"role": str(role or "").lower(), "text": _text(text), "reasoning": _text(reasoning),
-            "tool_calls": [c for c in calls if c.get("name") or c.get("id")], "tool_call_id": tool_call_id}
+def _message(
+    role: Any, text: Any = None, reasoning: Any = None, calls: Iterable[dict] = (), tool_call_id: Any = None
+) -> dict:
+    return {
+        "role": str(role or "").lower(),
+        "text": _text(text),
+        "reasoning": _text(reasoning),
+        "tool_calls": [c for c in calls if c.get("name") or c.get("id")],
+        "tool_call_id": tool_call_id,
+    }
 
 
 def _semconv_messages(value: Any) -> list[dict]:
@@ -359,9 +380,13 @@ def _semconv_messages(value: Any) -> list[dict]:
             elif kind == "reasoning":
                 thoughts.append(part.get("content"))
             elif kind == "tool_call":
-                calls.append({"id": part.get("id"), "name": part.get("name"), "arguments": _arguments(part.get("arguments"))})
+                calls.append(
+                    {"id": part.get("id"), "name": part.get("name"), "arguments": _arguments(part.get("arguments"))}
+                )
             elif kind == "tool_call_response":
-                out.append(_message("tool", _text(part.get("response", part.get("result"))), tool_call_id=part.get("id")))
+                out.append(
+                    _message("tool", _text(part.get("response", part.get("result"))), tool_call_id=part.get("id"))
+                )
         if texts or thoughts or calls or not m.get("parts"):
             out.append(_message(m.get("role"), texts or m.get("content"), thoughts, calls))
     return out
@@ -373,9 +398,14 @@ def _openinference_messages(items: Any) -> list[dict]:
         m = (item or {}).get("message") or {}
         contents = [c.get("message_content") or {} for c in m.get("contents") or []]
         texts = [c.get("text") for c in contents if c.get("type", "text") == "text"] or [m.get("content")]
-        calls = [{"id": tc.get("id"), "name": (tc.get("function") or {}).get("name"),
-                  "arguments": _arguments((tc.get("function") or {}).get("arguments"))}
-                 for tc in ((c or {}).get("tool_call") or {} for c in m.get("tool_calls") or [])]
+        calls = [
+            {
+                "id": tc.get("id"),
+                "name": (tc.get("function") or {}).get("name"),
+                "arguments": _arguments((tc.get("function") or {}).get("arguments")),
+            }
+            for tc in ((c or {}).get("tool_call") or {} for c in m.get("tool_calls") or [])
+        ]
         out.append(_message(m.get("role"), texts, None, calls, m.get("tool_call_id")))
     return out
 
@@ -384,15 +414,25 @@ def _openllmetry_messages(items: Any) -> list[dict]:
     out = []
     for m in items or []:
         m = m or {}
-        calls = [{"id": c.get("id"), "name": c.get("name"), "arguments": _arguments(c.get("arguments"))}
-                 for c in m.get("tool_calls") or [] if isinstance(c, dict)]
-        out.append(_message(m.get("role") or "assistant", _json(m.get("content")), m.get("reasoning"), calls,
-                            m.get("tool_call_id")))
+        calls = [
+            {"id": c.get("id"), "name": c.get("name"), "arguments": _arguments(c.get("arguments"))}
+            for c in m.get("tool_calls") or []
+            if isinstance(c, dict)
+        ]
+        out.append(
+            _message(
+                m.get("role") or "assistant", _json(m.get("content")), m.get("reasoning"), calls, m.get("tool_call_id")
+            )
+        )
     return out
 
 
-EVENT_ROLES = {"gen_ai.system.message": "system", "gen_ai.user.message": "user",
-               "gen_ai.assistant.message": "assistant", "gen_ai.tool.message": "tool"}
+EVENT_ROLES = {
+    "gen_ai.system.message": "system",
+    "gen_ai.user.message": "user",
+    "gen_ai.assistant.message": "assistant",
+    "gen_ai.tool.message": "tool",
+}
 
 
 def _event_messages(span: Span) -> tuple[list[dict], list[dict]]:
@@ -417,15 +457,22 @@ def llm_messages(span: Span) -> tuple[list[dict], list[dict]]:
     if "gen_ai.input.messages" in a or "gen_ai.output.messages" in a:
         return _semconv_messages(a.get("gen_ai.input.messages")), _semconv_messages(a.get("gen_ai.output.messages"))
     if any(k.startswith(("llm.input_messages.", "llm.output_messages.")) for k in a):
-        return (_openinference_messages(unflatten(a, "llm.input_messages")),
-                _openinference_messages(unflatten(a, "llm.output_messages")))
+        return (
+            _openinference_messages(unflatten(a, "llm.input_messages")),
+            _openinference_messages(unflatten(a, "llm.output_messages")),
+        )
     if any(k.startswith(("gen_ai.prompt.", "gen_ai.completion.")) for k in a):
-        return _openllmetry_messages(unflatten(a, "gen_ai.prompt")), _openllmetry_messages(unflatten(a, "gen_ai.completion"))
+        return _openllmetry_messages(unflatten(a, "gen_ai.prompt")), _openllmetry_messages(
+            unflatten(a, "gen_ai.completion")
+        )
     inputs, outputs = _event_messages(span)
     if inputs or outputs:
         return inputs, outputs
     # Nothing structured: fall back to the raw input and output values.
-    raw_in, raw_out = _get(a, "input.value", "traceloop.entity.input"), _get(a, "output.value", "traceloop.entity.output")
+    raw_in, raw_out = (
+        _get(a, "input.value", "traceloop.entity.input"),
+        _get(a, "output.value", "traceloop.entity.output"),
+    )
     return ([_message("user", raw_in)] if raw_in else []), ([_message("assistant", raw_out)] if raw_out else [])
 
 
@@ -434,16 +481,18 @@ def tool_call(span: Span) -> dict:
     return {
         "id": _get(a, "gen_ai.tool.call.id", "tool_call.id", "tool.call.id"),
         "name": _get(a, "gen_ai.tool.name", "tool.name", "traceloop.entity.name") or span.name,
-        "arguments": _arguments(_get(a, "gen_ai.tool.call.arguments", "tool.parameters", "input.value",
-                                     "traceloop.entity.input")),
+        "arguments": _arguments(
+            _get(a, "gen_ai.tool.call.arguments", "tool.parameters", "input.value", "traceloop.entity.input")
+        ),
         "result": _text(_json(_get(a, "gen_ai.tool.call.result", "output.value", "traceloop.entity.output"))),
         "is_error": span.status == "error",
     }
 
 
 def agent_name(span: Span) -> str | None:
-    return _get(span.attributes, "gen_ai.agent.name", "agent.name") or \
-        (_get(span.attributes, "traceloop.entity.name") or span.name if span_type(span) == "agent" else None)
+    return _get(span.attributes, "gen_ai.agent.name", "agent.name") or (
+        _get(span.attributes, "traceloop.entity.name") or span.name if span_type(span) == "agent" else None
+    )
 
 
 # ---------------------------------------------------------------------------- spans -> steps
@@ -465,8 +514,8 @@ class TraceSteps:
         self.released = 0
         self.calls: dict[str, dict] = {}
         self.said: set[str] = set()
-        self.agents: dict[str, str] = {}  # span id -> agent name, for agent spans seen so far
-        self.parents: dict[str, str | None] = {}
+        self.agents: dict[str | None, str | None] = {}  # span id -> agent name, for agent spans seen so far
+        self.parents: dict[str | None, str | None] = {}
 
     def _agent(self, span: Span) -> str | None:
         own = _get(span.attributes, "gen_ai.agent.name", "agent.name")
@@ -480,10 +529,24 @@ class TraceSteps:
         return None
 
     def _step(self, source: str, span: Span, **values) -> dict:
-        step = {"source": source, "message": None, "reasoning": None, "tool_calls": [], "observation": None,
-                "model_name": None, "timestamp": span.started_at, "metrics": None, "is_sidechain": False,
-                "service_name": self.service_name, "agent_name": self._agent(span), "span_id": span.span_id,
-                "error": None, "_scope": span.parent_id, "_open": False, **values}
+        step = {
+            "source": source,
+            "message": None,
+            "reasoning": None,
+            "tool_calls": [],
+            "observation": None,
+            "model_name": None,
+            "timestamp": span.started_at,
+            "metrics": None,
+            "is_sidechain": False,
+            "service_name": self.service_name,
+            "agent_name": self._agent(span),
+            "span_id": span.span_id,
+            "error": None,
+            "_scope": span.parent_id,
+            "_open": False,
+            **values,
+        }
         self.steps.append(step)
         return step
 
@@ -515,11 +578,11 @@ class TraceSteps:
 
     def _llm(self, span: Span) -> None:
         inputs, outputs = llm_messages(span)
-        for step in self.steps[self.released:]:
+        for step in self.steps[self.released :]:
             if step["_scope"] == span.parent_id:
                 step["_open"] = False  # the agent moved on to its next call
         last_assistant = max((i for i, m in enumerate(inputs) if m["role"] == "assistant"), default=-1)
-        for m in inputs[last_assistant + 1:]:
+        for m in inputs[last_assistant + 1 :]:
             if m["role"] == "tool":
                 call = self.calls.get(m["tool_call_id"])
                 if call is not None and not call["_done"]:
@@ -530,7 +593,8 @@ class TraceSteps:
         answer = [m for m in outputs if m["role"] in ("assistant", "model", "")] or outputs
         tokens_in, tokens_out = _tokens(span)
         step = self._step(
-            "agent", span,
+            "agent",
+            span,
             message="\n\n".join(m["text"] for m in answer if m["text"]) or None,
             reasoning="\n\n".join(m["reasoning"] for m in answer if m["reasoning"]) or None,
             model_name=_model(span),
@@ -539,7 +603,7 @@ class TraceSteps:
         )
         for m in answer:
             for c in m["tool_calls"]:
-                call = {**c, "result": None, "is_error": None, "_done": False}
+                call: dict = {**c, "result": None, "is_error": None, "_done": False}
                 step["tool_calls"].append(call)
                 self.calls[call["id"] or f"{span.span_id}/{len(self.calls)}"] = call
         step["_open"] = bool(step["tool_calls"])
@@ -578,15 +642,30 @@ def trace_rows(trace_key: Key, spans: list[Span]) -> tuple[Row, list[Row]]:
         kind = span_type(s)
         types[kind] += 1
         tokens_in, tokens_out = _tokens(s)
-        span_rows.append(Row((*trace_key, ("span", i)), {
-            "span_id": s.span_id, "parent_span_id": s.parent_id, "depth": depth(s), "name": s.name,
-            "span_type": kind, "kind": s.kind, "service_name": s.service_name, "model": _model(s),
-            "started_at": s.started_at, "timestamp": s.finished_at,
-            "duration_ms": (s.end_ns - s.start_ns) / 1e6 if s.end_ns and s.start_ns else None,
-            "status": s.status, "error": s.status_message if s.status == "error" else None,
-            "input_tokens": tokens_in, "output_tokens": tokens_out,
-            "attributes": s.attributes, "events": s.events,
-        }))
+        span_rows.append(
+            Row(
+                (*trace_key, ("span", i)),
+                {
+                    "span_id": s.span_id,
+                    "parent_span_id": s.parent_id,
+                    "depth": depth(s),
+                    "name": s.name,
+                    "span_type": kind,
+                    "kind": s.kind,
+                    "service_name": s.service_name,
+                    "model": _model(s),
+                    "started_at": s.started_at,
+                    "timestamp": s.finished_at,
+                    "duration_ms": (s.end_ns - s.start_ns) / 1e6 if s.end_ns and s.start_ns else None,
+                    "status": s.status,
+                    "error": s.status_message if s.status == "error" else None,
+                    "input_tokens": tokens_in,
+                    "output_tokens": tokens_out,
+                    "attributes": s.attributes,
+                    "events": s.events,
+                },
+            )
+        )
     roots = [s for s in spans if s.parent_id not in ids]
     root = roots[0] if roots else None
     llm = [s for s in spans if span_type(s) == "llm"]
@@ -595,19 +674,27 @@ def trace_rows(trace_key: Key, spans: list[Span]) -> tuple[Row, list[Row]]:
     start = min((s.start_ns for s in spans if s.start_ns), default=0)
     end = max((s.end_ns for s in spans), default=0)
     total = lambda i: sum((_tokens(s)[i] or 0) for s in llm) or None
-    trace = Row(trace_key, {
-        "name": root.name if root else None,
-        "service_name": root.service_name if root else None,
-        "model": models.most_common(1)[0][0] if models else None,
-        "input": _text(_get(root.attributes, "input.value")) if root else None,
-        "output": _text(_get(root.attributes, "output.value")) if root else None,
-        "status": "error" if errors else "ok",
-        "error": errors[0].status_message if errors else None,
-        "started_at": iso(start), "finished_at": iso(end),
-        "duration_s": (end - start) / 1e9 if start and end else None,
-        "n_spans": len(spans), "n_llm_calls": len(llm), "n_tool_calls": types["tool"], "n_errors": len(errors),
-        "input_tokens": total(0), "output_tokens": total(1),
-    })
+    trace = Row(
+        trace_key,
+        {
+            "name": root.name if root else None,
+            "service_name": root.service_name if root else None,
+            "model": models.most_common(1)[0][0] if models else None,
+            "input": _text(_get(root.attributes, "input.value")) if root else None,
+            "output": _text(_get(root.attributes, "output.value")) if root else None,
+            "status": "error" if errors else "ok",
+            "error": errors[0].status_message if errors else None,
+            "started_at": iso(start),
+            "finished_at": iso(end),
+            "duration_s": (end - start) / 1e9 if start and end else None,
+            "n_spans": len(spans),
+            "n_llm_calls": len(llm),
+            "n_tool_calls": types["tool"],
+            "n_errors": len(errors),
+            "input_tokens": total(0),
+            "output_tokens": total(1),
+        },
+    )
     return trace, span_rows
 
 
@@ -619,10 +706,19 @@ def step_events(trace_key: Key, first: int, steps: list[dict], table: str) -> It
             yield RowAdded(Row(key, step))
             continue
         for j, call in enumerate(step["tool_calls"]):
-            yield RowAdded(Row((*key, ("call", j)), {
-                "name": call["name"], "arguments": call["arguments"], "result": call["result"],
-                "is_error": call["is_error"], "timestamp": step["timestamp"], "service_name": step["service_name"],
-            }))
+            yield RowAdded(
+                Row(
+                    (*key, ("call", j)),
+                    {
+                        "name": call["name"],
+                        "arguments": call["arguments"],
+                        "result": call["result"],
+                        "is_error": call["is_error"],
+                        "timestamp": step["timestamp"],
+                        "service_name": step["service_name"],
+                    },
+                )
+            )
         yield Closed(key)
 
 

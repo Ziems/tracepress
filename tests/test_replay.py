@@ -37,12 +37,15 @@ def test_replay_interleaves_trials_by_time(harbor_dir):
     assert sum(isinstance(e, Closed) for e in events) == 4 + 2 + 1
 
 
-@pytest.mark.parametrize("faults", [
-    {"shuffle_within": 4},
-    {"drop_closes": 0.5},
-    {"duplicates": 0.5},
-    {"shuffle_within": 4, "drop_closes": 0.3, "duplicates": 0.3},
-])
+@pytest.mark.parametrize(
+    "faults",
+    [
+        {"shuffle_within": 4},
+        {"drop_closes": 0.5},
+        {"duplicates": 0.5},
+        {"shuffle_within": 4, "drop_closes": 0.3, "duplicates": 0.3},
+    ],
+)
 def test_faults_keep_closes_after_rows(harbor_dir, faults):
     for seed in range(5):
         events = replay_events(tp.replay(tp.read.harbor(harbor_dir), seed=seed, **faults), "steps")
@@ -97,13 +100,16 @@ def pipeline(src):
     return per_trial, per_task, step_counts
 
 
-@pytest.mark.parametrize("faults", [
-    {},
-    {"shuffle_within": 4},
-    {"drop_closes": 0.5},
-    {"duplicates": 0.5},
-    {"shuffle_within": 4, "drop_closes": 0.3, "duplicates": 0.3},
-])
+@pytest.mark.parametrize(
+    "faults",
+    [
+        {},
+        {"shuffle_within": 4},
+        {"drop_closes": 0.5},
+        {"duplicates": 0.5},
+        {"shuffle_within": 4, "drop_closes": 0.3, "duplicates": 0.3},
+    ],
+)
 def test_replay_matches_batch(harbor_dir, faults):
     src = tp.read.harbor(harbor_dir)
     batch = tp.collect(*pipeline(src))

@@ -14,7 +14,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import dspy
 from dspy.utils.exceptions import AdapterParseError
@@ -72,6 +72,8 @@ def configure(**kwargs: Any) -> Config:
     for name, value in kwargs.items():
         if not hasattr(_config, name):
             raise TypeError(f"unknown setting {name!r}")
+        if name == "prices":
+            value = {**_config.prices, **value}  # added to the prices so far (built-ins included), not a new table
         setattr(_config, name, value)
     return _config
 
@@ -108,7 +110,8 @@ def _openrouter(model: str, spec: str) -> dspy.LM:
     # For models with no known price (e.g. ones newer than DSPy's price table), ask
     # OpenRouter to report each call's cost. Only for those: the flag changes the request,
     # so adding it to priced models would miss every response already cached for them.
-    kwargs = {} if call_cost(f"openrouter/{model}", 1, 1) else {"extra_body": {"usage": {"include": True}}}
+    priced = call_cost(f"openrouter/{model}", 1, 1)
+    kwargs: dict[str, Any] = {} if priced else {"extra_body": {"usage": {"include": True}}}
     return _labeled(dspy.LM(f"openrouter/{model}", **kwargs), "openrouter", model)
 
 
@@ -127,7 +130,6 @@ def _portkey(model: str, spec: str) -> dspy.LM:
         extra_headers={"x-portkey-api-key": key},
     )
     return _labeled(lm, "portkey", slug_model.split("/", 1)[1])  # the slug can name an org
-
 
 
 def _typesafe(model: str, spec: str) -> dspy.LM:
@@ -152,8 +154,10 @@ def make_lm(spec: str) -> dspy.LM:
     prefix, sep, model = spec.partition(":")
     if sep and "/" not in prefix:
         if prefix not in PROVIDERS:
-            raise ValueError(f"unknown LM provider {prefix!r} in {spec!r}; known: {', '.join(PROVIDERS)}. "
-                             "Plain DSPy model strings (no 'provider:') also work.")
+            raise ValueError(
+                f"unknown LM provider {prefix!r} in {spec!r}; known: {', '.join(PROVIDERS)}. "
+                "Plain DSPy model strings (no 'provider:') also work."
+            )
         if not model:
             raise ValueError(f"{spec!r} names no model")
         return PROVIDERS[prefix](model, spec)
@@ -161,7 +165,7 @@ def make_lm(spec: str) -> dspy.LM:
 
 
 def _labeled(lm: dspy.LM, gateway: str, model: str) -> dspy.LM:
-    lm._tp_label = (gateway, model)
+    vars(lm)["_tp_label"] = (gateway, model)
     return lm
 
 
@@ -224,7 +228,7 @@ def _table_price(model: str) -> tuple[float, float] | None:
         provider, name = match.groups() if match else ("openai", model)  # bare names are OpenAI's
         info = model_info(provider, name)
         prices = rate(info, "input_cost_per_token"), rate(info, "output_cost_per_token")
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     if prices[0] is None and prices[1] is None:
         return None
@@ -280,8 +284,17 @@ class RunStats:
         pick = lambda q: times[min(len(times) - 1, int(q * len(times)))]
         return {"p50": pick(0.5), "p90": pick(0.9), "p99": pick(0.99), "max": times[-1]}
 
-    def record(self, lm: dspy.BaseLM, op: str, seconds: float, prompt: int, completion: int,
-               ok: bool, cached: bool, reported_cost: float | None = None) -> None:
+    def record(
+        self,
+        lm: dspy.BaseLM,
+        op: str,
+        seconds: float,
+        prompt: int,
+        completion: int,
+        ok: bool,
+        cached: bool,
+        reported_cost: float | None = None,
+    ) -> None:
         """`reported_cost` is what the provider billed, when it says; it wins over the price table."""
         name = getattr(lm, "model", None) or type(lm).__name__
         model = self.by_model.get(name) or self.by_model.setdefault(name, ModelStats(model_label(lm)))
@@ -326,8 +339,9 @@ class Executor:
         self.stats = RunStats()
         self.stop: asyncio.Future | None = None  # set by the runtime; failing it stops the run
 
-    async def call(self, module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any],
-                   timeout: float | None = None, op: str = "lm") -> dspy.Prediction:
+    async def call(
+        self, module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any], timeout: float | None = None, op: str = "lm"
+    ) -> dspy.Prediction:
         timeout = timeout or _config.request_timeout
         async with self.semaphore:
             self.stats.calls += 1
@@ -351,8 +365,16 @@ class Executor:
         prompt = sum(u.get("prompt_tokens") or 0 for u in usage.values())
         completion = sum(u.get("completion_tokens") or 0 for u in usage.values())
         costs = [u["cost"] for u in usage.values() if u.get("cost") is not None]  # e.g. OpenRouter's usage.cost
-        self.stats.record(lm, op, time.monotonic() - start, prompt, completion, ok=True, cached=not usage,
-                          reported_cost=sum(costs) if costs else None)
+        self.stats.record(
+            lm,
+            op,
+            time.monotonic() - start,
+            prompt,
+            completion,
+            ok=True,
+            cached=not usage,
+            reported_cost=sum(costs) if costs else None,
+        )
         return pred
 
     async def _predict(self, module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any]) -> dspy.Prediction:
@@ -369,6 +391,7 @@ class Executor:
                     raise
                 self.stats.fallbacks += 1
                 return answer
+        raise AssertionError("no adapter to try")
 
 
 def bare_answer(error: AdapterParseError) -> dspy.Prediction | None:
@@ -377,9 +400,9 @@ def bare_answer(error: AdapterParseError) -> dspy.Prediction | None:
     Models sometimes skip the format for a one-field answer, e.g. `-> digest`. Every adapter
     then fails on the same (cached) response, so the row would be skipped on every run.
     """
-    outputs = error.signature.output_fields
+    outputs = cast(type[dspy.Signature], error.signature).output_fields
     text = (error.lm_response or "").strip()
     if len(outputs) != 1 or not text or text.startswith(("{", "[", "<")):
         return None
-    (name, field_info), = outputs.items()
+    ((name, field_info),) = outputs.items()
     return dspy.Prediction(**{name: text}) if field_info.annotation is str else None

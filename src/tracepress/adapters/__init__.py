@@ -9,13 +9,14 @@ from .placeholders import read_chatgpt, read_dspy
 from .replay import ReplayAdapter, replay
 
 __all__ = [
-    "Adapter",
     "ATIFAdapter",
+    "Adapter",
     "ClaudeCodeAdapter",
     "CodexAdapter",
     "HarborAdapter",
-    "OTelAdapter",
     "OTLPReceiver",
+    "OTelAdapter",
+    "ReplayAdapter",
     "RowsAdapter",
     "from_pandas",
     "from_rows",
@@ -28,5 +29,4 @@ __all__ = [
     "read_harbor",
     "read_otel",
     "replay",
-    "ReplayAdapter",
 ]

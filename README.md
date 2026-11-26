@@ -66,14 +66,25 @@ src = tp.read.harbor("jobs/my-job")
 
 notes = src.steps.lm_map("step -> what_happened, is_mistake: bool", instructions="Summarize this step ...")
 
-per_trial = notes.join(src.trials, on="trial").join(failed_tests, on="trial").group_by("trial").lm_reduce(
-    "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
-    instructions="Explain the failure using the failed tests ...")
+per_trial = (
+    notes.join(src.trials, on="trial")
+    .join(failed_tests, on="trial")
+    .group_by("trial")
+    .lm_reduce(
+        "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
+        instructions="Explain the failure using the failed tests ...",
+    )
+)
 
-per_task = per_trial.join(failed_runs, on="task").group_by("task").lm_reduce(
-    "task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
-    instructions="Say what the agent was supposed to do and what it did ...",
-    module=dspy.ChainOfThought)
+per_task = (
+    per_trial.join(failed_runs, on="task")
+    .group_by("task")
+    .lm_reduce(
+        "task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
+        instructions="Say what the agent was supposed to do and what it did ...",
+        module=dspy.ChainOfThought,
+    )
+)
 ```
 
 `step` is the whole step (its message, reasoning, tool calls and output). Columns with one value
@@ -109,23 +120,24 @@ edit make new LM calls:
 
 ```python
 top = overall.collect(lineage=True)[0]
-for task in top.inputs():                 # the per-task rows behind the conclusion
+for task in top.inputs():  # the per-task rows behind the conclusion
     print(task.task, task.common_failures)
-task.inputs()[0].inputs()                 # ...down to a run's steps
+task.inputs()[0].inputs()  # ...down to a run's steps
 
-what_if = overall.rerun(edit={("trial", "t1"): ("trial", "t2")})   # as if run t1 had gone like t2
-what_if.collect(); tp.last_run()          # e.g. 2 of 173 LM calls ran again
+what_if = overall.rerun(edit={("trial", "t1"): ("trial", "t2")})  # as if run t1 had gone like t2
+what_if.collect()
+tp.last_run()  # e.g. 2 of 173 LM calls ran again
 ```
 
 If you have labels for some rows, tune a step's prompt against them with GEPA. Only that step
 reruns for each candidate prompt:
 
 ```python
-labels = pd.read_csv("doom_loop_labels.csv")          # trial, doom_loop
+labels = pd.read_csv("doom_loop_labels.csv")  # trial, doom_loop
 detector = src.steps.group_by("trial").lm_reduce("source, message, tool_calls -> doom_loop: bool")
 detector = detector.optimize(labels, metric="doom_loop")
-print(detector.optimize_report)                       # held-out score before and after
-detector.instructions                                 # the tuned prompt
+print(detector.optimize_report)  # held-out score before and after
+detector.instructions  # the tuned prompt
 ```
 
 [examples/optimize_step_kinds.py](https://github.com/Ziems/tracepress/blob/main/examples/optimize_step_kinds.py)
@@ -168,10 +180,15 @@ Each label comes with the judge's rationale, citing step numbers. See
 stored runs back as a stream, so you can try it without a live system:
 
 ```python
-live = tp.replay(tp.read.harbor("jobs/my-job"))   # or a live source
-monitor = live.table("steps").group_by("trial").lm_fold(
-    "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool, concern",
-    emit="update")
+live = tp.replay(tp.read.harbor("jobs/my-job"))  # or a live source
+monitor = (
+    live.table("steps")
+    .group_by("trial")
+    .lm_fold(
+        "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool, concern",
+        emit="update",
+    )
+)
 
 async for event in monitor.events():
     print(event)
@@ -200,9 +217,9 @@ tracepress serve --port 7700 --lm openrouter:openai/gpt-6-luna
 
 ```python
 client = tp.connect("localhost:7700")
-client.stream(tp.watch.otlp())                      # or client.push(rows, table="steps")
+client.stream(tp.watch.otlp())  # or client.push(rows, table="steps")
 
-live = client.source                                # the server's stream, to build pipelines on
+live = client.source  # the server's stream, to build pipelines on
 frustration = live.steps.lm_map("source, message -> frustrated: bool, why")
 client.register(name="frustration", pipeline=frustration)
 
@@ -214,7 +231,9 @@ async for e in tp.connect("localhost:7700").listen("frustration"):
 
 A pipeline registered later catches up on the stream so far, and registering a name again
 replaces it. Registering ships the pipeline's code (pickled), so the server runs what clients
-send. It listens on localhost by default; any other `--host` needs `--token`.
+send. It listens on localhost by default; any other `--host` needs a token. Set
+`TRACEPRESS_TOKEN` on both sides (server and client read it), or pass `--token` and
+`tp.connect(addr, token=...)`.
 
 ## Your own coding sessions
 
@@ -222,7 +241,7 @@ Claude Code and Codex keep every session on disk, so you can ask questions of yo
 work. Steps use the same columns as Harbor's, so the same pipelines work:
 
 ```python
-src = tp.read.claude_code(project="my-repo", limit=50)    # or tp.read.codex()
+src = tp.read.claude_code(project="my-repo", limit=50)  # or tp.read.codex()
 steps = src.steps.filter(lambda r: r.source == "user")
 moments = steps.lm_map("message -> frustrated: bool, about", instructions="Is the user frustrated with the agent?")
 ```
@@ -234,10 +253,15 @@ OTLP exporter. Spans following the GenAI conventions, OpenInference or OpenLLMet
 Agents SDK, LangChain, LlamaIndex, Pydantic AI, Vercel AI SDK, …) become agent steps:
 
 ```python
-live = tp.watch.otlp(port=4318)    # then set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-monitor = live.table("steps").group_by("trace").lm_fold(
-    "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool",
-    emit="update")
+live = tp.watch.otlp(port=4318)  # then set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+monitor = (
+    live.table("steps")
+    .group_by("trace")
+    .lm_fold(
+        "progress, source, message, reasoning, tool_calls: list[dict], observation -> progress, stuck: bool",
+        emit="update",
+    )
+)
 async for event in monitor.events():
     print(event)
 ```
@@ -255,7 +279,8 @@ Claude Code and Codex sessions, and OpenTelemetry (files or live). DSPy traces a
 
 - [examples/explore_results.ipynb](https://github.com/Ziems/tracepress/blob/main/examples/explore_results.ipynb) walks through a whole
 analysis. It's saved with its outputs, so you can read it without running anything.
-- [examples/](https://github.com/Ziems/tracepress/tree/main/examples) has runnable scripts. Clone the repo; it includes a sample Harbor job.
+- [examples/](https://github.com/Ziems/tracepress/tree/main/examples) has runnable scripts. Clone the repo and run them on your own [Harbor](https://github.com/harbor-framework/harbor) job, such as one from
+  `harbor run -d terminal-bench-sample@2.0 -a claude-code -m anthropic/claude-opus-5-5`.
 
 
 ## Acknowledgements

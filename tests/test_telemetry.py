@@ -2,14 +2,12 @@ import json
 
 import dspy
 import pytest
+from fakes import FuncLM
 
 import tracepress as tp
 from tracepress import lm as lm_config
 from tracepress import telemetry
 from tracepress.lm import RunStats
-from tracepress.pipelines import harbor as pipes
-
-from fakes import FuncLM
 
 SECRET = "zz_secret_zz"
 
@@ -38,7 +36,8 @@ def _wait():
 def secret_table():
     rows = [tp.Row(((f"{SECRET}_task", f"{SECRET}_{i}"),), {f"{SECRET}_col": f"{SECRET} value {i}"}) for i in range(3)]
     return tp.from_rows(rows).lm_map(
-        f"{SECRET}_col -> {SECRET}_out", instructions=f"Classify {SECRET}.",
+        f"{SECRET}_col -> {SECRET}_out",
+        instructions=f"Classify {SECRET}.",
         lm=FuncLM(lambda f: {f"{SECRET}_out": "x"}),
     )
 
@@ -57,7 +56,7 @@ def test_one_event_per_run_with_counts(sent, harbor_dir):
     # alpha__2 is the only failed trial with a trajectory: 3 digests, then 9 judges.
     assert props["calls"] == 12 and props["ok"] and props["error_type"] is None
     assert props["llm_calls_by_op"] == {"lm_map": 12}
-    assert props["ops"] == {"filter": 1, "map": 3, "lm_map": 2, "reduce": 1, "explode": 1}
+    assert props["ops"] == {"join": 1, "filter": 1, "map": 2, "lm_map": 2, "reduce": 1, "explode": 1}
     assert props["sources"] == ["harbor"] and props["pipelines"] == ["harbor.trajectory_taxonomy"]
     assert props["models"][0]["gateway"] == "custom" and props["primary_model"] == "custom:custom"
     assert props["$process_person_profile"] is False and props["$geoip_disable"] is True
@@ -66,7 +65,8 @@ def test_one_event_per_run_with_counts(sent, harbor_dir):
 def test_nothing_private_is_sent(sent, monkeypatch):
     with pytest.raises(RuntimeError):
         tp.from_rows([tp.Row((("row", 0),), {"x": SECRET})]).map(
-            lambda r: (_ for _ in ()).throw(RuntimeError(SECRET))).collect()
+            lambda r: (_ for _ in ()).throw(RuntimeError(SECRET))
+        ).collect()
     secret_table().collect()
     monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
     stats = RunStats()
@@ -182,11 +182,11 @@ def test_runs_that_only_read_a_source_send_nothing(sent, harbor_dir):
 def test_a_failed_read_is_still_reported(sent, tmp_path):
     bad = tmp_path / "trajectory.json"
     bad.write_text("not json")
-    with pytest.raises(Exception):
+    with pytest.raises(json.JSONDecodeError):
         tp.read.atif(bad).table("steps").collect()
     _wait()
     (props,) = _events(sent, "run_completed")
-    assert props["ok"] is False and props["ops"] == {}
+    assert props["ok"] is False and props["error_type"] == "JSONDecodeError" and props["ops"] == {}
 
 
 def _events(sent, name):
@@ -209,7 +209,8 @@ def test_optimize_sends_one_event_for_the_whole_search(sent, harbor_dir):
 
     labels = pd.DataFrame({"trial": list(TRUTH), "doom_loop": list(TRUTH.values())})
     tuned = detector(tp.read.harbor(harbor_dir), InstructionLM(lambda f: {})).optimize(
-        labels, metric="doom_loop", budget=20, reflection_lm=Reflector())
+        labels, metric="doom_loop", budget=20, reflection_lm=Reflector()
+    )
     _wait()
     assert _events(sent, "run_completed") == []  # GEPA's runs inside don't report one by one
     (props,) = _events(sent, "optimize_completed")
@@ -245,3 +246,13 @@ def test_server_reports_start_registration_and_its_source(sent):
     assert first["ops"] == {"lm_map": 1} and not first["replaced"] and second["replaced"]
     runs = _events(sent, "run_completed")
     assert runs and all(r["sources"] == ["server"] for r in runs)  # each pipeline reports when it stops
+
+
+def test_finished_sends_are_forgotten(sent):
+    stats = RunStats()
+    stats.record(dspy.LM("openai/gpt-5"), "lm_map", 1.0, 10, 5, ok=True, cached=False)
+    for _ in range(5):
+        telemetry.report(stats, [])
+        _wait()
+    assert len(sent) == 5
+    assert len(telemetry._pending) == 1  # only the latest; the rest finished before it started

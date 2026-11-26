@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import os
 import logging
+import os
 import pickle
 import threading
 from collections import deque
@@ -22,8 +22,8 @@ from typing import Any
 
 from aiohttp import web
 
-from .. import runtime, telemetry
 from .. import lm as lm_config
+from .. import runtime, telemetry
 from ..adapters.base import Adapter
 from ..rows import Event, RowAdded, RowUpdated, sort_key
 from ..schema import Schema
@@ -98,8 +98,9 @@ def rebind(node, source: ServerSource, memo: dict | None = None):
         else:
             out = node  # e.g. a lookup table shipped with the pipeline
     else:
-        out = replace(node, parent=rebind(node.parent, source, memo),
-                      others=tuple(rebind(o, source, memo) for o in node.others))
+        out = replace(
+            node, parent=rebind(node.parent, source, memo), others=tuple(rebind(o, source, memo) for o in node.others)
+        )
     memo[id(node)] = out
     return out
 
@@ -230,10 +231,19 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
         p.listeners.add(queue)
         if p.task is not None and p.task.done():
             queue.put_nowait(None)
-        try:
+
+        async def send():
             while (message := await queue.get()) is not None:
                 await ws.send_json(message)
+            await ws.close()  # ends the read loop below
+
+        sending = asyncio.ensure_future(send())
+        try:
+            async for _ in ws:  # clients send nothing; reading is what answers their close
+                pass
         finally:
+            sending.cancel()
+            await asyncio.gather(sending, return_exceptions=True)  # a send to a gone client just ends it
             p.listeners.discard(queue)
             await ws.close()
         return ws
@@ -243,14 +253,18 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
             await stop(name)
 
     app = web.Application(middlewares=[no_browsers, auth], client_max_size=256 * 1024 * 1024)
-    app.add_routes([
-        web.get("/health", health),
-        web.post("/tables", put_tables), web.get("/tables", get_tables),
-        web.post("/push", push),
-        web.post("/register", register),
-        web.get("/pipelines", list_pipelines), web.delete("/pipelines/{name}", unregister),
-        web.get("/listen/{name}", listen),
-    ])
+    app.add_routes(
+        [
+            web.get("/health", health),
+            web.post("/tables", put_tables),
+            web.get("/tables", get_tables),
+            web.post("/push", push),
+            web.post("/register", register),
+            web.get("/pipelines", list_pipelines),
+            web.delete("/pipelines/{name}", unregister),
+            web.get("/listen/{name}", listen),
+        ]
+    )
     app.on_shutdown.append(shutdown)
     return app
 
@@ -261,8 +275,12 @@ def check_host(host: str, token: str | None) -> None:
 
 
 def _report_started(host: str, token: str | None, retain: int | None) -> None:
-    telemetry.report_server_started(local=host in LOCAL_HOSTS, token=token is not None, retain=retain is not None,
-                                    default_lm=lm_config.config().lm is not None or bool(os.environ.get("TRACEPRESS_LM")))
+    telemetry.report_server_started(
+        local=host in LOCAL_HOSTS,
+        token=token is not None,
+        retain=retain is not None,
+        default_lm=lm_config.config().lm is not None or bool(os.environ.get("TRACEPRESS_LM")),
+    )
 
 
 def serve(host: str = "127.0.0.1", port: int = 7700, token: str | None = None, retain: int | None = None) -> None:
@@ -283,31 +301,33 @@ class Running:
         self.address = ""
         self._thread = threading.Thread(target=self._main, args=(host, port, token, retain), daemon=True)
         self._thread.start()
-        self._ready.wait(10)
-        if not self.address:
+        if not self._ready.wait(10):
             raise RuntimeError("the server didn't start")
         _report_started(host, token, retain)
 
     def _main(self, host, port, token, retain):
         asyncio.set_event_loop(self._loop)
-        self._runner = web.AppRunner(make_app(token, retain))
-        self._loop.run_until_complete(self._runner.setup())
-        site = web.TCPSite(self._runner, host, port)
+        self._runner = runner = web.AppRunner(make_app(token, retain))
+        self._loop.run_until_complete(runner.setup())
+        site = web.TCPSite(runner, host, port)
         self._loop.run_until_complete(site.start())
-        port = site._server.sockets[0].getsockname()[1]
+        port = runner.addresses[0][1]
         self.address = f"{host}:{port}"
         self._ready.set()
         self._loop.run_forever()
 
     def stop(self) -> None:
+        if not self._thread.is_alive():
+            return  # already stopped: its loop would never run the cleanup
         if self._runner is not None:
             asyncio.run_coroutine_threadsafe(self._runner.cleanup(), self._loop).result(10)
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(10)
 
 
-def serve_in_thread(host: str = "127.0.0.1", port: int = 0, token: str | None = None,
-                    retain: int | None = None) -> Running:
+def serve_in_thread(
+    host: str = "127.0.0.1", port: int = 0, token: str | None = None, retain: int | None = None
+) -> Running:
     """Start a server in a background thread; `port=0` picks a free port (see `.address`)."""
     return Running(host, port, token, retain)
 

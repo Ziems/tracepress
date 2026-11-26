@@ -6,7 +6,7 @@ import re
 import dspy
 from dspy.lm15 import Message, Response, TextPart, Usage
 
-FIELD = re.compile(r"\[\[ ## (\w+) ## \]\]\n(.*?)(?=\n\n(?:\[\[ ## |Respond with)|\Z)", re.S)
+FIELD = re.compile(r"\[\[ ## (\w+) ## \]\]\n(.*?)(?=\n\n(?:\[\[ ## |Respond with)|\Z)", re.DOTALL)
 
 
 def _last_user_text(request) -> str:
@@ -48,14 +48,20 @@ class FuncLM(dspy.BaseLM):
         super().__init__(model="func", engine=_Engine(self), async_engine=_AsyncEngine(self))
         self.fn = fn
         self.calls = 0
+        self.seen: list[dict] = []
         self._cache_responses = False  # answer every call, like a live model
 
     def _answer(self, request):
         self.calls += 1
         out = self.fn(dict(FIELD.findall(_last_user_text(request))))
         content = "".join(f"[[ ## {k} ## ]]\n{v}\n\n" for k, v in out.items()) + "[[ ## completed ## ]]"
-        return Response(id=None, model="func", message=Message.assistant([TextPart(content)]),
-                        finish_reason="stop", usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2))
+        return Response(
+            id=None,
+            model="func",
+            message=Message.assistant([TextPart(content)]),
+            finish_reason="stop",
+            usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
 
     async def _aanswer(self, request):
         return self._answer(request)

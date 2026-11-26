@@ -6,14 +6,13 @@ Batch and streaming share this runtime. A bounded source simply ends.
 from __future__ import annotations
 
 import asyncio
-import time
-from dataclasses import replace
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from . import telemetry
 from .lm import Executor, RunStats
-from .operators import END, Operator, supersedes
+from .operators import END, JoinOp, Operator, supersedes
 from .rows import Event, Row, RowAdded, RowUpdated, sort_key
 
 if TYPE_CHECKING:
@@ -43,9 +42,12 @@ class CollectSink:
 
     async def consume(self, queue: asyncio.Queue) -> None:
         while (event := await queue.get()) is not END:
-            if isinstance(event, (RowAdded, RowUpdated)) and event.row.final:
-                if supersedes(event.row, self.rows.get(event.row.key)):
-                    self.rows[event.row.key] = event.row
+            if (
+                isinstance(event, (RowAdded, RowUpdated))
+                and event.row.final
+                and supersedes(event.row, self.rows.get(event.row.key))
+            ):
+                self.rows[event.row.key] = event.row
 
     def result(self) -> list[Row]:
         return sorted(self.rows.values(), key=lambda r: sort_key(r.key))
@@ -68,8 +70,9 @@ class QueueSink:
         return None
 
 
-async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks: list | None = None,
-                    lineage: bool = False) -> list:
+async def run_async(
+    nodes: list[Node], max_concurrency: int | None = None, sinks: list | None = None, lineage: bool = False
+) -> list:
     global last_run
     executor = Executor(max_concurrency)
     ops: dict[int, Operator] = {}
@@ -86,6 +89,7 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
         op.label = node.label
         ops[id(node)] = op
         if node.parent is None:
+            assert isinstance(op, SourceOp)
             op.live = not op.adapter.bounded
             coros.append(op.produce())
         else:
@@ -94,6 +98,7 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
             parent.outputs.append(queue)
             coros.append(op.consume(queue))
             for other in node.others:  # a second input, e.g. the right side of a join
+                assert isinstance(op, JoinOp)
                 side: asyncio.Queue = asyncio.Queue()
                 other_op, other_live = build(other)
                 other_op.outputs.append(side)
@@ -117,7 +122,7 @@ async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks
     error: BaseException | None = None
     try:
         done, _ = await asyncio.wait([work, stop], return_when=asyncio.FIRST_COMPLETED)
-        failures = [f.exception() for f in done if f.exception()]
+        failures = [e for f in done if (e := f.exception())]
         if failures:
             raise failures[0]
     except BaseException as e:

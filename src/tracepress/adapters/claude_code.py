@@ -22,12 +22,22 @@ import json
 import os
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from .atif import clean_content
 from .sessions import (
-    SESSION_STEP_COLUMNS, Parsed, SessionAdapter, SessionFile, find_files, first_prompt, join, new_step,
-    read_head, read_lines, seconds, select,
+    SESSION_STEP_COLUMNS,
+    Parsed,
+    SessionAdapter,
+    SessionFile,
+    find_files,
+    first_prompt,
+    join,
+    new_step,
+    read_head,
+    read_lines,
+    seconds,
+    select,
 )
 
 SESSION_COLUMNS = {
@@ -54,7 +64,7 @@ SESSION_COLUMNS = {
 }
 
 
-def _thread(lines, agent_id: str | None, calls: dict[str, dict]) -> list[dict]:
+def _thread(lines, agent_id: str | None, calls: dict[str | None, dict]) -> list[dict]:
     """The steps of one transcript (the main thread or one subagent)."""
     steps: list[dict] = []
     by_message: dict[str, dict] = {}
@@ -70,22 +80,29 @@ def _thread(lines, agent_id: str | None, calls: dict[str, dict]) -> list[dict]:
             mid = message.get("id") or line.get("uuid")
             step = by_message.get(mid)
             if step is None:
-                step = by_message[mid] = new_step("agent", ts, thread, model_name=message.get("model"),
-                                                  _text=[], _thinking=[], _uuid=line.get("uuid"))
+                step = by_message[mid] = new_step(
+                    "agent", ts, thread, model_name=message.get("model"), _text=[], _thinking=[], _uuid=line.get("uuid")
+                )
                 steps.append(step)
             step["metrics"] = message.get("usage") or step["metrics"]
-            for block in content if isinstance(content, list) else [{"type": "text", "text": content}]:
+            blocks: list[dict] = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            for block in blocks:
                 btype = block.get("type")
                 if btype == "text":
                     step["_text"].append(block.get("text"))
                 elif btype == "thinking":
                     step["_thinking"].append(block.get("thinking"))
                 elif btype in ("tool_use", "server_tool_use"):
-                    call = {"id": block.get("id"), "name": block.get("name"), "arguments": block.get("input"),
-                            "result": None, "is_error": None}
+                    call = {
+                        "id": block.get("id"),
+                        "name": block.get("name"),
+                        "arguments": block.get("input"),
+                        "result": None,
+                        "is_error": None,
+                    }
                     step["tool_calls"].append(call)
                     calls[call["id"]] = call
-                elif btype.endswith("_tool_result") and block.get("tool_use_id") in calls:
+                elif btype and btype.endswith("_tool_result") and block.get("tool_use_id") in calls:
                     calls[block["tool_use_id"]]["result"] = clean_content(json.dumps(block.get("content")))
             continue
         # A user line: either something the user (or the harness) said, or tool results.
@@ -106,8 +123,11 @@ def _thread(lines, agent_id: str | None, calls: dict[str, dict]) -> list[dict]:
         text = clean_content(said) if said else None
         if text:
             origin = line.get("origin")
-            harness = line.get("isMeta") or line.get("isCompactSummary") or (
-                isinstance(origin, dict) and origin.get("kind") not in (None, "human"))
+            harness = (
+                line.get("isMeta")
+                or line.get("isCompactSummary")
+                or (isinstance(origin, dict) and origin.get("kind") not in (None, "human"))
+            )
             step = new_step("system" if harness else "user", ts, thread, _uuid=line.get("uuid"))
             step["message"] = text
             steps.append(step)
@@ -154,8 +174,11 @@ def owners(files: list[SessionFile]) -> dict[str, str]:
 class ClaudeCodeAdapter(SessionAdapter):
     """Claude Code / Agent SDK sessions. Levels: project > session > step (> call)."""
 
-    session_columns = SESSION_COLUMNS
-    step_columns = {**SESSION_STEP_COLUMNS, "inherited": bool}  # copied from an earlier session
+    session_columns: ClassVar[dict[str, Any]] = SESSION_COLUMNS
+    step_columns: ClassVar[dict[str, Any]] = {
+        **SESSION_STEP_COLUMNS,
+        "inherited": bool,
+    }  # copied from an earlier session
 
     def __init__(self, files: list[SessionFile], inherited: bool = False):
         super().__init__(files)
@@ -170,7 +193,7 @@ class ClaudeCodeAdapter(SessionAdapter):
         owner = self.owner or {}
         own = lambda uuid: owner.get(uuid, file.session) == file.session
         lines = list(read_lines(file.path))
-        calls: dict[str, dict] = {}
+        calls: dict[str | None, dict] = {}
         steps = _thread(lines, None, calls)
         for path in file.extra:
             agent_id = path.stem.removeprefix("agent-")
@@ -196,28 +219,31 @@ class ClaudeCodeAdapter(SessionAdapter):
         started, finished = (min(stamps), max(stamps)) if stamps else (None, None)
         # The session it was forked from owns the last copied line (earlier ones may be its ancestors').
         parent = next((owner[l["uuid"]] for l in reversed(lines) if l.get("uuid") and not own(l["uuid"])), None)
-        return Parsed({
-            "title": _title(file, lines),
-            "prompt": first_prompt([s for s in steps if not s["inherited"]]),
-            "cwd": first.get("cwd"),
-            "git_branch": first.get("gitBranch"),
-            "model": models.most_common(1)[0][0] if models else None,
-            "cli_version": first.get("version"),
-            "entrypoint": first.get("entrypoint"),
-            "started_at": started,
-            "finished_at": finished,
-            "duration_s": seconds(started, finished),
-            "n_steps": len(steps),
-            "n_subagents": len({s["agent_id"] for s in steps if s["agent_id"]}),
-            "n_tool_errors": sum(1 for s in steps if not s["inherited"] for c in s["tool_calls"] if c["is_error"]),
-            "forked_from": parent,
-            "n_inherited_steps": len(inherited),
-            "input_tokens": total("input_tokens"),
-            "output_tokens": total("output_tokens"),
-            "cache_read_tokens": total("cache_read_input_tokens"),
-            "cache_write_tokens": total("cache_creation_input_tokens"),
-            "path": str(file.path),
-        }, steps)
+        return Parsed(
+            {
+                "title": _title(file, lines),
+                "prompt": first_prompt([s for s in steps if not s["inherited"]]),
+                "cwd": first.get("cwd"),
+                "git_branch": first.get("gitBranch"),
+                "model": models.most_common(1)[0][0] if models else None,
+                "cli_version": first.get("version"),
+                "entrypoint": first.get("entrypoint"),
+                "started_at": started,
+                "finished_at": finished,
+                "duration_s": seconds(started, finished),
+                "n_steps": len(steps),
+                "n_subagents": len({s["agent_id"] for s in steps if s["agent_id"]}),
+                "n_tool_errors": sum(1 for s in steps if not s["inherited"] for c in s["tool_calls"] if c["is_error"]),
+                "forked_from": parent,
+                "n_inherited_steps": len(inherited),
+                "input_tokens": total("input_tokens"),
+                "output_tokens": total("output_tokens"),
+                "cache_read_tokens": total("cache_read_input_tokens"),
+                "cache_write_tokens": total("cache_creation_input_tokens"),
+                "path": str(file.path),
+            },
+            steps,
+        )
 
 
 def default_root() -> Path:
@@ -228,8 +254,13 @@ def _is_subagent(path: Path) -> bool:
     return path.parent.name == "subagents" or path.name.startswith("agent-")
 
 
-def read_claude_code(path: str | Path | None = None, project: str | None = None,
-                     limit: int | None = None, subagents: bool = True, inherited: bool = False) -> ClaudeCodeAdapter:
+def read_claude_code(
+    path: str | Path | None = None,
+    project: str | None = None,
+    limit: int | None = None,
+    subagents: bool = True,
+    inherited: bool = False,
+) -> ClaudeCodeAdapter:
     """Claude Code or Agent SDK sessions.
 
     `path` is `~/.claude/projects` by default (or `$CLAUDE_CONFIG_DIR/projects`); it can also
