@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -12,7 +13,11 @@ def main(argv: list[str] | None = None) -> None:
     serve = sub.add_parser("serve", help="run a server that keeps registered pipelines running on a live stream")
     serve.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: localhost only)")
     serve.add_argument("--port", type=int, default=7700)
-    serve.add_argument("--token", help="require this token from clients; needed for any non-local --host")
+    serve.add_argument(
+        "--token",
+        default=os.environ.get("TRACEPRESS_TOKEN") or None,
+        help="require this token from clients; needed for any non-local --host (default: $TRACEPRESS_TOKEN)",
+    )
     serve.add_argument(
         "--retain",
         type=int,
@@ -29,7 +34,9 @@ def main(argv: list[str] | None = None) -> None:
         from .server.app import serve as run
 
         if args.host not in LOCAL_HOSTS and not args.token:
-            parser.error(f"--host {args.host} lets anyone who can reach it run code here; pass --token too")
+            parser.error(
+                f"--host {args.host} lets anyone who can reach it run code here; set TRACEPRESS_TOKEN (or pass --token) too"
+            )
         if args.lm:
             from .lm import configure
 

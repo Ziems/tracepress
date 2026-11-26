@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import pickle
 import threading
 import urllib.error
@@ -224,5 +225,8 @@ class Client:
 
 
 def connect(address: str = "localhost:7700", token: str | None = None) -> Client:
-    """A client for a TracePress server started with `tracepress serve`."""
-    return Client(address, token)
+    """A client for a TracePress server started with `tracepress serve`.
+
+    `token` defaults to the `TRACEPRESS_TOKEN` environment variable, so it needn't appear in code.
+    """
+    return Client(address, token if token is not None else os.environ.get("TRACEPRESS_TOKEN") or None)
