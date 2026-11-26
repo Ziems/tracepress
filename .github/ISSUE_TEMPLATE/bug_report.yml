@@ -24,7 +24,7 @@ body:
     id: version
     attributes:
       label: TracePress version
-      description: "`pip show tracepress` or `uv pip show tracepress` prints it."
+      description: "Run `pip show tracepress` or `uv pip show tracepress`."
       placeholder: "0.2.1"
     validations:
       required: true
