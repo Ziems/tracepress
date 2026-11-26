@@ -309,6 +309,8 @@ class Running:
         self._loop.run_forever()
 
     def stop(self) -> None:
+        if not self._thread.is_alive():
+            return  # already stopped: its loop would never run the cleanup
         if self._runner is not None:
             asyncio.run_coroutine_threadsafe(self._runner.cleanup(), self._loop).result(10)
         self._loop.call_soon_threadsafe(self._loop.stop)

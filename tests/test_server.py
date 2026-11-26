@@ -242,6 +242,16 @@ def test_web_pages_cant_reach_the_server(server):
     asyncio.run(listen_from_a_page())
 
 
+def test_stopping_a_server_twice_returns_at_once():
+    import time
+
+    srv = serve_in_thread()
+    srv.stop()
+    start = time.monotonic()
+    srv.stop()
+    assert time.monotonic() - start < 2  # the stopped loop never ran the second cleanup: 10 s, then TimeoutError
+
+
 def test_stream_an_adapter(server, harbor_dir):
     client = tp.connect(server.address)
     src = tp.read.harbor(harbor_dir)
