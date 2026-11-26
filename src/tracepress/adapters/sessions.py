@@ -133,19 +133,35 @@ def session_events(prefix: Key, parsed: Parsed, table: str) -> Iterable[Event]:
             yield RowAdded(Row(key, step))
             continue
         for j, call in enumerate(step["tool_calls"]):
-            yield RowAdded(Row((*key, ("call", j)), {
-                "name": call["name"], "arguments": call["arguments"], "result": call["result"],
-                "is_error": call.get("is_error"), "timestamp": step["timestamp"],
-                "agent_id": step["agent_id"],
-            }))
+            yield RowAdded(
+                Row(
+                    (*key, ("call", j)),
+                    {
+                        "name": call["name"],
+                        "arguments": call["arguments"],
+                        "result": call["result"],
+                        "is_error": call.get("is_error"),
+                        "timestamp": step["timestamp"],
+                        "agent_id": step["agent_id"],
+                    },
+                )
+            )
         yield Closed(key)
 
 
 def new_step(source: str, timestamp: str | None, agent_id: str | None = None, **values) -> dict[str, Any]:
     return {
-        "source": source, "message": None, "reasoning": None, "tool_calls": [], "observation": None,
-        "model_name": None, "timestamp": timestamp, "metrics": None,
-        "is_sidechain": agent_id is not None, "agent_id": agent_id, **values,
+        "source": source,
+        "message": None,
+        "reasoning": None,
+        "tool_calls": [],
+        "observation": None,
+        "model_name": None,
+        "timestamp": timestamp,
+        "metrics": None,
+        "is_sidechain": agent_id is not None,
+        "agent_id": agent_id,
+        **values,
     }
 
 

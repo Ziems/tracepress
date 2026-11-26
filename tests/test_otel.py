@@ -25,78 +25,208 @@ def _value(v):
 
 
 def span(trace, sid, name, start, end, parent=None, error=None, **attrs):
-    return {"traceId": trace, "spanId": sid, "parentSpanId": parent or "", "name": name, "kind": 1,
-            "startTimeUnixNano": str(T0 + start * SEC), "endTimeUnixNano": str(T0 + end * SEC),
-            "attributes": [{"key": k.replace("__", "."), "value": _value(v)} for k, v in attrs.items()],
-            "status": {"code": 2, "message": error} if error else {}}
+    return {
+        "traceId": trace,
+        "spanId": sid,
+        "parentSpanId": parent or "",
+        "name": name,
+        "kind": 1,
+        "startTimeUnixNano": str(T0 + start * SEC),
+        "endTimeUnixNano": str(T0 + end * SEC),
+        "attributes": [{"key": k.replace("__", "."), "value": _value(v)} for k, v in attrs.items()],
+        "status": {"code": 2, "message": error} if error else {},
+    }
 
 
 def request(spans, service="my-agent"):
-    return {"resourceSpans": [{"resource": {"attributes": [{"key": "service.name", "value": _value(service)}]},
-                               "scopeSpans": [{"scope": {"name": "test"}, "spans": spans}]}]}
+    return {
+        "resourceSpans": [
+            {
+                "resource": {"attributes": [{"key": "service.name", "value": _value(service)}]},
+                "scopeSpans": [{"scope": {"name": "test"}, "spans": spans}],
+            }
+        ]
+    }
 
 
 def semconv_trace(trace="a" * 32):
     """GenAI semantic conventions: an agent span, two chat calls and a tool call."""
     m = lambda *ms: json.dumps(list(ms))
     return [
-        span(trace, "0000000000000001", "invoke_agent helper", 0, 10, **{
-            "gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "helper"}),
-        span(trace, "0000000000000002", "chat gpt-6", 1, 3, parent="0000000000000001", **{
-            "gen_ai.operation.name": "chat", "gen_ai.request.model": "gpt-6",
-            "gen_ai.usage.input_tokens": 100, "gen_ai.usage.output_tokens": 20,
-            "gen_ai.input.messages": m({"role": "system", "parts": [{"type": "text", "content": "Be brief."}]},
-                                       {"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]}),
-            "gen_ai.output.messages": m({"role": "assistant", "parts": [
-                {"type": "reasoning", "content": "Need the weather tool."},
-                {"type": "tool_call", "id": "call_1", "name": "get_weather", "arguments": {"city": "Paris"}}]})}),
-        span(trace, "0000000000000003", "execute_tool get_weather", 4, 5, parent="0000000000000001", **{
-            "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "get_weather",
-            "gen_ai.tool.call.id": "call_1", "gen_ai.tool.call.result": "18C, sunny"}),
-        span(trace, "0000000000000004", "chat gpt-6", 6, 9, parent="0000000000000001", **{
-            "gen_ai.operation.name": "chat", "gen_ai.request.model": "gpt-6",
-            "gen_ai.usage.input_tokens": 150, "gen_ai.usage.output_tokens": 10,
-            "gen_ai.input.messages": m(
-                {"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]},
-                {"role": "assistant", "parts": [{"type": "tool_call", "id": "call_1", "name": "get_weather"}]},
-                {"role": "tool", "parts": [{"type": "tool_call_response", "id": "call_1", "response": "18C, sunny"}]}),
-            "gen_ai.output.messages": m({"role": "assistant", "parts": [{"type": "text", "content": "18C and sunny."}]})}),
+        span(
+            trace,
+            "0000000000000001",
+            "invoke_agent helper",
+            0,
+            10,
+            **{"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "helper"},
+        ),
+        span(
+            trace,
+            "0000000000000002",
+            "chat gpt-6",
+            1,
+            3,
+            parent="0000000000000001",
+            **{
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.model": "gpt-6",
+                "gen_ai.usage.input_tokens": 100,
+                "gen_ai.usage.output_tokens": 20,
+                "gen_ai.input.messages": m(
+                    {"role": "system", "parts": [{"type": "text", "content": "Be brief."}]},
+                    {"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]},
+                ),
+                "gen_ai.output.messages": m(
+                    {
+                        "role": "assistant",
+                        "parts": [
+                            {"type": "reasoning", "content": "Need the weather tool."},
+                            {
+                                "type": "tool_call",
+                                "id": "call_1",
+                                "name": "get_weather",
+                                "arguments": {"city": "Paris"},
+                            },
+                        ],
+                    }
+                ),
+            },
+        ),
+        span(
+            trace,
+            "0000000000000003",
+            "execute_tool get_weather",
+            4,
+            5,
+            parent="0000000000000001",
+            **{
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": "get_weather",
+                "gen_ai.tool.call.id": "call_1",
+                "gen_ai.tool.call.result": "18C, sunny",
+            },
+        ),
+        span(
+            trace,
+            "0000000000000004",
+            "chat gpt-6",
+            6,
+            9,
+            parent="0000000000000001",
+            **{
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.model": "gpt-6",
+                "gen_ai.usage.input_tokens": 150,
+                "gen_ai.usage.output_tokens": 10,
+                "gen_ai.input.messages": m(
+                    {"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]},
+                    {"role": "assistant", "parts": [{"type": "tool_call", "id": "call_1", "name": "get_weather"}]},
+                    {
+                        "role": "tool",
+                        "parts": [{"type": "tool_call_response", "id": "call_1", "response": "18C, sunny"}],
+                    },
+                ),
+                "gen_ai.output.messages": m(
+                    {"role": "assistant", "parts": [{"type": "text", "content": "18C and sunny."}]}
+                ),
+            },
+        ),
     ]
 
 
 def openinference_trace(trace="b" * 32):
     """OpenInference: flattened llm.input_messages.N.* attributes, a failing tool."""
     return [
-        span(trace, "00000000000000a1", "Agent", 0, 10, **{
-            "openinference.span.kind": "AGENT", "input.value": "Summarize x.txt", "output.value": "Could not read it."}),
-        span(trace, "00000000000000a2", "ChatCompletion", 1, 2, parent="00000000000000a1", **{
-            "openinference.span.kind": "LLM", "llm.model_name": "claude-opus-5",
-            "llm.token_count.prompt": 50, "llm.token_count.completion": 5,
-            "llm.input_messages.0.message.role": "user",
-            "llm.input_messages.0.message.content": "Summarize x.txt",
-            "llm.output_messages.0.message.role": "assistant",
-            "llm.output_messages.0.message.tool_calls.0.tool_call.id": "t1",
-            "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "read_file",
-            "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": '{"path": "x.txt"}'}),
-        span(trace, "00000000000000a3", "read_file", 3, 4, parent="00000000000000a1", error="FileNotFoundError", **{
-            "openinference.span.kind": "TOOL", "tool.name": "read_file", "input.value": '{"path": "x.txt"}'}),
+        span(
+            trace,
+            "00000000000000a1",
+            "Agent",
+            0,
+            10,
+            **{
+                "openinference.span.kind": "AGENT",
+                "input.value": "Summarize x.txt",
+                "output.value": "Could not read it.",
+            },
+        ),
+        span(
+            trace,
+            "00000000000000a2",
+            "ChatCompletion",
+            1,
+            2,
+            parent="00000000000000a1",
+            **{
+                "openinference.span.kind": "LLM",
+                "llm.model_name": "claude-opus-5",
+                "llm.token_count.prompt": 50,
+                "llm.token_count.completion": 5,
+                "llm.input_messages.0.message.role": "user",
+                "llm.input_messages.0.message.content": "Summarize x.txt",
+                "llm.output_messages.0.message.role": "assistant",
+                "llm.output_messages.0.message.tool_calls.0.tool_call.id": "t1",
+                "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "read_file",
+                "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": '{"path": "x.txt"}',
+            },
+        ),
+        span(
+            trace,
+            "00000000000000a3",
+            "read_file",
+            3,
+            4,
+            parent="00000000000000a1",
+            error="FileNotFoundError",
+            **{"openinference.span.kind": "TOOL", "tool.name": "read_file", "input.value": '{"path": "x.txt"}'},
+        ),
         # No LLM call asked for this tool, so it's a step of its own.
-        span(trace, "00000000000000a4", "log", 5, 6, parent="00000000000000a1", **{
-            "openinference.span.kind": "TOOL", "tool.name": "log", "output.value": "logged"}),
-        span(trace, "00000000000000a5", "ChatCompletion", 7, 8, parent="00000000000000a1", **{
-            "openinference.span.kind": "LLM", "llm.model_name": "claude-opus-5",
-            "llm.input_messages.0.message.role": "user",
-            "llm.input_messages.0.message.content": "Summarize x.txt",
-            "llm.output_messages.0.message.role": "assistant",
-            "llm.output_messages.0.message.content": "Could not read it."}),
+        span(
+            trace,
+            "00000000000000a4",
+            "log",
+            5,
+            6,
+            parent="00000000000000a1",
+            **{"openinference.span.kind": "TOOL", "tool.name": "log", "output.value": "logged"},
+        ),
+        span(
+            trace,
+            "00000000000000a5",
+            "ChatCompletion",
+            7,
+            8,
+            parent="00000000000000a1",
+            **{
+                "openinference.span.kind": "LLM",
+                "llm.model_name": "claude-opus-5",
+                "llm.input_messages.0.message.role": "user",
+                "llm.input_messages.0.message.content": "Summarize x.txt",
+                "llm.output_messages.0.message.role": "assistant",
+                "llm.output_messages.0.message.content": "Could not read it.",
+            },
+        ),
     ]
 
 
 def openllmetry_trace(trace="c" * 32):
-    return [span(trace, "00000000000000c1", "openai.chat", 0, 1, **{
-        "llm.request.type": "chat", "gen_ai.request.model": "gpt-6",
-        "gen_ai.prompt.0.role": "user", "gen_ai.prompt.0.content": "Hi",
-        "gen_ai.completion.0.role": "assistant", "gen_ai.completion.0.content": "Hello!"})]
+    return [
+        span(
+            trace,
+            "00000000000000c1",
+            "openai.chat",
+            0,
+            1,
+            **{
+                "llm.request.type": "chat",
+                "gen_ai.request.model": "gpt-6",
+                "gen_ai.prompt.0.role": "user",
+                "gen_ai.prompt.0.content": "Hi",
+                "gen_ai.completion.0.role": "assistant",
+                "gen_ai.completion.0.content": "Hello!",
+            },
+        )
+    ]
 
 
 @pytest.fixture
@@ -117,13 +247,23 @@ def test_traces_table(otel_file):
     assert (sem.n_spans, sem.n_llm_calls, sem.n_tool_calls, sem.input_tokens, sem.output_tokens) == (4, 2, 1, 250, 30)
     assert sem.duration_s == 10.0 and sem.started_at == "2026-01-01T00:00:00Z"
     assert (oi.status, oi.error, oi.n_errors, oi.input, oi.output) == (
-        "error", "FileNotFoundError", 1, "Summarize x.txt", "Could not read it.")
+        "error",
+        "FileNotFoundError",
+        1,
+        "Summarize x.txt",
+        "Could not read it.",
+    )
     assert by_id["c" * 32].service_name == "other"
 
 
 def test_spans_table(otel_file):
     spans = [s for s in tp.read.otel(otel_file).table("spans").collect() if s.trace == "a" * 32]
-    assert [(s.span, s.depth, s.span_type) for s in spans] == [(0, 0, "agent"), (1, 1, "llm"), (2, 1, "tool"), (3, 1, "llm")]
+    assert [(s.span, s.depth, s.span_type) for s in spans] == [
+        (0, 0, "agent"),
+        (1, 1, "llm"),
+        (2, 1, "tool"),
+        (3, 1, "llm"),
+    ]
     assert spans[1].parent_span_id == "0000000000000001" and spans[1].duration_ms == 2000
     assert spans[1].attributes["gen_ai.request.model"] == "gpt-6"
 
@@ -135,9 +275,20 @@ def test_semconv_steps(otel_file):
     assert steps[0].message == "Weather in Paris?"  # the system prompt isn't a step
     ask = steps[1]
     assert (ask.reasoning, ask.model_name, ask.agent_name, ask.service_name) == (
-        "Need the weather tool.", "gpt-6", "helper", "my-agent")
-    assert ask.tool_calls == [{"id": "call_1", "name": "get_weather", "arguments": {"city": "Paris"},
-                               "result": "18C, sunny", "is_error": False}]
+        "Need the weather tool.",
+        "gpt-6",
+        "helper",
+        "my-agent",
+    )
+    assert ask.tool_calls == [
+        {
+            "id": "call_1",
+            "name": "get_weather",
+            "arguments": {"city": "Paris"},
+            "result": "18C, sunny",
+            "is_error": False,
+        }
+    ]
     assert steps[2].message == "18C and sunny." and steps[2].metrics == {"input_tokens": 150, "output_tokens": 10}
 
 
@@ -146,7 +297,11 @@ def test_openinference_steps(otel_file):
     assert [s.source for s in steps] == ["user", "agent", "agent", "agent"]
     call = steps[1].tool_calls[0]  # the tool span names no call id, so it's matched by name
     assert (call["name"], call["arguments"], call["result"], call["is_error"]) == (
-        "read_file", {"path": "x.txt"}, "FileNotFoundError", True)
+        "read_file",
+        {"path": "x.txt"},
+        "FileNotFoundError",
+        True,
+    )
     assert steps[2].tool_calls[0]["name"] == "log" and steps[2].tool_calls[0]["result"] == "logged"
     assert steps[3].message == "Could not read it."
 
@@ -160,12 +315,23 @@ def test_openllmetry_and_tool_calls(otel_file):
 
 
 def test_console_exporter_format(tmp_path):
-    doc = {"name": "chat", "context": {"trace_id": "0x" + "d" * 32, "span_id": "0x" + "1" * 16},
-           "kind": "SpanKind.CLIENT", "parent_id": None, "start_time": "2026-01-01T00:00:00.000000Z",
-           "end_time": "2026-01-01T00:00:01.000000Z", "status": {"status_code": "UNSET"},
-           "attributes": {"gen_ai.operation.name": "chat", "gen_ai.output.messages": json.dumps(
-               [{"role": "assistant", "parts": [{"type": "text", "content": "Hi there"}]}])},
-           "events": [], "resource": {"attributes": {"service.name": "console"}}}
+    doc = {
+        "name": "chat",
+        "context": {"trace_id": "0x" + "d" * 32, "span_id": "0x" + "1" * 16},
+        "kind": "SpanKind.CLIENT",
+        "parent_id": None,
+        "start_time": "2026-01-01T00:00:00.000000Z",
+        "end_time": "2026-01-01T00:00:01.000000Z",
+        "status": {"status_code": "UNSET"},
+        "attributes": {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.output.messages": json.dumps(
+                [{"role": "assistant", "parts": [{"type": "text", "content": "Hi there"}]}]
+            ),
+        },
+        "events": [],
+        "resource": {"attributes": {"service.name": "console"}},
+    }
     (tmp_path / "console.json").write_text(json.dumps(doc, indent=4) + "\n" + json.dumps(doc, indent=4))
     src = tp.read.otel(tmp_path)
     spans = src.table("spans").collect()
@@ -247,6 +413,7 @@ def test_protobuf_decodes_like_json():
     spans = semconv_trace() + openinference_trace()
     decoded = decode_traces_request(pb_request(spans) + _ld(1, b""))  # plus an empty ResourceSpans
     from tracepress.adapters.otel import spans_from_otlp
+
     as_json = list(spans_from_otlp(request(spans)))
     assert list(spans_from_otlp(decoded)) == as_json
     assert any(s.attributes.get("gen_ai.usage.input_tokens") == 100 for s in as_json)
@@ -293,8 +460,10 @@ async def _live_otlp_receiver():
     sem = semconv_trace()
     # Live spans arrive in the order they end: chat, tool, chat, then the agent (root) span.
     assert await _post(live.port, pb_request(sem[1:2]), "application/x-protobuf") == 200
-    assert await _post(live.port, gzip.compress(pb_request(sem[2:3])), "application/x-protobuf", "gzip",
-                       chunked=True) == 200
+    assert (
+        await _post(live.port, gzip.compress(pb_request(sem[2:3])), "application/x-protobuf", "gzip", chunked=True)
+        == 200
+    )
     assert await _post(live.port, json.dumps(request(sem[3:] + sem[:1])).encode(), "application/json") == 200
     assert await _post(live.port, b"\xff\xff", "application/x-protobuf") == 400
     await asyncio.wait_for(done.wait(), 5)
@@ -303,7 +472,11 @@ async def _live_otlp_receiver():
     await asyncio.gather(*tasks, return_exceptions=True)
 
     step_rows = [e.row for name, e in seen if name == "steps" and isinstance(e, tp.RowAdded)]
-    assert [(r.key[-1], r.source) for r in step_rows] == [(("step", 1), "user"), (("step", 2), "agent"), (("step", 3), "agent")]
+    assert [(r.key[-1], r.source) for r in step_rows] == [
+        (("step", 1), "user"),
+        (("step", 2), "agent"),
+        (("step", 3), "agent"),
+    ]
     assert step_rows[1].tool_calls[0]["result"] == "18C, sunny"
     trace_rows = [e.row for name, e in seen if name == "traces" and isinstance(e, tp.RowAdded)]
     assert [(r.trace, r.n_spans, r.name) for r in trace_rows] == [("a" * 32, 4, "invoke_agent helper")]

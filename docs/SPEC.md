@@ -273,10 +273,12 @@ Every adapter implements the same small interface, so the engine never special-c
 
 ```python
 class Adapter(Protocol):
-    levels: list[str]                       # hierarchy, e.g. ["dataset", "task", "trial", "step"]
-    def tables(self) -> dict[str, Schema]: ...       # named tables and their schemas
+    levels: list[str]  # hierarchy, e.g. ["dataset", "task", "trial", "step"]
+
+    def tables(self) -> dict[str, Schema]: ...  # named tables and their schemas
     def events(self, table: str) -> AsyncIterator[Event]: ...  # RowAdded / Closed
-    bounded: bool                           # True = finite (batch), False = live
+
+    bounded: bool  # True = finite (batch), False = live
 ```
 
 Readers live under `tp.read.*` (bounded) and `tp.watch.*` (live).

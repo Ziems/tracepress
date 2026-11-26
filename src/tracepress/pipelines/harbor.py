@@ -45,7 +45,7 @@ def clip(value: Any, limit: int) -> str:
     text = value if isinstance(value, str) else json.dumps(value, default=str)
     if len(text) <= limit:
         return text
-    head, tail = text[: limit * 2 // 3], text[-(limit // 3):]
+    head, tail = text[: limit * 2 // 3], text[-(limit // 3) :]
     return f"{head}\n... [{len(text) - len(head) - len(tail)} chars omitted] ...\n{tail}"
 
 
@@ -72,7 +72,8 @@ class Mode:
 
 TRAJECTORY_MODES: dict[str, Mode] = {
     "disobey_specification": Mode(
-        "execution", "Disobey task specification",
+        "execution",
+        "Disobey task specification",
         "The agent materially contradicts an explicit directive of the task: a required method, "
         "tool or source of truth, a constraint, or an output location or name.",
         "1. List the task's hard directives (must, only, exactly, required paths, sources of truth) "
@@ -84,7 +85,8 @@ TRAJECTORY_MODES: dict[str, Mode] = {
         "Exclude: formatting-only deviations, and transient violations that were fully undone.",
     ),
     "step_repetition": Mode(
-        "execution", "Step repetition",
+        "execution",
+        "Step repetition",
         "The agent repeats the same phase or action without a meaningful change of strategy.",
         "1. Split the trajectory into phases (explore, implement, test, debug, verify).\n"
         "2. Within a phase, look for repeated tool calls or command blocks; treat calls that are "
@@ -98,7 +100,8 @@ TRAJECTORY_MODES: dict[str, Mode] = {
         "a failing test while making real changes in between.",
     ),
     "unaware_of_termination": Mode(
-        "execution", "Unaware of termination conditions",
+        "execution",
+        "Unaware of termination conditions",
         "The agent doesn't recognize when to stop: it keeps acting after the task succeeded, "
         "after it is clearly futile, or after it already declared completion.",
         "1. Check whether there was a clear stopping point.\n"
@@ -109,7 +112,8 @@ TRAJECTORY_MODES: dict[str, Mode] = {
         "Exclude: a single verification turn right after success, and runs cut off by time limits.",
     ),
     "reasoning_action_mismatch": Mode(
-        "coherence", "Reasoning-action mismatch",
+        "coherence",
+        "Reasoning-action mismatch",
         "What the agent says (its plan, or claims such as 'tests pass' or 'file written') "
         "is contradicted by what it actually does or by the logs and artifacts.",
         "1. Collect the agent's commitments and claims: stated plans, and claims about results.\n"
@@ -120,7 +124,8 @@ TRAJECTORY_MODES: dict[str, Mode] = {
         "Match only if the mismatch is repeated or blocks progress, not a single harmless slip.",
     ),
     "context_loss": Mode(
-        "coherence", "Context loss",
+        "coherence",
+        "Context loss",
         "The agent forgets or contradicts recent environment state (files, installed tools, "
         "errors already seen) or its own recent commitments (plans, constraints it adopted).",
         "1. Find state or context that was clearly established in recent steps: a file's contents, "
@@ -132,7 +137,8 @@ TRAJECTORY_MODES: dict[str, Mode] = {
         "summarization the agent couldn't see past.",
     ),
     "task_derailment": Mode(
-        "coherence", "Task derailment",
+        "coherence",
+        "Task derailment",
         "The agent drifts away from the task's objective into irrelevant or unproductive work.",
         "1. State the task's objective.\n"
         "2. Find stretches of steps that don't serve it: polishing unrelated parts, rabbit holes on "
@@ -142,7 +148,8 @@ TRAJECTORY_MODES: dict[str, Mode] = {
         "Exclude: brief exploration that informs the task, and necessary setup or debugging.",
     ),
     "premature_termination": Mode(
-        "verification", "Premature termination",
+        "verification",
+        "Premature termination",
         "The agent declares completion before meeting the objectives or delivering the required "
         "artifacts, without an actionable handoff.",
         "1. List the task's objectives and required deliverables.\n"
@@ -153,7 +160,8 @@ TRAJECTORY_MODES: dict[str, Mode] = {
         "Exclude: involuntary endings (crashes, timeouts, context limits).",
     ),
     "no_or_incorrect_verification": Mode(
-        "verification", "No or incorrect verification",
+        "verification",
+        "No or incorrect verification",
         "The agent marks the task done without a substantive check of the final deliverable, "
         "or ignores failing core checks.",
         "1. Completion means the agent declared done or called its completion tool.\n"
@@ -164,7 +172,8 @@ TRAJECTORY_MODES: dict[str, Mode] = {
         "4. Match if there was no such check, or a core check failed and the agent finished anyway.",
     ),
     "weak_verification": Mode(
-        "verification", "Weak verification",
+        "verification",
+        "Weak verification",
         "The agent's checks miss task-critical properties, or it fabricates data to justify progress.",
         "1. Data fabrication: did the agent invent inputs, outputs or results (mock data, "
         "hardcoded expected values) and use them to satisfy a requirement? Flag only if the "
@@ -197,6 +206,7 @@ JUDGE_INSTRUCTIONS = (
     "support the decision in one to three sentences."
 )
 
+
 def _transcript(rows: list[Row]) -> dict[str, Any]:
     # The task instruction goes in verbatim, since judges check the agent against its exact
     # directives. Every other step, including notes the harness inserted, as its digest.
@@ -205,8 +215,9 @@ def _transcript(rows: list[Row]) -> dict[str, Any]:
     return {"transcript": "\n\n".join(parts), "n_steps": len(rows)}
 
 
-def trajectory_taxonomy(src: Adapter, *, failed_only: bool = True, lm=None,
-                        modes: dict[str, Mode] | None = None) -> Table:
+def trajectory_taxonomy(
+    src: Adapter, *, failed_only: bool = True, lm=None, modes: dict[str, Mode] | None = None
+) -> Table:
     """One row per (trial, failure mode): `matched: bool` and a `rationale` citing steps.
 
     Keys are `dataset > task > trial > model > reward > mode`; columns include
@@ -220,16 +231,20 @@ def trajectory_taxonomy(src: Adapter, *, failed_only: bool = True, lm=None,
         steps = steps.filter(lambda r: _failed(r.reward))
     digests = steps.lm_map(f"{STEP_INPUTS} -> digest", instructions=DIGEST_INSTRUCTIONS, lm=lm)
     per_trial = digests.group_by("trial", "model", "reward").reduce(
-        _transcript, columns={"transcript": str, "n_steps": int})
-    judged = (
-        per_trial
-        .map(lambda r: {"modes": list(modes)}, columns={"modes": list})
-        .explode("modes", level="mode", keep=("transcript", "n_steps"))
-        .map(lambda r: _mode_columns(modes[r.mode], r.mode),
-             columns={"failure_mode": str, "mode_class": str, "rubric": str})
+        _transcript, columns={"transcript": str, "n_steps": int}
     )
-    return _tagged(judged.lm_map("rubric, transcript -> matched: bool, rationale: str",
-                                 instructions=JUDGE_INSTRUCTIONS, lm=lm), "harbor.trajectory_taxonomy")
+    judged = (
+        per_trial.map(lambda r: {"modes": list(modes)}, columns={"modes": list})
+        .explode("modes", level="mode", keep=("transcript", "n_steps"))
+        .map(
+            lambda r: _mode_columns(modes[r.mode], r.mode),
+            columns={"failure_mode": str, "mode_class": str, "rubric": str},
+        )
+    )
+    return _tagged(
+        judged.lm_map("rubric, transcript -> matched: bool, rationale: str", instructions=JUDGE_INSTRUCTIONS, lm=lm),
+        "harbor.trajectory_taxonomy",
+    )
 
 
 def _mode_columns(mode: Mode, mode_id: str) -> dict[str, Any]:
@@ -248,8 +263,9 @@ def trajectory_labels_wide(rows: list[Row]) -> list[dict[str, Any]]:
     by_trial: dict[tuple, dict[str, Any]] = {}
     for row in rows:
         key = dict(row.key)
-        out = by_trial.setdefault(row.key[:-1], {**{k: v for k, v in key.items() if k != "mode"},
-                                                 **dict.fromkeys(classes, False)})
+        out = by_trial.setdefault(
+            row.key[:-1], {**{k: v for k, v in key.items() if k != "mode"}, **dict.fromkeys(classes, False)}
+        )
         out[row.failure_mode] = bool(row.matched)
         out[f"{row.failure_mode}_rationale"] = row.rationale
         out[row.mode_class] = out[row.mode_class] or bool(row.matched)
@@ -411,8 +427,9 @@ def _snap(taxonomy: dict[str, list[str]], row: Row) -> dict[str, Any]:
     return {"error_subcategory": subs.get(raw.lower(), OTHER)}
 
 
-def step_taxonomy(src: Adapter, *, failed_only: bool = False, lm=None,
-                  taxonomy: dict[str, list[str]] | None = None) -> Table:
+def step_taxonomy(
+    src: Adapter, *, failed_only: bool = False, lm=None, taxonomy: dict[str, list[str]] | None = None
+) -> Table:
     """One row per failed tool call, with `error_category` and `error_subcategory`.
 
     Keys are the `tool_calls` keys (`dataset > task > trial > step > call`); columns include
@@ -426,8 +443,8 @@ def step_taxonomy(src: Adapter, *, failed_only: bool = False, lm=None,
         calls = calls.join(src.table("trials"), on="trial", columns=["reward"]).filter(lambda r: _failed(r.reward))
     failures = calls.lm_filter(f"{CALL_INPUTS} -> is_failure_present: bool", instructions=DETECT_INSTRUCTIONS, lm=lm)
     return _tagged(
-        failures
-        .lm_map(classify_signature(taxonomy), lm=lm)
-        .map(lambda r: _snap(taxonomy, r), columns={"error_subcategory": str}),
+        failures.lm_map(classify_signature(taxonomy), lm=lm).map(
+            lambda r: _snap(taxonomy, r), columns={"error_subcategory": str}
+        ),
         "harbor.step_taxonomy",
     )

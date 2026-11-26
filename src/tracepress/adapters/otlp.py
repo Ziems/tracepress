@@ -53,7 +53,7 @@ def _fields(buf: bytes):
             value, i = struct.unpack_from("<Q", buf, i)[0], i + 8
         elif wire == 2:
             size, i = _varint(buf, i)
-            value, i = buf[i:i + size], i + size
+            value, i = buf[i : i + size], i + size
         elif wire == 5:
             value, i = struct.unpack_from("<I", buf, i)[0], i + 4
         else:
@@ -199,8 +199,11 @@ async def _serve_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 except Exception as e:  # noqa: BLE001 - a bad request must not stop the receiver
                     status, reply = 400, str(e).encode()
             reason = {200: "OK", 400: "Bad Request", 404: "Not Found"}[status]
-            writer.write(f"HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n"
-                         f"Content-Length: {len(reply)}\r\n\r\n".encode() + reply)
+            writer.write(
+                f"HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n"
+                f"Content-Length: {len(reply)}\r\n\r\n".encode()
+                + reply
+            )
             await writer.drain()
             if headers.get("connection", "").lower() == "close":
                 return
@@ -302,8 +305,7 @@ class OTLPReceiver(Adapter):
             return
         first, trace.n_steps = trace.n_steps + 1, trace.n_steps + len(steps)
         key = (("trace", trace_id),)
-        self._send(lambda table: step_events(key, first, steps, table)
-                   if table in ("steps", "tool_calls") else ())
+        self._send(lambda table: step_events(key, first, steps, table) if table in ("steps", "tool_calls") else ())
 
     def close_trace(self, trace_id: str) -> None:
         trace = self.open.pop(trace_id)
@@ -311,8 +313,9 @@ class OTLPReceiver(Adapter):
         self._release(trace_id, trace, trace.builder.finish())
         spans = list(trace.spans.values())
         key = (("trace", trace_id),)
-        self._send(lambda table: trace_events(trace_id, spans, table)
-                   if table in ("traces", "spans") else [Closed(key)])
+        self._send(
+            lambda table: trace_events(trace_id, spans, table) if table in ("traces", "spans") else [Closed(key)]
+        )
 
     async def _sweep(self) -> None:
         while True:

@@ -22,33 +22,44 @@ def build(src):
     failed_tests = (
         src.tests.filter(lambda r: r.status != "passed")
         .group_by("trial")
-        .reduce(lambda rs: {"failed_tests": ", ".join(r.name.split("::")[-1] for r in rs)},
-                columns={"failed_tests": str})
+        .reduce(
+            lambda rs: {"failed_tests": ", ".join(r.name.split("::")[-1] for r in rs)}, columns={"failed_tests": str}
+        )
     )
     failed_runs = src.trials.group_by("task").reduce(
-        lambda rs: {"failed_runs": sum((r.reward or 0) < 1 for r in rs)}, columns={"failed_runs": int})
+        lambda rs: {"failed_runs": sum((r.reward or 0) < 1 for r in rs)}, columns={"failed_runs": int}
+    )
 
     notes = src.steps.lm_map(
         "step -> what_happened, is_mistake: bool",
         instructions="Summarize this step of a coding agent's run in one sentence, and say whether it was a mistake. "
-                     "For a user step (the first one is the task), say what the agent was asked to do.",
+        "For a user step (the first one is the task), say what the agent was asked to do.",
     )
 
     # reward and failed_tests have one value per trial, so the reduce gets each once.
-    per_trial = notes.join(src.trials, on="trial").join(failed_tests, on="trial").group_by("trial").lm_reduce(
-        "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
-        instructions="One agent run, step by step, and the task it was given. Reward 1.0 means it passed, and "
-                     "failed_tests are the verifier's tests that failed (empty when none did). Summarize what it "
-                     "was asked to do and how it went, and explain the failure using the failed tests. "
-                     "For passes, use 'none' as failure_mode.",
+    per_trial = (
+        notes.join(src.trials, on="trial")
+        .join(failed_tests, on="trial")
+        .group_by("trial")
+        .lm_reduce(
+            "instruction, reward, failed_tests, what_happened, is_mistake -> summary, failure_mode",
+            instructions="One agent run, step by step, and the task it was given. Reward 1.0 means it passed, and "
+            "failed_tests are the verifier's tests that failed (empty when none did). Summarize what it "
+            "was asked to do and how it went, and explain the failure using the failed tests. "
+            "For passes, use 'none' as failure_mode.",
+        )
     )
 
-    per_task = per_trial.join(failed_runs, on="task").group_by("task").lm_reduce(
-        "task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
-        instructions="Compare these runs of one task. Write each failure as what the agent was supposed to do and "
-                     "what it did instead, so it makes sense to someone who hasn't read the task. End each failure "
-                     "with how many of the failed_runs it affected, e.g. (3 of 4 failed runs).",
-        module=dspy.ChainOfThought,
+    per_task = (
+        per_trial.join(failed_runs, on="task")
+        .group_by("task")
+        .lm_reduce(
+            "task, failed_runs, summary, failure_mode, reward -> common_failures: list[str], what_passing_runs_did_differently",
+            instructions="Compare these runs of one task. Write each failure as what the agent was supposed to do and "
+            "what it did instead, so it makes sense to someone who hasn't read the task. End each failure "
+            "with how many of the failed_runs it affected, e.g. (3 of 4 failed runs).",
+            module=dspy.ChainOfThought,
+        )
     )
 
     overall = per_task.group_by().lm_reduce(
@@ -62,14 +73,19 @@ def build(src):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("path")
-    parser.add_argument("--lm", default="openrouter:openai/gpt-6-luna",
-                        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a plain DSPy model string")
+    parser.add_argument(
+        "--lm",
+        default="openrouter:openai/gpt-6-luna",
+        help="provider:model (openrouter:..., portkey:<slug>/<model>) or a plain DSPy model string",
+    )
     parser.add_argument("--tasks", nargs="*")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--out", default="out/failure_modes.json")
     parser.add_argument("--replay", action="store_true", help="feed the steps in as a simulated stream")
     parser.add_argument("--speed", type=float, help="replay speed multiplier (default: as fast as possible)")
-    parser.add_argument("--faults", action="store_true", help="replay with shuffled, duplicated rows and dropped closes")
+    parser.add_argument(
+        "--faults", action="store_true", help="replay with shuffled, duplicated rows and dropped closes"
+    )
     args = parser.parse_args()
     tp.configure(lm=args.lm)
 
@@ -95,11 +111,17 @@ def main() -> None:
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({
-        "trials": [r.to_dict() for r in trial_rows],
-        "tasks": [r.to_dict() for r in task_rows],
-        "overall": [r.to_dict() for r in overall_rows],
-    }, indent=2, default=str))
+    out.write_text(
+        json.dumps(
+            {
+                "trials": [r.to_dict() for r in trial_rows],
+                "tasks": [r.to_dict() for r in task_rows],
+                "overall": [r.to_dict() for r in overall_rows],
+            },
+            indent=2,
+            default=str,
+        )
+    )
     print(f"wrote {out}")
 
 

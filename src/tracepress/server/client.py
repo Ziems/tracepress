@@ -133,8 +133,9 @@ class Client:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
-    def _request(self, method: str, path: str, data: bytes | None = None,
-                 content_type: str = "application/json") -> bytes:
+    def _request(
+        self, method: str, path: str, data: bytes | None = None, content_type: str = "application/json"
+    ) -> bytes:
         headers = {**self._headers(), **({"Content-Type": content_type} if data is not None else {})}
         req = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
@@ -157,8 +158,9 @@ class Client:
             raise RuntimeError("the server's stream has no tables yet; stream or declare some first")
         return RemoteSource(schemas)
 
-    def stream(self, adapter: Adapter, tables: Iterable[str] | None = None, batch: int = 200,
-               every: float = 0.2) -> Streaming:
+    def stream(
+        self, adapter: Adapter, tables: Iterable[str] | None = None, batch: int = 200, every: float = 0.2
+    ) -> Streaming:
         """Stream an adapter's events to the server in the background, e.g. `tp.watch.otlp()`.
 
         Returns at once. For a bounded source (a stored job, `tp.replay(...)`), `.wait()` blocks

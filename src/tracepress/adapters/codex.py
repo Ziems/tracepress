@@ -54,8 +54,14 @@ SESSION_COLUMNS = {
 }
 
 RESPONSE_ITEMS = {
-    "message", "reasoning", "function_call", "function_call_output", "custom_tool_call",
-    "custom_tool_call_output", "local_shell_call", "web_search_call",
+    "message",
+    "reasoning",
+    "function_call",
+    "function_call_output",
+    "custom_tool_call",
+    "custom_tool_call_output",
+    "local_shell_call",
+    "web_search_call",
 }
 CALLS = {"function_call", "custom_tool_call", "local_shell_call", "web_search_call"}
 OUTPUTS = {"function_call_output", "custom_tool_call_output"}
@@ -154,31 +160,35 @@ class CodexAdapter(SessionAdapter):
         git = meta.get("git") or {}
         started = meta.get("timestamp") or (min(stamps) if stamps else None)
         finished = max(stamps) if stamps else None
-        return Parsed({
-            "prompt": first_prompt(steps),
-            "cwd": meta.get("cwd") or context.get("cwd"),
-            "git_branch": git.get("branch"),
-            "git_commit": git.get("commit_hash"),
-            "repository_url": git.get("repository_url"),
-            "model": context.get("model") or meta.get("model"),
-            "reasoning_effort": context.get("effort"),
-            "cli_version": meta.get("cli_version"),
-            "originator": meta.get("originator"),
-            "started_at": started,
-            "finished_at": finished,
-            "duration_s": seconds(started, finished),
-            "n_steps": len(steps),
-            "n_tool_errors": sum(1 for c in calls.values() if c["is_error"]),
-            "input_tokens": usage.get("input_tokens"),
-            "cached_input_tokens": usage.get("cached_input_tokens"),
-            "output_tokens": usage.get("output_tokens"),
-            "reasoning_tokens": usage.get("reasoning_output_tokens"),
-            "path": str(file.path),
-        }, steps)
+        return Parsed(
+            {
+                "prompt": first_prompt(steps),
+                "cwd": meta.get("cwd") or context.get("cwd"),
+                "git_branch": git.get("branch"),
+                "git_commit": git.get("commit_hash"),
+                "repository_url": git.get("repository_url"),
+                "model": context.get("model") or meta.get("model"),
+                "reasoning_effort": context.get("effort"),
+                "cli_version": meta.get("cli_version"),
+                "originator": meta.get("originator"),
+                "started_at": started,
+                "finished_at": finished,
+                "duration_s": seconds(started, finished),
+                "n_steps": len(steps),
+                "n_tool_errors": sum(1 for c in calls.values() if c["is_error"]),
+                "input_tokens": usage.get("input_tokens"),
+                "cached_input_tokens": usage.get("cached_input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "reasoning_tokens": usage.get("reasoning_output_tokens"),
+                "path": str(file.path),
+            },
+            steps,
+        )
 
     @staticmethod
-    def _item(item: dict, ts: str | None, context: dict, steps: list[dict], calls: dict[str, dict],
-              current: dict | None) -> dict | None:
+    def _item(
+        item: dict, ts: str | None, context: dict, steps: list[dict], calls: dict[str, dict], current: dict | None
+    ) -> dict | None:
         """Add one response item; returns the agent step still open after it."""
         kind = item.get("type")
         if kind in OUTPUTS:
@@ -200,8 +210,13 @@ class CodexAdapter(SessionAdapter):
         if kind not in RESPONSE_ITEMS:
             return current
         # Reasoning always starts a response, and a response has at most one message.
-        if current is None or kind == "reasoning" and (current["_text"] or current["tool_calls"]) \
-                or kind == "message" and current["_text"]:
+        if (
+            current is None
+            or kind == "reasoning"
+            and (current["_text"] or current["tool_calls"])
+            or kind == "message"
+            and current["_text"]
+        ):
             current = new_step("agent", ts, model_name=context.get("model"), _text=[], _thinking=[])
             steps.append(current)
         if kind == "reasoning":
@@ -217,9 +232,13 @@ class CodexAdapter(SessionAdapter):
                 arguments = item.get("action") or {}
             else:
                 arguments = _arguments(item.get("arguments", item.get("input")))
-            call = {"id": item.get("call_id") or item.get("id"),
-                    "name": item.get("name") or kind.removesuffix("_call"),
-                    "arguments": arguments, "result": None, "is_error": None}
+            call = {
+                "id": item.get("call_id") or item.get("id"),
+                "name": item.get("name") or kind.removesuffix("_call"),
+                "arguments": arguments,
+                "result": None,
+                "is_error": None,
+            }
             current["tool_calls"].append(call)
             if call["id"]:
                 calls[call["id"]] = call
@@ -247,8 +266,7 @@ def _head(path: Path) -> tuple[str | None, str | None]:
     return cwd, session
 
 
-def read_codex(path: str | Path | None = None, project: str | None = None,
-               limit: int | None = None) -> CodexAdapter:
+def read_codex(path: str | Path | None = None, project: str | None = None, limit: int | None = None) -> CodexAdapter:
     """Codex CLI sessions.
 
     `path` is `~/.codex/sessions` by default (or `$CODEX_HOME/sessions`); it can also be one

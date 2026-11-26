@@ -7,7 +7,8 @@ import tracepress as tp
 
 def passed_per_task(trials):
     return trials.group_by("task").reduce(
-        lambda rs: {"passed": sum((r.reward or 0) >= 1 for r in rs)}, columns={"passed": int})
+        lambda rs: {"passed": sum((r.reward or 0) >= 1 for r in rs)}, columns={"passed": int}
+    )
 
 
 def by_task(rows, col):
@@ -31,8 +32,11 @@ def test_rerun_as_another_row(harbor_dir):
 def test_rerun_edits_the_nearest_table_at_that_level(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     notes = src.steps.group_by("trial").reduce(lambda rs: {"note": "as run"}, columns={"note": str})
-    per_task = notes.join(src.trials, on="trial").group_by("task").reduce(
-        lambda rs: {"notes": sorted(r.note for r in rs)}, columns={"notes": list})
+    per_task = (
+        notes.join(src.trials, on="trial")
+        .group_by("task")
+        .reduce(lambda rs: {"notes": sorted(r.note for r in rs)}, columns={"notes": list})
+    )
     rows = per_task.rerun(edit={("trial", "alpha__1"): {"note": "edited"}}).collect()
     assert by_task(rows, "notes")["bench/alpha"] == ["as run", "edited"]
 
@@ -52,8 +56,9 @@ def test_rerun_errors(harbor_dir):
 
 def test_inputs_walk_down_the_hierarchy(harbor_dir):
     src = tp.read.harbor(harbor_dir)
-    per_trial = src.steps.join(src.trials, on="trial").group_by("trial").reduce(
-        lambda rs: {"n": len(rs)}, columns={"n": int})
+    per_trial = (
+        src.steps.join(src.trials, on="trial").group_by("trial").reduce(lambda rs: {"n": len(rs)}, columns={"n": int})
+    )
     per_task = per_trial.group_by("task").reduce(lambda rs: {"runs": len(rs)}, columns={"runs": int})
     alpha = next(r for r in per_task.collect(lineage=True) if r.task == "bench/alpha")
     trials = alpha.inputs()

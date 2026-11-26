@@ -131,7 +131,6 @@ def _portkey(model: str, spec: str) -> dspy.LM:
     return _labeled(lm, "portkey", slug_model.split("/", 1)[1])  # the slug can name an org
 
 
-
 def _typesafe(model: str, spec: str) -> dspy.LM:
     # TypeSafe's System One models (Jev) answer decision outputs (Noul, Score, Choice) with
     # probabilities instead of generating text. DSPy routes `typesafe:` models natively.
@@ -154,8 +153,10 @@ def make_lm(spec: str) -> dspy.LM:
     prefix, sep, model = spec.partition(":")
     if sep and "/" not in prefix:
         if prefix not in PROVIDERS:
-            raise ValueError(f"unknown LM provider {prefix!r} in {spec!r}; known: {', '.join(PROVIDERS)}. "
-                             "Plain DSPy model strings (no 'provider:') also work.")
+            raise ValueError(
+                f"unknown LM provider {prefix!r} in {spec!r}; known: {', '.join(PROVIDERS)}. "
+                "Plain DSPy model strings (no 'provider:') also work."
+            )
         if not model:
             raise ValueError(f"{spec!r} names no model")
         return PROVIDERS[prefix](model, spec)
@@ -282,8 +283,17 @@ class RunStats:
         pick = lambda q: times[min(len(times) - 1, int(q * len(times)))]
         return {"p50": pick(0.5), "p90": pick(0.9), "p99": pick(0.99), "max": times[-1]}
 
-    def record(self, lm: dspy.BaseLM, op: str, seconds: float, prompt: int, completion: int,
-               ok: bool, cached: bool, reported_cost: float | None = None) -> None:
+    def record(
+        self,
+        lm: dspy.BaseLM,
+        op: str,
+        seconds: float,
+        prompt: int,
+        completion: int,
+        ok: bool,
+        cached: bool,
+        reported_cost: float | None = None,
+    ) -> None:
         """`reported_cost` is what the provider billed, when it says; it wins over the price table."""
         name = getattr(lm, "model", None) or type(lm).__name__
         model = self.by_model.get(name) or self.by_model.setdefault(name, ModelStats(model_label(lm)))
@@ -328,8 +338,9 @@ class Executor:
         self.stats = RunStats()
         self.stop: asyncio.Future | None = None  # set by the runtime; failing it stops the run
 
-    async def call(self, module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any],
-                   timeout: float | None = None, op: str = "lm") -> dspy.Prediction:
+    async def call(
+        self, module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any], timeout: float | None = None, op: str = "lm"
+    ) -> dspy.Prediction:
         timeout = timeout or _config.request_timeout
         async with self.semaphore:
             self.stats.calls += 1
@@ -353,8 +364,16 @@ class Executor:
         prompt = sum(u.get("prompt_tokens") or 0 for u in usage.values())
         completion = sum(u.get("completion_tokens") or 0 for u in usage.values())
         costs = [u["cost"] for u in usage.values() if u.get("cost") is not None]  # e.g. OpenRouter's usage.cost
-        self.stats.record(lm, op, time.monotonic() - start, prompt, completion, ok=True, cached=not usage,
-                          reported_cost=sum(costs) if costs else None)
+        self.stats.record(
+            lm,
+            op,
+            time.monotonic() - start,
+            prompt,
+            completion,
+            ok=True,
+            cached=not usage,
+            reported_cost=sum(costs) if costs else None,
+        )
         return pred
 
     async def _predict(self, module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any]) -> dspy.Prediction:
@@ -383,5 +402,5 @@ def bare_answer(error: AdapterParseError) -> dspy.Prediction | None:
     text = (error.lm_response or "").strip()
     if len(outputs) != 1 or not text or text.startswith(("{", "[", "<")):
         return None
-    (name, field_info), = outputs.items()
+    ((name, field_info),) = outputs.items()
     return dspy.Prediction(**{name: text}) if field_info.annotation is str else None

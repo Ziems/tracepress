@@ -98,8 +98,9 @@ def rebind(node, source: ServerSource, memo: dict | None = None):
         else:
             out = node  # e.g. a lookup table shipped with the pipeline
     else:
-        out = replace(node, parent=rebind(node.parent, source, memo),
-                      others=tuple(rebind(o, source, memo) for o in node.others))
+        out = replace(
+            node, parent=rebind(node.parent, source, memo), others=tuple(rebind(o, source, memo) for o in node.others)
+        )
     memo[id(node)] = out
     return out
 
@@ -252,14 +253,18 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
             await stop(name)
 
     app = web.Application(middlewares=[no_browsers, auth], client_max_size=256 * 1024 * 1024)
-    app.add_routes([
-        web.get("/health", health),
-        web.post("/tables", put_tables), web.get("/tables", get_tables),
-        web.post("/push", push),
-        web.post("/register", register),
-        web.get("/pipelines", list_pipelines), web.delete("/pipelines/{name}", unregister),
-        web.get("/listen/{name}", listen),
-    ])
+    app.add_routes(
+        [
+            web.get("/health", health),
+            web.post("/tables", put_tables),
+            web.get("/tables", get_tables),
+            web.post("/push", push),
+            web.post("/register", register),
+            web.get("/pipelines", list_pipelines),
+            web.delete("/pipelines/{name}", unregister),
+            web.get("/listen/{name}", listen),
+        ]
+    )
     app.on_shutdown.append(shutdown)
     return app
 
@@ -270,8 +275,12 @@ def check_host(host: str, token: str | None) -> None:
 
 
 def _report_started(host: str, token: str | None, retain: int | None) -> None:
-    telemetry.report_server_started(local=host in LOCAL_HOSTS, token=token is not None, retain=retain is not None,
-                                    default_lm=lm_config.config().lm is not None or bool(os.environ.get("TRACEPRESS_LM")))
+    telemetry.report_server_started(
+        local=host in LOCAL_HOSTS,
+        token=token is not None,
+        retain=retain is not None,
+        default_lm=lm_config.config().lm is not None or bool(os.environ.get("TRACEPRESS_LM")),
+    )
 
 
 def serve(host: str = "127.0.0.1", port: int = 7700, token: str | None = None, retain: int | None = None) -> None:
@@ -317,8 +326,9 @@ class Running:
         self._thread.join(10)
 
 
-def serve_in_thread(host: str = "127.0.0.1", port: int = 0, token: str | None = None,
-                    retain: int | None = None) -> Running:
+def serve_in_thread(
+    host: str = "127.0.0.1", port: int = 0, token: str | None = None, retain: int | None = None
+) -> Running:
     """Start a server in a background thread; `port=0` picks a free port (see `.address`)."""
     return Running(host, port, token, retain)
 

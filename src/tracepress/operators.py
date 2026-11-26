@@ -176,7 +176,7 @@ class EditOp(Operator):
 
     async def on_row(self, row: Row, updated: bool) -> None:
         for suffix, values in self.edits.items():
-            if row.key[-len(suffix):] == suffix:
+            if row.key[-len(suffix) :] == suffix:
                 self.seen.add(suffix)
                 row = Row(row.key, {**row.values, **values}, row.final, row.version, row._sources)
                 break
@@ -241,8 +241,14 @@ class LMRowOp(AsyncOperator):
     delivery) or a higher version (a stale update) is skipped, so duplicates cost nothing.
     """
 
-    def __init__(self, sig, lm=None, module: type[dspy.Module] = dspy.Predict, on_error: str = "skip",
-                 records: dict[str, tuple[str, ...] | None] | None = None):
+    def __init__(
+        self,
+        sig,
+        lm=None,
+        module: type[dspy.Module] = dspy.Predict,
+        on_error: str = "skip",
+        records: dict[str, tuple[str, ...] | None] | None = None,
+    ):
         super().__init__(on_error)
         self.sig = sig
         self.inputs = sigs.inputs(sig)
@@ -264,8 +270,10 @@ class LMRowOp(AsyncOperator):
         await super().on_close(prefix)
 
     async def _run(self, row: Row, updated: bool) -> None:
-        inputs = {name: whole_record(row, self.records[name]) if name in self.records else row.get(name)
-                  for name in self.inputs}
+        inputs = {
+            name: whole_record(row, self.records[name]) if name in self.records else row.get(name)
+            for name in self.inputs
+        }
         pred = await self.guarded(f"row {row.key}", self.executor.call(self.module, self.lm, inputs, op=self.label))
         if pred is not None:
             self.handle(row, pred, updated)
@@ -332,8 +340,13 @@ class GroupOp(AsyncOperator):
     batch = 1
     carry: tuple[str, ...] = ()  # group constants copied onto each output row
 
-    def __init__(self, hier_levels: tuple[str, ...], extra: tuple[str, ...], on_error: str = "skip",
-                 emit_every: int | None = None):
+    def __init__(
+        self,
+        hier_levels: tuple[str, ...],
+        extra: tuple[str, ...],
+        on_error: str = "skip",
+        emit_every: int | None = None,
+    ):
         super().__init__(on_error)
         self.depth = len(hier_levels)
         self.extra = extra
@@ -600,8 +613,14 @@ class JoinOp(Operator):
     when there's no suffix. A newer version of a right row re-emits the rows it was joined onto.
     """
 
-    def __init__(self, depth: int, on: tuple[str, ...] | None = None, inner: bool = False,
-                 columns: tuple[str, ...] | None = None, suffix: str | None = None):
+    def __init__(
+        self,
+        depth: int,
+        on: tuple[str, ...] | None = None,
+        inner: bool = False,
+        columns: tuple[str, ...] | None = None,
+        suffix: str | None = None,
+    ):
         super().__init__()
         self.depth = depth
         self.on = on
@@ -709,8 +728,10 @@ class JoinOp(Operator):
                 match = self.right_match(row)
                 current = self.right.get(match)
                 if current is not None and current.key != row.key:
-                    raise ValueError(f"join: the other table has more than one row with {dict(zip(self.on, match))}, "
-                                     "so a row could match several. Join on columns that identify one row.")
+                    raise ValueError(
+                        f"join: the other table has more than one row with {dict(zip(self.on, match))}, "
+                        "so a row could match several. Join on columns that identify one row."
+                    )
                 if not supersedes(row, current):
                     continue
                 self.right[match] = row

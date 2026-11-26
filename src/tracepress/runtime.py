@@ -70,8 +70,9 @@ class QueueSink:
         return None
 
 
-async def run_async(nodes: list[Node], max_concurrency: int | None = None, sinks: list | None = None,
-                    lineage: bool = False) -> list:
+async def run_async(
+    nodes: list[Node], max_concurrency: int | None = None, sinks: list | None = None, lineage: bool = False
+) -> list:
     global last_run
     executor = Executor(max_concurrency)
     ops: dict[int, Operator] = {}

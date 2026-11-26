@@ -54,8 +54,13 @@ class FuncLM(dspy.BaseLM):
         self.calls += 1
         out = self.fn(dict(FIELD.findall(_last_user_text(request))))
         content = "".join(f"[[ ## {k} ## ]]\n{v}\n\n" for k, v in out.items()) + "[[ ## completed ## ]]"
-        return Response(id=None, model="func", message=Message.assistant([TextPart(content)]),
-                        finish_reason="stop", usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2))
+        return Response(
+            id=None,
+            model="func",
+            message=Message.assistant([TextPart(content)]),
+            finish_reason="stop",
+            usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
 
     async def _aanswer(self, request):
         return self._answer(request)

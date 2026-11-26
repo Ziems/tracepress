@@ -62,12 +62,14 @@ def test_register_from_one_client_listen_from_others(server):
     tp.connect(server.address).register(name="per_trace", pipeline=per_trace)  # any client can register
 
     def push():
-        tp.connect(server.address).push([step("a", 1), step("a", 2), step("a", 3), Closed((("trace", "a"),))],
-                                        table="steps")
+        tp.connect(server.address).push(
+            [step("a", 1), step("a", 2), step("a", 3), Closed((("trace", "a"),))], table="steps"
+        )
 
     bot, runner, oncall = (tp.connect(server.address) for _ in range(3))
-    seen_bot, seen_runner, totals = asyncio.run(after_listening(
-        push, take(bot, "summaries", 3), take(runner, "summaries", 3), take(oncall, "per_trace", 1)))
+    seen_bot, seen_runner, totals = asyncio.run(
+        after_listening(push, take(bot, "summaries", 3), take(runner, "summaries", 3), take(oncall, "per_trace", 1))
+    )
     assert [e.row.summary for e in seen_bot] == ["s"] * 3 == [e.row.summary for e in seen_runner]
     assert totals[0].row.overall == "o" and totals[0].row.trace == "a"
 
@@ -117,8 +119,9 @@ def test_pipelines_named_with_url_characters_can_be_listened_to_and_unregistered
         client.register(name, client.source.steps.map(lambda r: {"x": 1}, columns={"x": int}))
 
     async def listen_to_each():
-        await after_listening(lambda: client.push([step("a", 1)], table="steps"),
-                              *(take(client, name, 1) for name in names))
+        await after_listening(
+            lambda: client.push([step("a", 1)], table="steps"), *(take(client, name, 1) for name in names)
+        )
 
     asyncio.run(listen_to_each())
     for name in names:
@@ -219,8 +222,9 @@ def test_web_pages_cant_reach_the_server(server):
     import aiohttp
 
     def post(headers):
-        req = urllib.request.Request(f"http://{server.address}/register", data=pickle.dumps(Marker()),
-                                     method="POST", headers=headers)
+        req = urllib.request.Request(
+            f"http://{server.address}/register", data=pickle.dumps(Marker()), method="POST", headers=headers
+        )
         try:
             urllib.request.urlopen(req)
         except urllib.error.HTTPError as e:
