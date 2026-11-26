@@ -259,6 +259,12 @@ analysis. It's saved with its outputs, so you can read it without running anythi
   `harbor run -d terminal-bench-sample@2.0 -a claude-code -m anthropic/claude-opus-5-5`.
 
 
+## Contributing
+
+Bug reports, fixes and new adapters are welcome. See
+[CONTRIBUTING.md](https://github.com/Ziems/tracepress/blob/main/CONTRIBUTING.md) to set up and
+open a pull request.
+
 ## Acknowledgements
 
 This project is inspired by similar work applying map reduce to agent traces.
@@ -280,11 +286,3 @@ If you find this useful, feel free to cite:
   note   = {https://noahziems.com/trace-science},
 }
 ```
-
-## Development
-
-```bash
-uv sync
-uv run pytest
-```
-

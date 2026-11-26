@@ -1,0 +1,25 @@
+name: Feature request
+description: A new operator, trace format or other change
+title: "[Feature] "
+labels: enhancement
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What would you like TracePress to do?
+      description: The question you want to ask of your traces, and what stops you today. For a new trace format, link an example file or its spec.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to build this.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: Links, examples, or other tools that do this.
