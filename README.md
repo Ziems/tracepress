@@ -255,7 +255,18 @@ Claude Code and Codex sessions, and OpenTelemetry (files or live). DSPy traces a
 
 - [examples/explore_results.ipynb](https://github.com/Ziems/tracepress/blob/main/examples/explore_results.ipynb) walks through a whole
 analysis. It's saved with its outputs, so you can read it without running anything.
-- [examples/](https://github.com/Ziems/tracepress/tree/main/examples) has runnable scripts. Clone the repo; it includes a sample Harbor job.
+- [examples/](https://github.com/Ziems/tracepress/tree/main/examples) has runnable scripts. Each one takes the path to a Harbor job.
+
+The sample job these docs use isn't in the repo, so make your own with
+[Harbor](https://github.com/harbor-framework/harbor). This runs Claude Code 3 times on each of the
+10 tasks in the Terminal-Bench sample, in Docker, and writes the job to `jobs/my-job`:
+
+```bash
+uv tool install harbor
+export ANTHROPIC_API_KEY=<your-key>
+harbor run -d terminal-bench-sample@2.0 -a claude-code -m anthropic/claude-opus-5-5 \
+  -k 3 --job-name my-job
+```
 
 
 ## Acknowledgements

@@ -2,6 +2,9 @@
 
     uv run python examples/live_monitor.py example_harbor_jobs/trials --tasks wal-recovery-ordering --limit 2 --speed 30
 
+`example_harbor_jobs/trials` is the sample job this was run on, and it isn't in the repo. Pass
+your own Harbor job and task names. The README shows how to make a job with `harbor run`.
+
 Harbor trials are replayed in timestamp order (`--speed 30` = 30x real time). Pass
 `--batch` to compute the same folds without streaming; the final rows match.
 """

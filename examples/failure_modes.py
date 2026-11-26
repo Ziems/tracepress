@@ -2,6 +2,9 @@
 
     uv run python examples/failure_modes.py example_harbor_jobs/trials --tasks wal-recovery-ordering gsea-proteomics
 
+`example_harbor_jobs/trials` is the sample job this was run on, and it isn't in the repo. Pass
+your own Harbor job and task names. The README shows how to make a job with `harbor run`.
+
 Each trial's summary sees the task it was given and the verifier's failed tests, so failures
 are explained by what actually broke. Task-level failures say what the agent was supposed to
 do, what it did instead, and how many failed runs it affected.

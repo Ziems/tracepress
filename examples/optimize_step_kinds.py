@@ -3,6 +3,9 @@
     uv run python examples/optimize_step_kinds.py example_harbor_jobs/trials \
         --tasks mvcc-lsm-compaction embedding-drift-monitor
 
+`example_harbor_jobs/trials` is the sample job this was run on, and it isn't in the repo. Pass
+your own Harbor job and task names. The README shows how to make a job with `harbor run`.
+
 Each step gets a label from a fixed rule over its real tool calls: `edit` (a Write or Edit,
 even of a test file), `test` (any Bash that runs Python), `explore` (any other Bash or a
 Read) or `other` (no tool calls). The step being tuned only sees the step's one-sentence
