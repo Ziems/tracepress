@@ -496,6 +496,10 @@ workers are ordinary spawned work: their failures stop the run at once too.
 **OTLP receiver:** stopped -> starting -> listening -> stopped. Tables starting together share one
 server. Stopping closes open exporter connections, which would otherwise hold it open forever.
 
+**Streaming** (`client.stream`): streaming -> stopping -> ended. It ends when the source does or
+on `stop()`, which cancels the source's reads at once rather than at its next event (a live source
+may never send one), so the source releases what it holds; the events already read are still sent.
+
 **Named by the existing data, and tested, so left as they are:**
 
 | Lifecycle | Where | States |

@@ -64,6 +64,8 @@ class Streaming:
         self.sent = 0
         self.error: BaseException | None = None
         self._stop = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._reading: asyncio.Future | None = None
         self._thread = threading.Thread(target=self._main, daemon=True)
         self._thread.start()
 
@@ -86,8 +88,6 @@ class Streaming:
 
         async def read(table: str) -> None:
             async for event in self.adapter.events(table):
-                if self._stop.is_set():
-                    return
                 pending.append(encode(event, table))
                 if len(pending) >= self.batch:
                     await flush()
@@ -97,9 +97,16 @@ class Streaming:
                 await asyncio.sleep(self.every)
                 await flush()
 
+        self._reading = reading = asyncio.gather(*(read(t) for t in self.tables))
+        self._loop = loop
+        if self._stop.is_set():  # stopped before the loop was there to cancel on
+            reading.cancel()
         ticker = asyncio.ensure_future(tick())
         try:
-            await asyncio.gather(*(read(t) for t in self.tables))
+            await reading
+        except asyncio.CancelledError:
+            if not self._stop.is_set():
+                raise
         finally:
             ticker.cancel()
             await flush()
@@ -117,7 +124,15 @@ class Streaming:
         return self.sent
 
     def stop(self) -> None:
+        """End the stream now, even while the source is quiet; what was read is still sent."""
         self._stop.set()
+        # A live source may never yield again, so stopping cancels its reads rather than waiting for one.
+        loop, reading = self._loop, self._reading  # _pump sets _reading before _loop
+        if loop is not None and reading is not None:
+            try:
+                loop.call_soon_threadsafe(reading.cancel)
+            except RuntimeError:  # the stream already ended and its loop is closed
+                pass
 
 
 def _quote(name: str) -> str:
