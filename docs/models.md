@@ -113,4 +113,7 @@ million input and output tokens, keyed by the model name:
 tp.configure(prices={"openai/my-model": (0.50, 2.00)})
 ```
 
+These are added to the prices already configured; an entry for a model that already has a
+price replaces it.
+
 Calls to models with no known price are counted as `unpriced_calls` instead of being guessed.
