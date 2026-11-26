@@ -21,13 +21,12 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
 
 ## Setup
 
-- Check TracePress is installed with `python -c "import tracepress"`. If it isn't, add the
-  `tracepress` package from PyPI with the project's own package manager, following the install
-  steps at https://github.com/Ziems/tracepress#install. Inside the TracePress repo itself, use the
-  repo's own environment.
+- In the TracePress repo: `uv sync`; run code with `uv run python ...`.
+- Anywhere else, check it's installed with `python -c "import tracepress"`. If that fails, install it
+  from PyPI: `uv add tracepress` in a uv project, otherwise `pip install tracepress`.
 - If something in this skill isn't supported, check you're on the latest version
-  (`python -c "from importlib.metadata import version; print(version('tracepress'))"`) and, if a
-  newer release is on PyPI, upgrade the package the same way.
+  (`python -c "from importlib.metadata import version; print(version('tracepress'))"`) and upgrade:
+  `uv add -U tracepress` or `pip install -U tracepress`.
 - **There is no default model.** Configure one before running anything:
   `tp.configure(lm="openrouter:openai/gpt-6-luna")`. That's the suggested model, at about $0.10
   per million input tokens and $0.50 per million output tokens. Without one, a run fails with

@@ -41,14 +41,7 @@ operators. Keep a generative model for stages that write text. See
 ### Use it from your coding agent
 
 TracePress ships skills that teach Claude Code, Codex, Cursor and other coding agents to
-build and run pipelines for you. For Claude:
-
-```bash
-claude plugin marketplace add Ziems/tracepress
-claude plugin install tracepress@tracepress
-```
-
-For other agents:
+build and run pipelines for you:
 
 ```bash
 npx skills add Ziems/tracepress
