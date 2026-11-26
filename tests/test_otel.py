@@ -314,6 +314,49 @@ def test_openllmetry_and_tool_calls(otel_file):
     assert [(c.trace[0], c.name) for c in calls] == [("a", "get_weather"), ("b", "read_file"), ("b", "log")]
 
 
+def test_a_user_message_that_repeats_earlier_text_is_its_own_step(tmp_path):
+    say = lambda role, text: {"role": role, "parts": [{"type": "text", "content": text}]}
+    chat = lambda sid, start, inputs, answer: span(
+        "e" * 32,
+        sid,
+        "chat",
+        start,
+        start + 1,
+        **{
+            "gen_ai.operation.name": "chat",
+            "gen_ai.input.messages": json.dumps(inputs),
+            "gen_ai.output.messages": json.dumps([say("assistant", answer)]),
+        },
+    )
+    first = [say("user", "Tell me a joke"), say("assistant", "Joke one."), say("user", "another")]
+    path = tmp_path / "traces.jsonl"
+    path.write_text(
+        json.dumps(
+            request(
+                [
+                    chat("00000000000000e1", 0, first[:1], "Joke one."),
+                    chat("00000000000000e2", 2, first, "Joke two."),
+                    chat(
+                        "00000000000000e3",
+                        4,
+                        first + [say("assistant", "Joke two."), say("user", "another")],
+                        "Joke three.",
+                    ),
+                ]
+            )
+        )
+    )
+    steps = tp.read.otel(path).table("steps").collect()
+    assert [(s.source, s.message) for s in steps] == [
+        ("user", "Tell me a joke"),
+        ("agent", "Joke one."),
+        ("user", "another"),
+        ("agent", "Joke two."),
+        ("user", "another"),
+        ("agent", "Joke three."),
+    ]
+
+
 def test_console_exporter_format(tmp_path):
     doc = {
         "name": "chat",
