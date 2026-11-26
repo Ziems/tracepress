@@ -155,6 +155,19 @@ def decode_traces_request(buf: bytes) -> dict:
 # ---------------------------------------------------------------------------- HTTP
 
 
+async def _read_body(reader: asyncio.StreamReader, headers: dict[str, str]) -> bytes:
+    """The request body, sized by Content-Length or sent in chunks (`Transfer-Encoding: chunked`)."""
+    if "chunked" not in headers.get("transfer-encoding", "").lower():
+        return await reader.readexactly(int(headers.get("content-length") or 0))
+    chunks = []
+    while size := int((await reader.readline()).split(b";")[0], 16):
+        chunks.append(await reader.readexactly(size))
+        await reader.readexactly(2)  # the CRLF after each chunk
+    while (await reader.readline()) not in (b"\r\n", b"\n", b""):
+        pass  # trailer fields, unused
+    return b"".join(chunks)
+
+
 async def _serve_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, on_spans) -> None:
     """A minimal HTTP/1.1 server for `POST /v1/traces`, with keep-alive."""
     try:
@@ -167,7 +180,7 @@ async def _serve_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             while (line := await reader.readline()) not in (b"\r\n", b"\n", b""):
                 name, _, value = line.decode("latin-1").partition(":")
                 headers[name.strip().lower()] = value.strip()
-            body = await reader.readexactly(int(headers.get("content-length") or 0))
+            body = await _read_body(reader, headers)
             status, content_type, reply = 200, headers.get("content-type", "application/x-protobuf"), b""
             if method != "POST" or path.split("?")[0].rstrip("/") != "/v1/traces":
                 status, reply = 404, b"not found"

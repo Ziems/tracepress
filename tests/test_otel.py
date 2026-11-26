@@ -252,9 +252,16 @@ def test_protobuf_decodes_like_json():
     assert any(s.attributes.get("gen_ai.usage.input_tokens") == 100 for s in as_json)
 
 
-async def _post(port, body, content_type, encoding=None):
+async def _post(port, body, content_type, encoding=None, chunked=False):
+    """`chunked` sends the body in two chunks with no Content-Length, as streaming exporters do."""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    headers = f"POST /v1/traces HTTP/1.1\r\nHost: x\r\nContent-Type: {content_type}\r\nContent-Length: {len(body)}\r\n"
+    headers = f"POST /v1/traces HTTP/1.1\r\nHost: x\r\nContent-Type: {content_type}\r\n"
+    if chunked:
+        headers += "Transfer-Encoding: chunked\r\n"
+        half = len(body) // 2
+        body = b"".join(b"%x;ext=1\r\n%s\r\n" % (len(c), c) for c in (body[:half], body[half:])) + b"0\r\n\r\n"
+    else:
+        headers += f"Content-Length: {len(body)}\r\n"
     if encoding:
         headers += f"Content-Encoding: {encoding}\r\n"
     writer.write((headers + "Connection: close\r\n\r\n").encode() + body)
@@ -286,7 +293,8 @@ async def _live_otlp_receiver():
     sem = semconv_trace()
     # Live spans arrive in the order they end: chat, tool, chat, then the agent (root) span.
     assert await _post(live.port, pb_request(sem[1:2]), "application/x-protobuf") == 200
-    assert await _post(live.port, gzip.compress(pb_request(sem[2:3])), "application/x-protobuf", "gzip") == 200
+    assert await _post(live.port, gzip.compress(pb_request(sem[2:3])), "application/x-protobuf", "gzip",
+                       chunked=True) == 200
     assert await _post(live.port, json.dumps(request(sem[3:] + sem[:1])).encode(), "application/json") == 200
     assert await _post(live.port, b"\xff\xff", "application/x-protobuf") == 400
     await asyncio.wait_for(done.wait(), 5)
