@@ -1,6 +1,6 @@
 {
   "name": "tracepress",
-  "version": "0.2.2",
+  "version": "0.2.1",
   "description": "Skills for building and running TracePress pipelines: LLM-powered map/reduce over agent traces to find failure modes, summarize and compare runs, watch agents live, and add new trace formats.",
   "icon": "./assets/icon.svg",
   "author": {
