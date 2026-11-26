@@ -85,3 +85,170 @@ def test_plain_litellm_strings_pass_through():
 def test_unknown_provider_lists_known_ones():
     with pytest.raises(ValueError, match="openrouter, portkey"):
         lm_config.make_lm("portky:openai/gpt-5")
+
+
+# --- The default JSON adapter's response format ----------------------------------------------
+
+
+@pytest.fixture
+def fresh_dspy_cache(tmp_path):
+    import dspy
+
+    previous = dspy.cache
+    dspy.configure_cache(disk_cache_dir=str(tmp_path / "dspy-cache"))
+    yield
+    dspy.cache = previous
+
+
+def _count_schema_builds(monkeypatch) -> list:
+    from dspy.adapters import json_adapter
+
+    builds = []
+    real = json_adapter._get_structured_outputs_response_format
+    monkeypatch.setattr(
+        json_adapter,
+        "_get_structured_outputs_response_format",
+        lambda *args, **kwargs: builds.append(1) or real(*args, **kwargs),
+    )
+    return builds
+
+
+def test_the_default_adapter_builds_a_signatures_response_format_once(monkeypatch, fresh_dspy_cache):
+    import dspy
+    from fakes import structured_lm
+
+    builds = _count_schema_builds(monkeypatch)
+    lm = structured_lm({"topic": "files", "risky": False})
+    predict = dspy.Predict("command -> topic, risky: bool")
+    with dspy.context(lm=lm, adapter=lm_config.Config().adapter):  # the default (tests swap in ChatAdapter)
+        answers = [predict(command=f"ls {i}") for i in range(5)]
+    assert [(a.topic, a.risky) for a in answers] == [("files", False)] * 5
+    assert len(lm.engine_requests) == 5 and len(builds) == 1
+    schemas = [r.config.response_format for r in lm.engine_requests]
+    assert all(s == schemas[0] for s in schemas)
+
+
+def test_the_default_adapter_sends_the_request_dspys_own_adapter_sends(fresh_dspy_cache):
+    """Same request, same cache key: answers cached before the change are still found."""
+    import dspy
+    from fakes import structured_lm
+
+    lm = structured_lm({"topic": "files", "risky": False})
+    predict = dspy.Predict("command -> topic, risky: bool")
+    with dspy.context(lm=lm, adapter=dspy.JSONAdapter()):
+        predict(command="ls")
+    with dspy.context(lm=lm, adapter=lm_config.JSONAdapter()):
+        predict(command="ls")
+    assert len(lm.engine_requests) == 1  # the second call was a cache hit
+
+
+def test_calls_with_their_own_options_choose_their_format_every_time(monkeypatch, fresh_dspy_cache):
+    import dspy
+    from fakes import structured_lm
+
+    builds = _count_schema_builds(monkeypatch)
+    predict = dspy.Predict("command -> topic, risky: bool", temperature=0.5)
+    with dspy.context(lm=structured_lm({"topic": "files", "risky": False}), adapter=lm_config.JSONAdapter()):
+        for i in range(3):
+            predict(command=f"ls {i}")
+    assert len(builds) == 3
+
+
+def test_each_call_gets_its_own_copy_of_the_schema():
+    import dspy
+    from fakes import structured_lm
+
+    adapter, lm = lm_config.JSONAdapter(), structured_lm({})
+    signature = dspy.make_signature("command -> topic, risky: bool")
+    first, second = {}, {}
+    adapter._prepare_response_format(lm, first, signature)
+    first["response_format"].model_json_schema()["properties"].clear()  # an in-place edit, as LiteLLM has made
+    adapter._prepare_response_format(lm, second, signature)
+    assert set(second["response_format"].model_json_schema()["properties"]) == {"topic", "risky"}
+
+
+def test_each_call_gets_its_own_json_mode_format():
+    import dspy
+    from fakes import structured_lm
+
+    adapter, lm = lm_config.JSONAdapter(), structured_lm({}, schemas=False)
+    signature = dspy.make_signature("command -> topic")
+    first, second = {}, {}
+    adapter._prepare_response_format(lm, first, signature)
+    first["response_format"]["edited"] = True
+    adapter._prepare_response_format(lm, second, signature)
+    assert second["response_format"] == {"type": "json_object"}
+
+
+def _signatures():
+    """Output shapes, several of them for one field name, so a key that drops a type collides."""
+    from typing import Any, Literal
+
+    import dspy
+    import pydantic
+
+    class Finding(pydantic.BaseModel):
+        title: str
+        severity: int
+
+    def x(annotation, **field):
+        return dspy.make_signature(
+            {"command": dspy.InputField(), "x": dspy.OutputField(**field)}, custom_types={"Any": Any}
+        ).with_updated_fields("x", type_=annotation)
+
+    return {
+        "text": dspy.make_signature("command -> topic"),
+        "bool": dspy.make_signature("command -> topic, risky: bool"),
+        "x: int": x(int),
+        "x: str": x(str),
+        "x: list[str]": x(list[str]),
+        "x: Finding": x(Finding),
+        "x: Literal a, b": x(Literal["a", "b"]),
+        "x: Literal b, a": x(Literal["b", "a"]),
+        "x: int | str": x(int | str),
+        "x: str | int": x(str | int),
+        "x: float = 0.5": x(float, default=0.5),
+        "x: float = 0.7": x(float, default=0.7),
+        "x: dict[str, Any]": x(dict[str, Any]),  # an open mapping: plain JSON mode
+        "x: ToolCalls": x(dspy.ToolCalls),
+        "reasoning": dspy.ChainOfThought("command -> topic").predict.signature,
+    }
+
+
+def test_the_default_adapter_chooses_the_format_dspy_chooses():
+    """One adapter, as a pipeline shares it: across output types, LMs, settings and repeated calls."""
+    import dspy
+    from fakes import structured_lm
+
+    ours = lm_config.JSONAdapter()
+    lms = {"structured": structured_lm({}), "json mode": structured_lm({}, schemas=False)}
+
+    def chosen(adapter, lm, signature):
+        kwargs = {}
+        adapter._prepare_response_format(lm, kwargs, signature)
+        return dspy.cache.cache_key(kwargs)  # the format as DSPy's cache key sees it
+
+    signatures = _signatures()
+    for _ in range(2):  # the second pass answers from the memo
+        for native in (True, False):
+            ours.use_native_function_calling = native
+            stock = dspy.JSONAdapter(use_native_function_calling=native)
+            for lm_name, lm in lms.items():
+                for name, signature in signatures.items():
+                    assert chosen(ours, lm, signature) == chosen(stock, lm, signature), (native, lm_name, name)
+
+
+def test_the_default_adapter_pickles_and_copies():
+    import copy
+    import pickle
+
+    import dspy
+    from fakes import structured_lm
+
+    adapter = lm_config.JSONAdapter()
+    adapter._prepare_response_format(structured_lm({}), {}, dspy.make_signature("command -> topic"))
+    for clone in (pickle.loads(pickle.dumps(adapter)), copy.deepcopy(adapter)):
+        assert isinstance(clone, lm_config.JSONAdapter) and len(clone._formats) == 0
+        kwargs = {}
+        clone._prepare_response_format(structured_lm({}), kwargs, dspy.make_signature("command -> topic"))
+        assert "response_format" in kwargs  # and it works after
