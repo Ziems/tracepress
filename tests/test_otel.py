@@ -6,6 +6,7 @@ import struct
 import pytest
 
 import tracepress as tp
+from tracepress.adapters.otel import TraceSteps, spans_from_otlp
 from tracepress.adapters.otlp import decode_traces_request
 
 T0 = 1_767_225_600_000_000_000  # 2026-01-01T00:00:00Z in ns
@@ -149,6 +150,29 @@ def test_openinference_steps(otel_file):
         "read_file", {"path": "x.txt"}, "FileNotFoundError", True)
     assert steps[2].tool_calls[0]["name"] == "log" and steps[2].tool_calls[0]["result"] == "logged"
     assert steps[3].message == "Could not read it."
+
+
+def test_parallel_calls_to_one_tool_keep_their_own_results_when_they_end_out_of_order():
+    trace, agent = "f" * 32, "00000000000000f1"
+    ask = {"openinference.span.kind": "LLM", "llm.input_messages.0.message.role": "user",
+           "llm.input_messages.0.message.content": "Read a.txt and b.txt",
+           "llm.output_messages.0.message.role": "assistant"}
+    for i, path in enumerate(["a.txt", "b.txt"]):
+        ask |= {f"llm.output_messages.0.message.tool_calls.{i}.tool_call.id": f"t{i}",
+                f"llm.output_messages.0.message.tool_calls.{i}.tool_call.function.name": "read_file",
+                f"llm.output_messages.0.message.tool_calls.{i}.tool_call.function.arguments": json.dumps({"path": path})}
+    read = lambda sid, start, end, path: span(trace, sid, "read_file", start, end, parent=agent, **{
+        "openinference.span.kind": "TOOL", "tool.name": "read_file",
+        "input.value": json.dumps({"path": path}), "output.value": f"contents of {path}"})
+    # Live spans arrive as they end: the b.txt read started second but ends first.
+    ended = [span(trace, "00000000000000f2", "ChatCompletion", 1, 2, parent=agent, **ask),
+             read("00000000000000f4", 4, 5, "b.txt"), read("00000000000000f3", 3, 6, "a.txt")]
+    builder, steps = TraceSteps(), []
+    for s in spans_from_otlp(request(ended)):
+        steps += builder.add(s)
+    steps += builder.finish()
+    assert [(c["arguments"]["path"], c["result"]) for c in steps[1]["tool_calls"]] == [
+        ("a.txt", "contents of a.txt"), ("b.txt", "contents of b.txt")]
 
 
 def test_openllmetry_and_tool_calls(otel_file):

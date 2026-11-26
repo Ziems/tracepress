@@ -507,11 +507,14 @@ class TraceSteps:
         return self.release()
 
     def _requested(self, call: dict) -> dict | None:
-        """The unanswered call an LLM asked for that this tool span ran: by id, else by name."""
+        """The unanswered call an LLM asked for that this tool span ran: by id, else by name and
+        arguments, else by name."""
         if call["id"]:
             known = self.calls.get(call["id"])
             return known if known is not None and not known["_done"] else None
-        return next((c for c in self.calls.values() if c["name"] == call["name"] and not c["_done"]), None)
+        named = [c for c in self.calls.values() if c["name"] == call["name"] and not c["_done"]]
+        # Parallel calls to one tool can end in any order, so their arguments tell them apart.
+        return next((c for c in named if c["arguments"] == call["arguments"]), next(iter(named), None))
 
     def _llm(self, span: Span) -> None:
         inputs, outputs = llm_messages(span)
