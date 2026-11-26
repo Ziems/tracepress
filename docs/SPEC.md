@@ -252,7 +252,10 @@ Decisions made while building:
 - **Output format:** DSPy's `JSONAdapter` by default; if a response can't be parsed, the
   call is retried with `XMLAdapter`. Without that fallback, a cached unparseable response
   fails the same call on every rerun.
-- **Caching** uses DSPy's request cache; a fully cached rerun is byte-identical.
+- **Caching** uses DSPy's request cache; a fully cached rerun is byte-identical. In front of
+  it, the prediction cache answers a call from what its prompt is rendered from (signatures,
+  demos, module, LM settings, adapters, inputs, versions) without rendering it; a miss goes
+  through DSPy and stores its answer. Off with `tp.configure(prediction_cache=False)`.
 - **Errors:** LM operators default to `on_error="skip"` (logged and counted in
   `tp.last_run()`); `on_error="raise"` fails the run.
 

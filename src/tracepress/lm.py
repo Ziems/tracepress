@@ -2,13 +2,19 @@
 
 Caching comes from DSPy's own request cache (on disk by default), which keys on the
 model, the rendered prompt and the call settings. Re-running a pipeline therefore only
-pays for calls whose inputs changed.
+pays for calls whose inputs changed. In front of it, the prediction cache answers a call
+from what its prompt is rendered from, before DSPy renders it (see `prediction_request`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
+import functools
+import hashlib
+import inspect
 import logging
+import math
 import os
 import re
 import time
@@ -62,6 +68,9 @@ class Config:
     # Anonymous usage telemetry, one event per run (see telemetry.py). Also off with
     # TRACEPRESS_TELEMETRY=0 or DO_NOT_TRACK=1.
     telemetry: bool = True
+    # Look a call's answer up before DSPy renders its prompt (see `prediction_request`). A hit
+    # skips prompt rendering and parsing. Off, every call goes through DSPy and its cache.
+    prediction_cache: bool = True
 
 
 _config = Config()
@@ -248,7 +257,7 @@ class ModelStats:
 @dataclass
 class RunStats:
     calls: int = 0
-    cached_calls: int = 0  # answered from DSPy's cache, so free
+    cached_calls: int = 0  # answered from the prediction cache or DSPy's, so free
     errors: int = 0
     fallbacks: int = 0  # calls that needed a fallback adapter to parse
     timeouts: int = 0  # attempts abandoned after the timeout (then retried)
@@ -331,6 +340,301 @@ class RunStats:
         )
 
 
+# Bump to make every prediction-cache entry miss: after a change to how a call's inputs are
+# built or its answer is read that the versions below don't show (an editable install keeps
+# its version while its code changes).
+PREDICTION_CACHE_VERSION = 1
+
+
+@functools.cache
+def _versions() -> tuple[str, str]:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        own = version("tracepress")
+    except PackageNotFoundError:
+        own = "unknown"
+    return own, dspy.__version__
+
+
+_type_adapters: dict[Any, Any] = {}  # (annotation, its repr) -> pydantic TypeAdapter
+_type_ids: dict[Any, Any] = {}  # (annotation, its repr) -> _type_id
+
+
+def _memo_key(annotation: Any) -> Any:
+    # Types compare equal regardless of order (Literal["a", "b"] == Literal["b", "a"]), so the
+    # repr goes in too. An annotation that can't be hashed is known by its repr alone.
+    try:
+        key = (annotation, repr(annotation))
+        hash(key)
+        return key
+    except TypeError:
+        return repr(annotation)
+
+
+def _type_adapter(annotation: Any) -> Any:
+    import pydantic
+
+    key = _memo_key(annotation)
+    if key not in _type_adapters:
+        _type_adapters[key] = pydantic.TypeAdapter(annotation)
+    return _type_adapters[key]
+
+
+def _type_id(annotation: Any) -> Any:
+    # The repr keeps what the schema may not (Literal order); the schema holds what the repr
+    # doesn't (a model's fields, an enum's members).
+    key = _memo_key(annotation)
+    if key not in _type_ids:
+        try:
+            _type_ids[key] = [repr(annotation), _type_adapter(annotation).json_schema()]
+        except Exception:  # noqa: BLE001 - a type pydantic can't describe is keyed by its repr
+            _type_ids[key] = repr(annotation)
+    return _type_ids[key]
+
+
+def _keyable(value: Any) -> Any:
+    """`value` as JSON with its types spelled out, so inputs DSPy renders differently key differently.
+
+    Plain JSON would make NaN, inf and None alike (all `null`), and tuples like lists.
+    """
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else ["<float>", repr(value)]
+    # Every container is tagged, so a list can't pass for one (["<tuple>", [1]] isn't (1,)).
+    if isinstance(value, (list, tuple)):
+        return [f"<{type(value).__name__}>", [_keyable(v) for v in value]]
+    if isinstance(value, dict):  # kept in order, with keys of any type: both reach the prompt
+        return ["<dict>", [[_keyable(k), _keyable(v)] for k, v in value.items()]]
+    if isinstance(value, (set, frozenset)):  # in an order that doesn't change between runs
+        return [f"<{type(value).__name__}>", sorted((_keyable(v) for v in value), key=repr)]
+    if hasattr(value, "model_dump"):
+        return [f"<{type(value).__module__}.{type(value).__qualname__}>", _keyable(value.model_dump(mode="json"))]
+    return [f"<{type(value).__module__}.{type(value).__qualname__}>", repr(value)]
+
+
+@functools.cache
+def _source_id(cls: type) -> str:
+    """A hash of the code of a module class and the classes it inherits from, DSPy's aside.
+
+    DSPy's own modules are covered by the DSPy version. A class whose source can't be read
+    (defined in `python -c`, say) raises, so its calls aren't cached. Code a class calls
+    outside itself, such as a module-level helper, isn't covered.
+    """
+    sources = [inspect.getsource(c) for c in cls.__mro__ if c is not object and c.__module__.split(".")[0] != "dspy"]
+    return hashlib.sha256("\n".join(sources).encode()).hexdigest()
+
+
+def _module_settings(module: dspy.Module) -> dict[str, Any]:
+    # A module's own plain settings (Refine's N and threshold, say). Predictors are keyed on
+    # their own, and DSPy's bookkeeping (a random stage id, call history) changes every run.
+    return {
+        k: v
+        for k, v in vars(module).items()
+        if isinstance(v, (bool, int, float, str, type(None))) and k not in ("stage", "_compiled")
+    }
+
+
+def _signature_id(signature: Any) -> list:
+    return [
+        signature.instructions,
+        [
+            (name, _type_id(f.annotation), _keyable(f.json_schema_extra or {}), repr(f.default))
+            for name, f in signature.fields.items()
+        ],
+    ]
+
+
+def _adapter_id(adapter: dspy.Adapter) -> tuple:
+    # Its class and plain settings (use_native_function_calling, ...): not callbacks or caches.
+    settings = {k: v for k, v in vars(adapter).items() if isinstance(v, (bool, int, float, str, type(None)))}
+    return type(adapter).__module__, type(adapter).__qualname__, settings
+
+
+# Not part of what a call asks for: DSPy leaves these out of its own cache key too.
+_UNKEYED_LM_KWARGS = ("api_key", "api_base", "base_url")
+# Part of the call but can hold a credential (Portkey's key rides in a header): keyed by hash.
+_HASHED_LM_KWARGS = ("extra_headers",)
+
+
+def _lm_id(lm: dspy.LM) -> list:
+    engine = lm.engine if isinstance(lm.engine, str) else f"{type(lm.engine).__module__}.{type(lm.engine).__qualname__}"
+    return [
+        f"{type(lm).__module__}.{type(lm).__qualname__}",
+        engine,
+        lm.model,
+        lm.model_type,
+        getattr(lm, "use_developer_role", False),
+        _keyable(
+            {
+                k: hashlib.sha256(repr(_keyable(v)).encode()).hexdigest() if k in _HASHED_LM_KWARGS else v
+                for k, v in lm.kwargs.items()
+                if k not in _UNKEYED_LM_KWARGS
+            }
+        ),
+    ]
+
+
+def prediction_request(module: dspy.Module, lm: dspy.BaseLM, inputs: dict[str, Any]) -> dict[str, Any] | None:
+    """Everything that decides a call's answer, as a cache request; None if the call isn't cached.
+
+    It holds what the prompt is rendered from, not the prompt: each predictor's signature,
+    demos and settings, the module (its plain settings, and its classes' code for a module of
+    your own), the LM and its settings, the adapters, the inputs, and the TracePress and DSPy
+    versions, since a new version may render the same call differently. DSPy's own cache
+    renders the prompt first.
+    """
+    if not _config.prediction_cache or not isinstance(lm, dspy.LM) or not lm.cache:
+        return None
+    try:
+        return _prediction_request(module, lm, inputs)
+    except Exception:  # something we can't key on: leave the call to DSPy
+        log.debug("tracepress: not caching a call whose request can't be keyed", exc_info=True)
+        return None
+
+
+def _prediction_request(module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any]) -> dict[str, Any]:
+    adapters = [_config.adapter, *_config.fallback_adapters]
+    return {
+        "_fn_identifier": "tracepress.prediction",  # keeps these entries apart from DSPy's own
+        "version": [PREDICTION_CACHE_VERSION, *_versions()],
+        "module": [
+            f"{type(module).__module__}.{type(module).__qualname__}",
+            _source_id(type(module)),
+            _keyable(_module_settings(module)),
+        ],
+        "predictors": [_predictor_id(name, p) for name, p in _predictors(module)],
+        "lm": _lm_id(lm),
+        "adapters": [_adapter_id(a) for a in adapters],
+        "inputs": _keyable(inputs),
+    }
+
+
+def _predictor_id(name: str, predictor: Any) -> list:
+    if predictor.lm is not None and not isinstance(predictor.lm, dspy.LM):
+        raise TypeError("a predictor with an LM of its own that isn't a dspy.LM")  # not cached
+    return [
+        name,
+        _signature_id(predictor.signature),
+        _keyable([d.toDict() for d in predictor.demos]),
+        _keyable(predictor.config),
+        _keyable(getattr(predictor, "fields", None)),
+        _lm_id(predictor.lm) if predictor.lm is not None else None,
+    ]  # its own LM wins over the call's
+
+
+# Where DSPy keeps its per-call bookkeeping: lists that grow with every call (of dicts, for
+# the history). A module of your own may use the same names for predictors; see `_bookkeeping`.
+_BOOKKEEPING = frozenset({"history", "traces", "train", "callbacks", "demos"})
+
+
+def _predictors(module: dspy.Module) -> list[tuple[str, Any]]:
+    """`module.named_predictors()`, without walking DSPy's per-call bookkeeping.
+
+    DSPy looks through every attribute, including a module's call history, so asking it on
+    every call costs more the longer a run goes. This walks the same way but skips DSPy's
+    bookkeeping lists (see `_bookkeeping`).
+    """
+    from dspy.predict.parameter import Parameter
+
+    def _bookkeeping(name: str, value: Any) -> bool:
+        # One of DSPy's lists, judged by its ends so the check costs the same however long it
+        # grows: a list of predictors or modules under one of these names is still walked.
+        if name not in _BOOKKEEPING or not isinstance(value, list):
+            return False
+        return not value or not any(isinstance(v, (Parameter, dspy.Module)) for v in (value[0], value[-1]))
+
+    def parameters(owner: Any) -> list[tuple[str, Any]]:  # as `BaseModule.named_parameters`
+        seen: set[int] = set()
+        found: list[tuple[str, Any]] = []
+
+        def add(name: str, value: Any) -> None:
+            if isinstance(value, Parameter):
+                if id(value) not in seen:
+                    seen.add(id(value))
+                    found.append((name, value))
+            elif isinstance(value, dspy.Module) and not getattr(value, "_compiled", False):
+                for sub, param in parameters(value):
+                    add(f"{name}.{sub}", param)
+
+        if isinstance(owner, Parameter):
+            add("self", owner)
+        for name, value in vars(owner).items():
+            if _bookkeeping(name, value):
+                continue
+            if isinstance(value, (Parameter, dspy.Module)):
+                add(name, value)
+            elif isinstance(value, (list, tuple)):
+                for i, item in enumerate(value):
+                    add(f"{name}[{i}]", item)
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    add(f"{name}['{key}']", item)
+        return found
+
+    return [(name, p) for name, p in parameters(module) if isinstance(p, dspy.Predict)]
+
+
+def _output_types(module: dspy.Module) -> dict[str, Any]:
+    types: dict[str, Any] = {}
+    for _, predictor in _predictors(module):
+        types.update({name: f.annotation for name, f in predictor.signature.output_fields.items()})
+    return types
+
+
+def _plain(value: Any) -> bool:
+    # Exact types: a subclass (a str Enum, say) is an object the disk cache won't load back.
+    if type(value) in (type(None), bool, int, float, str):
+        return True
+    if type(value) is list:
+        return all(_plain(v) for v in value)
+    return type(value) is dict and all(type(k) is str and _plain(v) for k, v in value.items())
+
+
+def _stored_outputs(module: dspy.Module, pred: dspy.Prediction) -> dict[str, Any] | None:
+    """The answer as plain data, or None if it can't be stored exactly.
+
+    Plain data, not the objects themselves: DSPy's disk cache won't load arbitrary classes in
+    a new process, and a stored object would be shared with the caller who got it. A plain
+    value is kept as it is; any other is dumped by its output type and kept only if it reads
+    back equal, and of the same type.
+    """
+    types, outputs = _output_types(module), dict(pred.items())
+    if not outputs or set(outputs) - set(types):
+        return None  # a module whose answer isn't its predictors' outputs
+    stored = {}
+    for name, value in outputs.items():
+        if _plain(value):
+            stored[name] = ["plain", copy.deepcopy(value)]
+            continue
+        try:
+            dumped = _type_adapter(types[name]).dump_python(value, mode="json", warnings=False)
+            back = _type_adapter(types[name]).validate_python(dumped)
+        except Exception:  # noqa: BLE001 - an answer that can't be stored just isn't
+            return None
+        if type(back) is not type(value) or back != value:
+            return None
+        stored[name] = ["typed", dumped]
+    return stored
+
+
+def _read_outputs(types: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: value if kind == "plain" else _type_adapter(types[name]).validate_python(value)
+        for name, (kind, value) in stored.items()
+    }
+
+
+def _cached_prediction(module: dspy.Module, request: dict[str, Any]) -> dspy.Prediction | None:
+    try:
+        stored = dspy.cache.get(request)
+        return None if stored is None else dspy.Prediction(**_read_outputs(_output_types(module), stored))
+    except Exception:  # an entry that no longer reads, or a cache that failed: ask DSPy instead
+        log.debug("tracepress: prediction cache lookup failed", exc_info=True)
+        return None
+
+
 class Executor:
     """One per run. Every lm_ operator sends its calls through here."""
 
@@ -343,6 +647,12 @@ class Executor:
         self, module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any], timeout: float | None = None, op: str = "lm"
     ) -> dspy.Prediction:
         timeout = timeout or _config.request_timeout
+        start = time.monotonic()
+        request = prediction_request(module, lm, inputs)
+        if request is not None and (cached := _cached_prediction(module, request)) is not None:
+            self.stats.calls += 1  # a hit makes no LM call, so it needn't wait for a slot
+            self.stats.record(lm, op, time.monotonic() - start, 0, 0, ok=True, cached=True)
+            return cached
         async with self.semaphore:
             self.stats.calls += 1
             start = time.monotonic()
@@ -375,7 +685,18 @@ class Executor:
             cached=not usage,
             reported_cost=sum(costs) if costs else None,
         )
+        if request is not None:
+            self._remember(module, request, pred)
         return pred
+
+    @staticmethod
+    def _remember(module: dspy.Module, request: dict[str, Any], pred: dspy.Prediction) -> None:
+        """Store a paid answer in the prediction cache; failing to never fails the call."""
+        try:
+            if (stored := _stored_outputs(module, pred)) is not None:
+                dspy.cache.put(request, stored)
+        except Exception:
+            log.debug("tracepress: couldn't store an answer in the prediction cache", exc_info=True)
 
     async def _predict(self, module: dspy.Module, lm: dspy.LM, inputs: dict[str, Any]) -> dspy.Prediction:
         adapters = [_config.adapter, *_config.fallback_adapters]
