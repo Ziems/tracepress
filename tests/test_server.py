@@ -89,6 +89,30 @@ def test_a_late_pipeline_catches_up(server):
     assert sorted(e.row.step for e in rows) == [1, 2]
 
 
+def fail(row):
+    raise ValueError("boom")
+
+
+def test_a_listener_that_connects_after_a_pipeline_failed_gets_its_error(server):
+    import time
+
+    client = tp.connect(server.address)
+    client.declare({"steps": STEPS})
+    client.register(name="p", pipeline=client.source.steps.map(fail, columns={}))
+    client.push([step("a", 1)], table="steps")
+    deadline = time.monotonic() + 10
+    while client.pipelines()[0]["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert client.pipelines()[0]["status"] == "failed"
+
+    async def listen():
+        async for _ in client.listen("p"):
+            pass
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(asyncio.wait_for(listen(), 10))
+
+
 def test_unregister_ends_listeners(server):
     client = tp.connect(server.address)
     client.declare({"steps": STEPS})

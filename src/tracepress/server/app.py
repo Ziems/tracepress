@@ -229,7 +229,9 @@ def make_app(token: str | None = None, retain: int | None = None) -> web.Applica
                 row = p.rows[key]
                 queue.put_nowait(encode(RowUpdated(row) if row.version > 1 else RowAdded(row)))
         p.listeners.add(queue)
-        if p.task is not None and p.task.done():
+        if p.task is not None and p.task.done():  # it already told its listeners how it ended
+            if p.error is not None:
+                queue.put_nowait({"kind": "error", "error": p.error})
             queue.put_nowait(None)
 
         async def send():
