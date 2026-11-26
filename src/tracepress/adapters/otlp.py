@@ -7,7 +7,8 @@ dependency is needed.
 
 Steps stream as they complete. Spans and the trace row arrive when the trace is done: once
 its root span has arrived and nothing new has come for `settle` seconds, or after
-`idle_timeout` seconds of silence. Spans arriving for a trace already closed are dropped.
+`idle_timeout` seconds of silence. Spans arriving for a trace closed less than
+`idle_timeout` seconds ago are dropped; later ones start the trace anew.
 """
 
 from __future__ import annotations
@@ -219,7 +220,7 @@ class OTLPReceiver(Adapter):
         self.settle, self.idle_timeout = settle, idle_timeout
         self.subscribers: list[tuple[str, asyncio.Queue]] = []
         self.open: dict[str, _Trace] = {}
-        self.closed: set[str] = set()
+        self.closed: dict[str, float] = {}  # trace id -> when it closed, oldest first
         self.server: asyncio.AbstractServer | None = None
         self._listening: asyncio.Future | None = None  # None when stopped; shared while starting
         self._sweeper: asyncio.Task | None = None
@@ -293,7 +294,7 @@ class OTLPReceiver(Adapter):
 
     def close_trace(self, trace_id: str) -> None:
         trace = self.open.pop(trace_id)
-        self.closed.add(trace_id)
+        self.closed[trace_id] = time.monotonic()
         self._release(trace_id, trace, trace.builder.finish())
         spans = list(trace.spans.values())
         key = (("trace", trace_id),)
@@ -302,12 +303,17 @@ class OTLPReceiver(Adapter):
 
     async def _sweep(self) -> None:
         while True:
-            await asyncio.sleep(min(self.settle, 0.5))
+            await asyncio.sleep(min(max(self.settle, 0.01), 0.5))
             now = time.monotonic()
             for trace_id, trace in list(self.open.items()):
                 quiet = now - trace.last_seen
                 if (trace.root_seen and quiet >= self.settle) or quiet >= self.idle_timeout:
                     self.close_trace(trace_id)
+            while self.closed:
+                trace_id, closed_at = next(iter(self.closed.items()))
+                if now - closed_at < self.idle_timeout:
+                    break
+                del self.closed[trace_id]
 
     async def events(self, table: str) -> AsyncIterator[Event]:
         queue: asyncio.Queue = asyncio.Queue()
