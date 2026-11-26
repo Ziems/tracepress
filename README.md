@@ -41,14 +41,7 @@ operators. Keep a generative model for stages that write text. See
 ### Use it from your coding agent
 
 TracePress ships skills that teach Claude Code, Codex, Cursor and other coding agents to
-build and run pipelines for you. For Claude:
-
-```bash
-claude plugin marketplace add Ziems/tracepress
-claude plugin install tracepress@tracepress
-```
-
-For other agents:
+build and run pipelines for you:
 
 ```bash
 npx skills add Ziems/tracepress
@@ -264,14 +257,6 @@ Claude Code and Codex sessions, and OpenTelemetry (files or live). DSPy traces a
 analysis. It's saved with its outputs, so you can read it without running anything.
 - [examples/](https://github.com/Ziems/tracepress/tree/main/examples) has runnable scripts. Clone the repo; it includes a sample Harbor job.
 
-## Telemetry
-
-TracePress sends anonymous usage events to PostHog: one per finished run or `optimize`, and one
-when a server starts or registers a pipeline, with versions, durations, LM call and token counts,
-cost, model names and how many of each operator ran. It never sends your data, prompts,
-signatures, column or task names, file paths, hostnames, API keys or error messages.
-
-Turn it off with `TRACEPRESS_TELEMETRY=0`, `DO_NOT_TRACK=1` or `tp.configure(telemetry=False)`.
 
 ## Acknowledgements
 

@@ -22,13 +22,12 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
 
 ## Setup
 
-- Check TracePress is installed with `python -c "import tracepress"`. If it isn't, add the
-  `tracepress` package from PyPI with the project's own package manager, following the install
-  steps at https://github.com/Ziems/tracepress#install. Inside the TracePress repo itself, use the
-  repo's own environment.
+- In the TracePress repo: `uv sync`; run code with `uv run python ...`.
+- Anywhere else, check it's installed with `python -c "import tracepress"`. If that fails, install it
+  from PyPI: `uv add tracepress` in a uv project, otherwise `pip install tracepress`.
 - If something in this skill isn't supported, check you're on the latest version
-  (`python -c "from importlib.metadata import version; print(version('tracepress'))"`) and, if a
-  newer release is on PyPI, upgrade the package the same way.
+  (`python -c "from importlib.metadata import version; print(version('tracepress'))"`) and upgrade:
+  `uv add -U tracepress` or `pip install -U tracepress`.
 - Configure a model before running LM operators; see Setup in the `tracepress-analyze-traces` skill.
 
 ## Steps
@@ -77,6 +76,11 @@ For one-off analysis of finished runs, use the `tracepress-analyze-traces` skill
      Then the note can say what the agent is meant to be doing, not only what it just did.
    - **No Chain of Thought on per-step folds.** Every step is a sequential call, so it slows the
      whole stream. Save it for a final reduce over the finished notes, if there is one.
+   - **Use Jev for live flags.** A fold's state is text, so the fold itself needs a generative
+     model. But any per-step check where classification alone is enough (is this step stuck?
+     risky? off-task?) should run on Jev by default: an `lm_map` with a `Noul` or `Choice` output
+     and `lm="typesafe:jev-latest"`. It returns in a fraction of the time, which matters most
+     when alerting as steps arrive. See the analyze-traces skill for decision signatures.
 
 3. **Or keep a provisional reduce.** `lm_reduce(..., emit="update")` (or `tp.every(n)`) updates a
    running result as children arrive, and finishes with a full reduce when the group closes. The
