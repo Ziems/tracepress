@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in TracePress doesn't work as documented
+title: "[Bug] "
+labels: bug
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected, and what happened instead. Paste the full error if there is one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest pipeline that shows the bug. Remove API keys and private traces.
+      render: python
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: TracePress version
+      description: "Run `pip show tracepress` or `uv pip show tracepress`."
+      placeholder: "0.2.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: Trace source
+      options:
+        - Harbor
+        - ATIF files
+        - Claude Code sessions
+        - Codex sessions
+        - OpenTelemetry
+        - Other
+        - Doesn't apply
+
+  - type: input
+    id: lm
+    attributes:
+      label: LM
+      placeholder: "openrouter:openai/gpt-6-luna"
