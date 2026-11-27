@@ -55,9 +55,12 @@ def step_rows(trajectory: dict, prefix: Key, carried: dict[str, Any]) -> list[tu
     out = []
     for step in trajectory.get("steps", []):
         key = (*prefix, ("step", step["step_id"]))
+        observed = (step.get("observation") or {}).get("results", [])
+        call_ids = {call.get("tool_call_id") for call in step.get("tool_calls") or []} - {None}
         results = {
-            r.get("source_call_id"): clean_content(r.get("content"))
-            for r in (step.get("observation") or {}).get("results", [])
+            r["source_call_id"]: clean_content(r.get("content"))
+            for r in observed
+            if r.get("source_call_id") in call_ids
         }
         calls = []
         for call in step.get("tool_calls") or []:
@@ -66,10 +69,14 @@ def step_rows(trajectory: dict, prefix: Key, carried: dict[str, Any]) -> list[tu
                     "id": call.get("tool_call_id"),
                     "name": call.get("function_name"),
                     "arguments": call.get("arguments"),
-                    "result": results.pop(call.get("tool_call_id"), None),
+                    "result": results.get(call.get("tool_call_id")),
                 }
             )
-        unmatched = [str(v) for v in results.values() if v is not None]
+        unmatched = [
+            str(v)
+            for r in observed
+            if r.get("source_call_id") not in call_ids and (v := clean_content(r.get("content"))) is not None
+        ]
         values = {
             **carried,
             "source": step.get("source"),
@@ -97,12 +104,12 @@ async def load_json(path: Path) -> dict:
     return await asyncio.to_thread(lambda: json.loads(path.read_text()))
 
 
-async def load_jsonl(path: Path) -> list[dict]:
-    """One trajectory per line, as in exported trajectory bundles."""
+async def load_jsonl(path: Path) -> list[tuple[int, dict]]:
+    """One trajectory per line, as in exported trajectory bundles, with its line number."""
 
-    def read() -> list[dict]:
+    def read() -> list[tuple[int, dict]]:
         with path.open() as f:
-            return [json.loads(line) for line in f if line.strip()]
+            return [(n, json.loads(line)) for n, line in enumerate(f, 1) if line.strip()]
 
     return await asyncio.to_thread(read)
 
@@ -127,20 +134,21 @@ class ATIFAdapter(Adapter):
             "tool_calls": Schema(("trajectory", "step", "call"), dict(TOOL_CALL_COLUMNS)),
         }
 
-    def trajectory_id(self, path: Path, data: dict) -> str:
-        return data.get("session_id") or str(path)
+    def trajectory_id(self, where: str, data: dict) -> str:
+        return data.get("session_id") or where
 
-    async def documents(self) -> AsyncIterator[tuple[Path, dict]]:
+    async def documents(self) -> AsyncIterator[tuple[str, dict]]:
+        """Each trajectory with where it was read: its file, and for a .jsonl file its line."""
         for path in self.paths:
             if path.suffix == ".jsonl":
-                for data in await load_jsonl(path):
-                    yield path, data
+                for line, data in await load_jsonl(path):
+                    yield f"{path}:{line}", data
             else:
-                yield path, await load_json(path)
+                yield str(path), await load_json(path)
 
     async def events(self, table: str) -> AsyncIterator[Event]:
-        async for path, data in self.documents():
-            prefix = (("trajectory", self.trajectory_id(path, data)),)
+        async for where, data in self.documents():
+            prefix = (("trajectory", self.trajectory_id(where, data)),)
             if table == "trajectories":
                 agent = data.get("agent") or {}
                 yield RowAdded(
