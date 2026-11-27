@@ -42,7 +42,11 @@ def test_filters(harbor_dir):
 
 def test_group_by_task(harbor_dir):
     trials = tp.read.harbor(harbor_dir).table("trials")
-    rows = trials.group_by("task").reduce(lambda rs: {"pass_rate": sum(r.reward for r in rs) / len(rs)}).collect()
+    rows = (
+        trials.group_by("task")
+        .reduce(lambda rs: {"pass_rate": sum(r.reward for r in rs) / len(rs)}, columns={"pass_rate": float})
+        .collect()
+    )
     assert [(r.task, r.pass_rate) for r in rows] == [("bench/alpha", 0.5), ("bench/beta", 0.5)]
 
 

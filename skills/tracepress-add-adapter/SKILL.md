@@ -110,13 +110,17 @@ the adapter's choice. Existing adapters to copy from:
      ```python
      src = read_myformat(fixture)
      batch = [
-         (r.key, r.values) for r in src.table("messages").group_by("session").reduce(lambda rs: {"n": len(rs)}).collect()
+         (r.key, r.values)
+         for r in src.table("messages").group_by("session").reduce(lambda rs: {"n": len(rs)}, columns={"n": int}).collect()
      ]
      for seed in range(3):
          live = tp.replay(src, seed=seed, shuffle_within=4, duplicates=0.3)
          assert [
              (r.key, r.values)
-             for r in live.table("messages").group_by("session").reduce(lambda rs: {"n": len(rs)}).collect()
+             for r in live.table("messages")
+             .group_by("session")
+             .reduce(lambda rs: {"n": len(rs)}, columns={"n": int})
+             .collect()
          ] == batch
      ```
    - run `uv run pytest`
