@@ -6,10 +6,12 @@ import pytest
 from fakes import FuncLM
 
 import tracepress as tp
+from tracepress.adapters.base import Adapter
 from tracepress.cli import main
-from tracepress.rows import Closed, Row
+from tracepress.rows import Closed, Row, RowAdded
 from tracepress.schema import Schema
 from tracepress.server.app import serve_in_thread
+from tracepress.server.protocol import decode
 
 STEPS = Schema(("trace", "step"), {"message": str})
 
@@ -298,3 +300,40 @@ def test_waiting_on_a_stream_that_is_still_going_raises_timeout(server):
     streaming = tp.connect(server.address).stream(OneThenQuiet(), every=0.05)
     with pytest.raises(TimeoutError):
         streaming.wait(0.5)
+
+
+class Pausing(Adapter):
+    """Sends one step, then the rest after `pause` seconds."""
+
+    bounded, levels = True, ("trace", "step")
+
+    def __init__(self, pause: float, steps: int = 2):
+        self.pause, self.steps = pause, steps
+
+    def tables(self):
+        return {"steps": STEPS}
+
+    async def events(self, table):
+        for n in range(self.steps):
+            if n:
+                await asyncio.sleep(self.pause)
+            yield RowAdded(step("a", n))
+
+
+def test_a_failed_push_while_streaming_keeps_its_batch_and_fails_the_stream(server):
+    client = tp.connect(server.address)
+    delivered, failures = [], [ConnectionError("blip")]
+
+    def push_once_failing(events):
+        if failures:
+            raise failures.pop()
+        for event in map(decode, events):
+            assert isinstance(event, RowAdded)
+            delivered.append(event.row.step)
+        return len(events)
+
+    client._push_encoded = push_once_failing
+    streaming = client.stream(Pausing(pause=1), batch=1000, every=0.05)
+    with pytest.raises(ConnectionError, match="blip"):
+        streaming.wait(10)
+    assert delivered == [0] and streaming.sent == 1

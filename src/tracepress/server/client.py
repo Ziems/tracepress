@@ -82,7 +82,11 @@ class Streaming:
             nonlocal pending
             if pending:
                 batch, pending = pending, []
-                await loop.run_in_executor(None, self.client._push_encoded, batch)
+                try:
+                    await loop.run_in_executor(None, self.client._push_encoded, batch)
+                except Exception:
+                    pending = batch + pending  # unsent, so the final flush tries it again
+                    raise
                 self.sent += len(batch)
 
         async def read(table: str) -> None:
@@ -98,11 +102,18 @@ class Streaming:
                 await asyncio.sleep(self.every)
                 await flush()
 
+        reading = asyncio.gather(*(read(t) for t in self.tables))
         ticker = asyncio.ensure_future(tick())
         try:
-            await asyncio.gather(*(read(t) for t in self.tables))
+            # The ticker only ends by failing a push, which ends the stream like any other error.
+            await asyncio.wait([reading, ticker], return_when=asyncio.FIRST_COMPLETED)
+            if ticker.done():
+                ticker.result()
+            await reading
         finally:
+            reading.cancel()
             ticker.cancel()
+            await asyncio.gather(reading, ticker, return_exceptions=True)
             await flush()
 
     def wait(self, timeout: float | None = None) -> int:
