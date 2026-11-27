@@ -1,7 +1,9 @@
 import json
+import urllib.request
 
 import dspy
 import pytest
+from dspy.clients import model_metadata
 from fakes import FuncLM
 
 import tracepress as tp
@@ -58,7 +60,7 @@ def test_one_event_per_run_with_counts(sent, harbor_dir):
     assert props["llm_calls_by_op"] == {"lm_map": 12}
     assert props["ops"] == {"join": 1, "filter": 1, "map": 2, "lm_map": 2, "reduce": 1, "explode": 1}
     assert props["sources"] == ["harbor"] and props["pipelines"] == ["harbor.trajectory_taxonomy"]
-    assert props["models"][0]["gateway"] == "custom" and props["primary_model"] == "custom:custom"
+    assert props["models"][0]["gateway"] == "custom" and props["primary_model"] == "custom:other"
     assert props["$process_person_profile"] is False and props["$geoip_disable"] is True
 
 
@@ -69,16 +71,95 @@ def test_nothing_private_is_sent(sent, monkeypatch):
         ).collect()
     secret_table().collect()
     monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
     stats = RunStats()
-    stats.record(lm_config.make_lm(f"portkey:{SECRET}/gpt-5"), "lm_map", 1.0, 10, 5, ok=True, cached=False)
-    stats.record(lm_config.make_lm(f"openai/ft:gpt-4o-mini:{SECRET}::abc"), "lm_map", 1.0, 10, 5, ok=True, cached=False)
+    sent_as = {
+        f"portkey:{SECRET}/gpt-5": ("portkey", "gpt-5"),
+        f"portkey:@{SECRET}/{SECRET}-deployment": ("portkey", "other"),
+        f"openai/ft:gpt-4o-mini:{SECRET}::abc": ("litellm", "openai/ft:gpt-4o-mini"),
+        f"bedrock/arn:aws:bedrock:us-east-1:123456789012:provisioned-model/{SECRET}": ("litellm", "bedrock/other"),
+        f"azure/{SECRET}-prod-eastus": ("litellm", "azure/other"),
+        f"ollama/{SECRET}-finetune": ("litellm", "ollama/other"),
+        f"ollama_chat/{SECRET}-finetune": ("litellm", "ollama_chat/other"),
+        f"hosted_vllm/{SECRET}-ckpt-2026-11": ("litellm", "hosted_vllm/other"),
+        f"acme/{SECRET}": ("litellm", "other"),
+        f"openrouter:@preset/{SECRET}": ("openrouter", "other"),
+        f"openrouter:openai/gpt-4o@preset/{SECRET}": ("openrouter", "openai/gpt-4o"),
+        f"openrouter/@preset/{SECRET}-2": ("litellm", "other"),
+        f"openrouter/qwen/qwen3-coder@preset/{SECRET}": ("litellm", "openrouter/qwen/qwen3-coder"),
+    }
+    for lm in [*map(lm_config.make_lm, sent_as), dspy.LM(f"openai/{SECRET}-model", api_base="http://10.0.0.5:8000/v1")]:
+        stats.record(lm, "lm_map", 1.0, 10, 5, ok=True, cached=False)
     telemetry.report(stats, [])
     _wait()
     assert len(sent) == 3
-    assert SECRET not in json.dumps(sent)
+    assert SECRET not in json.dumps(sent) and "123456789012" not in json.dumps(sent)
     assert sent[0]["properties"]["error_type"] == "RuntimeError"
-    models = {(m["gateway"], m["model"]) for m in sent[2]["properties"]["models"]}
-    assert models == {("portkey", "gpt-5"), ("litellm", "openai/ft:gpt-4o-mini")}
+    models = sorted((m["gateway"], m["model"]) for m in sent[2]["properties"]["models"])
+    assert models == sorted([*sent_as.values(), ("custom", "other")])
+
+
+def test_public_model_names_are_sent(sent, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
+    monkeypatch.setattr(lm_config._config, "prices", {**lm_config._config.prices, f"openai/{SECRET}": (1.0, 1.0)})
+    stats = RunStats()
+    for spec in [
+        "openrouter:anthropic/claude-sonnet-4.5",
+        "openrouter:qwen/qwen3-coder",
+        "openrouter:openai/gpt-6-luna",
+        "openrouter/moonshotai/kimi-k2",
+        "anthropic/claude-sonnet-4-5",
+        "gpt-4o",
+        f"openai/{SECRET}",
+    ]:
+        stats.record(lm_config.make_lm(spec), "lm_map", 1.0, 10, 5, ok=True, cached=False)
+    telemetry.report(stats, [])
+    _wait()
+    (event,) = sent
+    assert SECRET not in json.dumps(sent)
+    models = {(m["gateway"], m["model"]): m["cost_usd"] for m in event["properties"]["models"]}
+    assert set(models) == {
+        ("openrouter", "anthropic/claude-sonnet-4.5"),
+        ("openrouter", "qwen/qwen3-coder"),
+        ("openrouter", "openai/gpt-6-luna"),
+        ("litellm", "openrouter/moonshotai/kimi-k2"),
+        ("litellm", "anthropic/claude-sonnet-4-5"),
+        ("litellm", "gpt-4o"),
+        ("litellm", "openai/other"),
+    }
+    assert models[("litellm", "openai/other")] == pytest.approx(15 / 1e6)  # still priced from the user's table
+
+
+def test_public_check_never_fetches(monkeypatch):
+    def fetch(*args, **kwargs):
+        raise AssertionError("fetched the model list")
+
+    data = model_metadata._data
+    monkeypatch.setattr(model_metadata, "_load", fetch)
+    monkeypatch.setattr(urllib.request, "urlopen", fetch)
+    telemetry._bundled_models.cache_clear()
+    telemetry._known_providers.cache_clear()
+    labels = [
+        ("litellm", "anthropic/claude-sonnet-4-5"),
+        ("litellm", "gpt-4o"),
+        ("custom", "gpt-4o-mini"),
+        ("litellm", "openrouter/openai/gpt-6-luna"),
+        ("litellm", f"azure/{SECRET}"),
+        ("litellm", f"hosted_vllm/{SECRET}"),
+        ("litellm", f"acme/{SECRET}"),
+        ("custom", SECRET),
+    ]
+    assert [telemetry._reported_model(*label) for label in labels] == [
+        "anthropic/claude-sonnet-4-5",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "openrouter/openai/gpt-6-luna",
+        "azure/other",
+        "hosted_vllm/other",
+        "other",
+        "other",
+    ]
+    assert model_metadata._data is data
 
 
 def test_user_exception_types_are_not_named(sent):
