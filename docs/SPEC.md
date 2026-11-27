@@ -330,6 +330,9 @@ Handling:
 - **Trials with no trajectory** (agent crashed) still produce a `trials` row with zero
   steps and the exception recorded.
 - **Rewards** are normalized to float.
+- **Trial keys** are the trial name. Two different trials of a task with one name
+  (`--trial-name`) are keyed by their directory under the path read instead; a trial found
+  twice (same result id, e.g. a hub regrade's `.sources` cache) is read once.
 - **Subagents:** `is_sidechain` is exposed as a column; nesting is untested (none in the sample).
 
 Streaming:
