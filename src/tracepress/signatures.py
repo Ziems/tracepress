@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -18,6 +19,23 @@ def parse(sig: SigLike, instructions: str | None = None) -> type[dspy.Signature]
     parsed = dspy.Signature(sig) if isinstance(sig, str) else sig
     if instructions:
         parsed = parsed.with_instructions(instructions)
+    return parsed
+
+
+def with_column_types(sig: SigLike, parsed: type[dspy.Signature], types: dict[str, Any]) -> type[dspy.Signature]:
+    """Give inputs left untyped in a string signature their column's type.
+
+    `"reward -> note"` on a table where `reward` is a float becomes `reward: float`, so DSPy
+    doesn't warn that a float isn't the str it defaults to. Explicit types are kept.
+    """
+    if not isinstance(sig, str):
+        return parsed
+    lhs = sig.split("->", 1)[0]
+    for name in inputs(parsed):
+        type_ = types.get(name)
+        if type_ in (None, str, Any) or re.search(rf"\b{re.escape(name)}\s*:", lhs):
+            continue
+        parsed = parsed.with_updated_fields(name, type_=type_ | None)
     return parsed
 
 

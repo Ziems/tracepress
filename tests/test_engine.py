@@ -30,13 +30,13 @@ def test_map_filter_select():
 
 
 def test_group_by_level_and_column():
-    by_task_agent = rows_table().group_by("task", "agent").reduce(lambda rs: {"n": len(rs)})
+    by_task_agent = rows_table().group_by("task", "agent").reduce(lambda rs: {"n": len(rs)}, columns={"n": int})
     rows = by_task_agent.collect()
     assert [(r.task, r.agent, r.n) for r in rows] == [("a", "x", 2), ("a", "y", 1), ("b", "x", 2), ("b", "y", 1)]
 
 
 def test_global_group_by_column():
-    rows = rows_table().group_by("agent").reduce(lambda rs: {"n": len(rs)}).collect()
+    rows = rows_table().group_by("agent").reduce(lambda rs: {"n": len(rs)}, columns={"n": int}).collect()
     assert [(r.agent, r.n) for r in rows] == [("x", 4), ("y", 2)]
 
 
@@ -49,14 +49,18 @@ def test_explode():
 def test_shared_upstream_runs_once():
     calls = []
     base = rows_table().map(lambda r: calls.append(r.key) or {})
-    tp.collect(base.filter(lambda r: r.ok), base.group_by("task").reduce(lambda rs: {"n": len(rs)}))
+    tp.collect(base.filter(lambda r: r.ok), base.group_by("task").reduce(lambda rs: {"n": len(rs)}, columns={"n": int}))
     assert len(calls) == 6
 
 
 def test_from_pandas_roundtrip():
     df = rows_table().to_pandas()
     assert list(df.columns[:2]) == ["task", "trial"]
-    again = tp.from_pandas(df, levels=["task", "trial"]).group_by("task").reduce(lambda rs: {"n": len(rs)})
+    again = (
+        tp.from_pandas(df, levels=["task", "trial"])
+        .group_by("task")
+        .reduce(lambda rs: {"n": len(rs)}, columns={"n": int})
+    )
     assert [r.n for r in again.collect()] == [3, 3]
 
 

@@ -215,7 +215,7 @@ class Table:
         on_error: str = "skip",
     ) -> Table:
         """One LM call per row; the signature's outputs become new columns."""
-        parsed, records = self._row_inputs(sigs.parse(sig, instructions))
+        parsed, records = self._row_inputs(sig, sigs.parse(sig, instructions))
         self.schema.require(sigs.inputs(parsed), "lm_map")
         schema = self.schema.with_columns(sigs.outputs(parsed))
         remake = lambda t, ins: t.lm_map(sig, instructions=ins, lm=lm, module=module, on_error=on_error)
@@ -236,7 +236,7 @@ class Table:
         on_error: str = "skip",
     ) -> Table:
         """Keep rows where the signature's single bool output is true."""
-        parsed, records = self._row_inputs(sigs.parse(sig, instructions))
+        parsed, records = self._row_inputs(sig, sigs.parse(sig, instructions))
         sigs.bool_output(parsed)
         self.schema.require(sigs.inputs(parsed), "lm_filter")
         remake = lambda t, ins: t.lm_filter(sig, instructions=ins, lm=lm, module=module, on_error=on_error)
@@ -263,7 +263,7 @@ class Table:
         `"trace -> failures: list[str]"` makes a `failure` level with a `failure` column.
         Elements that are objects become columns. `keep` carries parent columns along.
         """
-        parsed, records = self._row_inputs(sigs.parse(sig, instructions))
+        parsed, records = self._row_inputs(sig, sigs.parse(sig, instructions))
         output = sigs.list_output(parsed)
         self.schema.require([*sigs.inputs(parsed), *keep], "lm_extract")
         level = level or output.rstrip("s")
@@ -286,8 +286,13 @@ class Table:
             ),
         )
 
-    def _row_inputs(self, parsed):
-        """An input named after the row's own level (`step` on a steps table) gets the whole row."""
+    def _row_inputs(self, sig: SigLike, parsed):
+        """Fit a row operator's signature to this table.
+
+        An input named after the row's own level (`step` on a steps table) gets the whole row,
+        and an input left untyped in a string signature (`reward`) takes its column's type.
+        """
+        parsed = sigs.with_column_types(sig, parsed, self.schema.columns or {})
         name = self.schema.row_name
         if name is None or name not in sigs.inputs(parsed):
             return parsed, {}
@@ -424,9 +429,16 @@ class GroupedTable:
         return self._table._then(build, schema, label, spec)
 
     def reduce(
-        self, fn: Callable[[list[Row]], dict[str, Any]], columns: dict[str, Any] | None = None, on_error: str = "raise"
+        self, fn: Callable[[list[Row]], dict[str, Any]], columns: dict[str, Any], on_error: str = "raise"
     ) -> Table:
-        """Plain Python reduce: `fn(rows) -> dict` per group."""
+        """Plain Python reduce: `fn(rows) -> dict` per group.
+
+        `columns` declares what `fn` returns, name -> type. It's required: without it, a later
+        `join` + `lm_reduce` can't tell these columns hold one value per group, and groups the
+        reduce has no row for fail.
+        """
+        if not isinstance(columns, dict):
+            raise TypeError("reduce: `columns` must be a dict of the columns fn returns, e.g. {'n': int}")
         hier, extra = self._hier, self._extra
         return self._then(lambda: ops.PyReduceOp(fn, hier, extra, on_error=on_error), columns, "reduce")
 

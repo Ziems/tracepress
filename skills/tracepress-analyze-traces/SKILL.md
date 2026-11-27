@@ -119,7 +119,8 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    about $0.08 and 1–2 minutes uncached. Tell the user the estimate before running anything large.
 
 3. **Build the pipeline.** Signatures are one-line DSPy strings. Inputs bind to columns by name,
-   and outputs become new columns.
+   and outputs become new columns. An untyped input takes its column's type (`reward` is a float),
+   so annotate only outputs that aren't text (`is_mistake: bool`, `items: list[str]`).
 
    ```python
    import dspy
@@ -174,7 +175,10 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    - `lm_filter(sig)`: keeps rows where the signature's single `bool` output is true
    - `lm_extract("x -> items: list[str]", keep=(...))`: one new row per list element, one level deeper
    - `group_by(*names).lm_reduce(sig)`: one row per group; `group_by()` reduces the whole table
-   - `group_by(*names).reduce(fn)`: Python reduce, `fn(rows) -> dict`
+   - `group_by(*names).reduce(fn, columns={...})`: Python reduce, `fn(rows) -> dict`. `columns`
+     (name -> type of what `fn` returns) is required. It's how a later `join` + `lm_reduce` knows
+     the column holds one value per group. A group `fn` never saw (a trial with no failed tests)
+     gets `None` after a left join
    - `rerun(edit={("trial", "t1"): {"reward": 1.0}})` or `{("trial", "t1"): ("trial", "t2")}`: the
      table as if those rows had been different; only work above the edit makes new LM calls
    - `collect(lineage=True)` then `row.inputs()`: the rows a result was built from, down to steps
@@ -223,6 +227,10 @@ For live or streamed traces, use the `tracepress-stream-traces` skill instead.
    ```
 
    A run with skipped rows is still `completed`, so check `errors` as well as `status`.
+
+   `collect()` returns a `list[Row]`, not a DataFrame: use `tp.rows_to_pandas(rows)` (key levels
+   become columns), or `table.to_pandas()` to run and convert in one go. Read a row's fields as
+   attributes (`row.summary`) or with `row.to_dict()`.
 
    In Jupyter (or any running event loop), use `await tp.acollect(...)` / `await table.acollect()`.
    LM errors are skipped by default and counted in `errors`. Pass `on_error="raise"` to fail fast.

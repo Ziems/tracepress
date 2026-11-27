@@ -197,7 +197,9 @@ def test_downstream_reduce_uses_final_rows(harbor_dir):
     per_trial = (
         steps_of(src).group_by("trial").lm_fold("trail, text -> trail, count: int", emit="update", lm=trail_lm())
     )
-    per_task = per_trial.group_by("task").reduce(lambda rows: {"trails": [r.trail for r in rows]})
+    per_task = per_trial.group_by("task").reduce(
+        lambda rows: {"trails": [r.trail for r in rows]}, columns={"trails": list}
+    )
     assert [r.trails for r in per_task.collect()] == [["|1|2|3", "|1|2|3"], ["|1|2|3"]]
 
 

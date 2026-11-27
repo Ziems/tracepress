@@ -8,6 +8,7 @@ import pytest
 from fakes import FuncLM
 
 import tracepress as tp
+from tracepress import signatures as sigs
 from tracepress.adapters.base import Adapter
 from tracepress.rows import Closed, Row, RowAdded
 from tracepress.schema import Schema
@@ -169,7 +170,11 @@ def test_join_waits_for_late_matches():
         ("t3-2", None),
     ]
     # Each trial's close comes after its joined rows, so reduces downstream see every step.
-    counts = joined.group_by("trial").reduce(lambda rs: {"n": len(rs), "r": rs[0].get("reward", None)}).collect()
+    counts = (
+        joined.group_by("trial")
+        .reduce(lambda rs: {"n": len(rs), "r": rs[0].get("reward", None)}, columns={"n": int, "r": float})
+        .collect()
+    )
     assert [(r.trial, r.n, r.r) for r in counts] == [("t1", 2, 1.0), ("t2", 2, 0.0), ("t3", 2, None)]
 
 
@@ -286,7 +291,7 @@ def test_column_join_waits_for_the_whole_lookup_and_keeps_closes_in_order():
         ("t2", "edit", "Edited a file"),
         ("t2", "other", None),
     ]
-    counts = joined.group_by("trial").reduce(lambda rs: {"n": len(rs)}).collect()
+    counts = joined.group_by("trial").reduce(lambda rs: {"n": len(rs)}, columns={"n": int}).collect()
     assert [r.n for r in counts] == [3, 3]
     inner = src.steps.join(src.kinds, on="kind", how="inner").collect()
     assert [r.kind for r in inner] == ["read", "edit", "read", "edit"]
@@ -302,3 +307,50 @@ def test_join_how_is_checked(harbor_dir):
     src = tp.read.harbor(harbor_dir)
     with pytest.raises(ValueError, match="how='outer'"):
         src.steps.join(src.trials, on="trial", how="outer")
+
+
+def test_python_reduce_requires_columns(harbor_dir):
+    src = tp.read.harbor(harbor_dir)
+    with pytest.raises(TypeError):
+        src.steps.group_by("trial").reduce(lambda rs: {"n": len(rs)})  # ty: ignore[missing-argument]
+    with pytest.raises(TypeError, match="columns"):
+        src.steps.group_by("trial").reduce(lambda rs: {"n": len(rs)}, columns=None)  # ty: ignore[invalid-argument-type]
+
+
+def test_joined_reduce_with_no_row_for_a_group_reaches_lm_reduce(harbor_dir):
+    """A trial with no failed tests gets None, rather than failing and being dropped."""
+    src = tp.read.harbor(harbor_dir)
+    failed = (
+        src.steps.filter(lambda r: r.trial == "alpha__1")
+        .group_by("trial")
+        .reduce(lambda rs: {"failed_tests": "test_a"}, columns={"failed_tests": str})
+    )
+    lm = echo(summary="ok")
+    per_trial = (
+        src.steps.join(src.trials, on="trial")
+        .join(failed, on="trial")
+        .group_by("trial")
+        .lm_reduce("reward, failed_tests, message -> summary", lm=lm)
+    )
+    rows = per_trial.collect()
+    assert tp.last_run().errors == 0
+    assert [(r.trial, r.failed_tests) for r in rows] == [("alpha__1", "test_a"), ("alpha__2", None), ("beta__1", None)]
+
+
+def test_untyped_inputs_take_their_column_type(harbor_dir, caplog):
+    src = tp.read.harbor(harbor_dir)
+    lm = echo(note="ok")
+    trials = src.trials.map(
+        lambda r: {"reward": None if r.trial == "alpha__2" else r.reward}, columns={"reward": float}
+    )
+    with caplog.at_level("WARNING"):
+        rows = trials.lm_map("reward, instruction -> note", lm=lm).collect()
+    assert len(rows) == 4 and tp.last_run().errors == 0
+    assert "Type mismatch" not in caplog.text
+    types = {"reward": float, "instruction": str}
+    sig = sigs.with_column_types("reward, instruction -> note", sigs.parse("reward, instruction -> note"), types)
+    assert sig.input_fields["reward"].annotation == float | None
+    assert sig.input_fields["instruction"].annotation is str
+    # An explicit type is kept.
+    sig = sigs.with_column_types("reward: str -> note", sigs.parse("reward: str -> note"), types)
+    assert sig.input_fields["reward"].annotation is str

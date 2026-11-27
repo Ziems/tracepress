@@ -283,7 +283,9 @@ def test_codex_steps(codex_dir):
 @pytest.mark.parametrize("reader,table", [("claude_code", "steps"), ("codex", "steps"), ("codex", "tool_calls")])
 def test_session_replay_matches_batch(reader, table, claude_dir, codex_dir):
     src = getattr(tp.read, reader)(claude_dir if reader == "claude_code" else codex_dir)
-    count = lambda t: [(r.key, r.values) for r in t.group_by("session").reduce(lambda rs: {"n": len(rs)}).collect()]
+    count = lambda t: [
+        (r.key, r.values) for r in t.group_by("session").reduce(lambda rs: {"n": len(rs)}, columns={"n": int}).collect()
+    ]
     batch = count(src.table(table))
     for seed in range(3):
         live = tp.replay(src, seed=seed, shuffle_within=4, duplicates=0.3)

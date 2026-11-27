@@ -342,7 +342,9 @@ def test_console_exporter_format(tmp_path):
 @pytest.mark.parametrize("table", ["steps", "tool_calls", "spans"])
 def test_otel_replay_matches_batch(otel_file, table):
     src = tp.read.otel(otel_file)
-    count = lambda t: [(r.key, r.values) for r in t.group_by("trace").reduce(lambda rs: {"n": len(rs)}).collect()]
+    count = lambda t: [
+        (r.key, r.values) for r in t.group_by("trace").reduce(lambda rs: {"n": len(rs)}, columns={"n": int}).collect()
+    ]
     batch = count(src.table(table))
     for seed in range(3):
         live = tp.replay(src, seed=seed, shuffle_within=4, duplicates=0.3)

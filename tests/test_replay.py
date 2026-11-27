@@ -94,9 +94,12 @@ def pipeline(src):
     notes = steps.lm_map("text -> note", lm=make_lm())
     per_trial = notes.group_by("trial").lm_reduce("note -> summary", lm=make_lm())
     per_task = per_trial.group_by("task").reduce(
-        lambda rows: {"trials": [r.trial for r in rows], "summaries": [r.summary for r in rows]}
+        lambda rows: {"trials": [r.trial for r in rows], "summaries": [r.summary for r in rows]},
+        columns={"trials": list, "summaries": list},
     )
-    step_counts = steps.group_by("trial").reduce(lambda rows: {"steps": [r.step for r in rows]})
+    step_counts = steps.group_by("trial").reduce(
+        lambda rows: {"steps": [r.step for r in rows]}, columns={"steps": list}
+    )
     return per_trial, per_task, step_counts
 
 
