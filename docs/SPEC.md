@@ -398,7 +398,8 @@ takes protobuf (decoded in-house, no extra dependency) or JSON, gzipped or not.
 How steps are built (`TraceSteps`): an LLM span becomes an agent step (output text,
 reasoning, requested tool calls), after a user step for any new user message in its input
 (system prompts are not steps). A tool span fills in the result of the call that asked for
-it, by call id or else by tool name; a tool span nobody asked for is a step of its own.
+it, by call id, else by tool name and arguments (parallel calls to one tool can end in any
+order), else by tool name alone; a tool span nobody asked for is a step of its own.
 Results that only show up in the next LLM call's input (tool messages) fill calls too.
 Messages are read from `gen_ai.input/output.messages`, OpenInference's
 `llm.input/output_messages.N.*`, OpenLLMetry's `gen_ai.prompt/completion.N.*`, the older
