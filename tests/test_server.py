@@ -6,8 +6,9 @@ import pytest
 from fakes import FuncLM
 
 import tracepress as tp
+from tracepress.adapters.base import Adapter
 from tracepress.cli import main
-from tracepress.rows import Closed, Row
+from tracepress.rows import Closed, Row, RowAdded
 from tracepress.schema import Schema
 from tracepress.server.app import serve_in_thread
 
@@ -298,3 +299,34 @@ def test_waiting_on_a_stream_that_is_still_going_raises_timeout(server):
     streaming = tp.connect(server.address).stream(OneThenQuiet(), every=0.05)
     with pytest.raises(TimeoutError):
         streaming.wait(0.5)
+
+
+class QuietAfterOne(Adapter):
+    """A live source that sends one step, then nothing; it records when it's let go."""
+
+    bounded, levels = False, ("trace", "step")
+
+    def __init__(self):
+        self.released = []
+
+    def tables(self):
+        return {"steps": STEPS}
+
+    async def events(self, table):
+        try:
+            yield RowAdded(step("a", 1))
+            await asyncio.Event().wait()
+        finally:
+            self.released.append(table)
+
+
+def test_stopping_a_stream_ends_it_while_its_source_is_quiet(server):
+    import time
+
+    src = QuietAfterOne()
+    streaming = tp.connect(server.address).stream(src, every=0.05)
+    while streaming.sent < 1:
+        time.sleep(0.01)
+    streaming.stop()
+    assert streaming.wait(5) == 1
+    assert src.released == ["steps"]
