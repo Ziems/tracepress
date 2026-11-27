@@ -513,7 +513,7 @@ class TraceSteps:
         self.steps: list[dict] = []
         self.released = 0
         self.calls: dict[str, dict] = {}
-        self.said: set[str] = set()
+        self.said: Counter[str] = Counter()  # user message text -> user steps with that text
         self.agents: dict[str | None, str | None] = {}  # span id -> agent name, for agent spans seen so far
         self.parents: dict[str | None, str | None] = {}
 
@@ -582,14 +582,17 @@ class TraceSteps:
             if step["_scope"] == span.parent_id:
                 step["_open"] = False  # the agent moved on to its next call
         last_assistant = max((i for i, m in enumerate(inputs) if m["role"] == "assistant"), default=-1)
+        sent = Counter(m["text"] for m in inputs[: last_assistant + 1] if m["role"] == "user")
         for m in inputs[last_assistant + 1 :]:
             if m["role"] == "tool":
                 call = self.calls.get(m["tool_call_id"])
                 if call is not None and not call["_done"]:
                     call["result"], call["_done"] = m["text"], True
-            elif m["role"] == "user" and m["text"] and m["text"] not in self.said:
-                self.said.add(m["text"])
-                self._step("user", span, message=m["text"], agent_name=None)
+            elif m["role"] == "user" and m["text"]:
+                sent[m["text"]] += 1
+                if sent[m["text"]] > self.said[m["text"]]:  # each call resends the conversation so far
+                    self.said[m["text"]] += 1
+                    self._step("user", span, message=m["text"], agent_name=None)
         answer = [m for m in outputs if m["role"] in ("assistant", "model", "")] or outputs
         tokens_in, tokens_out = _tokens(span)
         step = self._step(
