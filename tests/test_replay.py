@@ -5,7 +5,9 @@ import pytest
 from dspy.utils import DummyLM
 
 import tracepress as tp
-from tracepress.rows import Closed, RowAdded, is_prefix
+from tracepress.adapters.base import RowsAdapter
+from tracepress.rows import Closed, Row, RowAdded, is_prefix
+from tracepress.schema import Schema
 
 TRIALS = ("alpha__1", "alpha__2", "beta__1")  # beta__2 crashed: no steps
 
@@ -67,6 +69,43 @@ def test_speed_follows_timestamps(harbor_dir):
     start = time.monotonic()
     tp.replay(tp.read.harbor(harbor_dir), speed=10).table("steps").collect()
     assert time.monotonic() - start >= 0.18
+
+
+def test_tables_of_one_replay_share_its_clock(harbor_dir):
+    """A trial's row (placed when it finished, at 0:01:00) comes after its steps (0:01 to 0:03)."""
+    live = tp.replay(tp.read.harbor(harbor_dir), speed=200)
+    arrived = []
+
+    async def watch(table):
+        async for event in live.events(table):
+            if isinstance(event, RowAdded):
+                arrived.append(table)
+
+    async def run():
+        await asyncio.gather(watch("trials"), watch("steps"))
+
+    asyncio.run(run())
+    assert arrived == ["steps"] * 9 + ["trials"] * 4
+
+
+def test_untimed_rows_before_the_first_timed_one_take_its_time():
+    rows = [Row((("trajectory", "t"), ("step", 1)), {"timestamp": None}),
+            Row((("trajectory", "t"), ("step", 2)), {"timestamp": "2026-01-01T00:00:00Z"})]
+    src = RowsAdapter(rows, Schema(("trajectory", "step"), {"timestamp": str}))
+    times = [t for t, _ in asyncio.run(tp.replay(src).timeline("rows"))]
+    assert times[0] == times[1]
+
+
+def test_a_close_with_no_rows_comes_before_its_parents_close(harbor_dir):
+    """beta__2 crashed with no steps; task beta ran before alpha, so its close must still follow beta__2's."""
+    trials = harbor_dir / "trials"
+    for d in trials.glob("alpha__*/agent/trajectory.json"):
+        d.write_text(d.read_text().replace("2026-01-01T", "2026-01-02T"))
+    events = replay_events(tp.replay(tp.read.harbor(harbor_dir)), "steps")
+    closes = [dict(e.prefix) for e in events if isinstance(e, Closed)]
+    crashed = next(i for i, c in enumerate(closes) if c.get("trial") == "beta__2")
+    task = next(i for i, c in enumerate(closes) if c.get("task") == "bench/beta" and "trial" not in c)
+    assert crashed < task
 
 
 def test_replay_validates_arguments(harbor_dir):
