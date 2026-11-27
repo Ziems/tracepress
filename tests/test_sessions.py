@@ -145,6 +145,22 @@ def test_claude_code_options(claude_dir):
         tp.read.claude_code(claude_dir, project="nope")
 
 
+def test_claude_code_step_with_no_timestamp_keeps_its_place(tmp_path):
+    untimed = _cc("user", 3, {"role": "user", "content": "And the tests."})
+    del untimed["timestamp"]
+    _write(tmp_path / "-w" / "s1.jsonl", [
+        _cc("user", 1, {"role": "user", "content": "Fix the build."}),
+        _assistant(2, "m1", [{"type": "text", "text": "Fixed."}]),
+        untimed,
+        _assistant(4, "m2", [{"type": "text", "text": "Tested."}]),
+    ])
+    src = tp.read.claude_code(tmp_path)
+    steps = src.table("steps").collect()
+    assert [s.message for s in steps] == ["Fix the build.", "Fixed.", "And the tests.", "Tested."]
+    assert steps[2].timestamp is None
+    assert src.table("sessions").collect()[0].prompt == "Fix the build."
+
+
 def _cx(ts, kind, payload):
     return {"timestamp": f"2026-01-01T00:00:{ts:02d}Z", "type": kind, "payload": payload}
 

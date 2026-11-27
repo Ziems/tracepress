@@ -131,7 +131,9 @@ def _thread(lines, agent_id: str | None, calls: dict[str | None, dict]) -> list[
             step = new_step("system" if harness else "user", ts, thread, _uuid=line.get("uuid"))
             step["message"] = text
             steps.append(step)
+    after = ""  # an untimed line sorts with the line before it, not at the start
     for step in steps:
+        after = step["_after"] = step["timestamp"] or after
         if step["source"] == "agent":
             step["message"] = join(step.pop("_text"))
             step["reasoning"] = join(step.pop("_thinking"))
@@ -198,8 +200,9 @@ class ClaudeCodeAdapter(SessionAdapter):
         for path in file.extra:
             agent_id = path.stem.removeprefix("agent-")
             steps += _thread(read_lines(path), agent_id, calls)
-        steps.sort(key=lambda s: s["timestamp"] or "")  # stable, so a turn's own order is kept
+        steps.sort(key=lambda s: s["_after"])  # stable, so a turn's own order is kept
         for step in steps:
+            del step["_after"]
             step["inherited"] = not own(step.pop("_uuid"))
         inherited = [s for s in steps if s["inherited"]]
         if not self.keep_inherited:
