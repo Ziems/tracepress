@@ -204,6 +204,7 @@ def _common() -> dict[str, Any]:
         "$lib": "tracepress",
         "$process_person_profile": False,
         "$geoip_disable": True,
+        "$ip": "127.0.0.1",  # PostHog stores the request's IP unless the event sets its own
     }
 
 

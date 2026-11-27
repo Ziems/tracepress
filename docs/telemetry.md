@@ -37,6 +37,9 @@ one-time notice.
 
 Person profiles and GeoIP lookups are turned off for every event.
 
+PostHog sees your IP address as part of each request. Every event sets `$ip` to `127.0.0.1`,
+so the IP address of the request that uploads an event is not recorded with the event.
+
 ## What is never sent
 
 Your data, prompts, signatures, instructions, column or task names, file paths, hostnames,

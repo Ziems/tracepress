@@ -147,6 +147,27 @@ def test_debug_prints_and_does_not_send(sent, monkeypatch, capsys):
     assert "[tracepress telemetry, not sent]" in printed and '"calls": 3' in printed
 
 
+def _one_of_each_event():
+    telemetry.report(RunStats(), [])
+    telemetry.report_optimize(optimizer="gepa", step_op="lm_map", metric="column", n_labels=1, n_val=1, budget=1,
+                              seconds=0.0)
+    telemetry.report_server_started(local=True, token=False, retain=False, default_lm=False)
+    telemetry.report_pipeline_registered(secret_table()._node, replaced=False)
+    _wait()
+
+
+def test_every_event_overrides_the_client_ip(sent, monkeypatch, capsys):
+    _one_of_each_event()
+    assert {e["event"]: e["properties"]["$ip"] for e in sent} == {
+        "run_completed": "127.0.0.1", "optimize_completed": "127.0.0.1",
+        "server_started": "127.0.0.1", "pipeline_registered": "127.0.0.1"}
+    monkeypatch.setenv("TRACEPRESS_TELEMETRY", "debug")
+    capsys.readouterr()
+    _one_of_each_event()
+    printed = capsys.readouterr().err.splitlines()
+    assert len(printed) == 4 and all('"$ip": "127.0.0.1"' in line for line in printed)
+
+
 def test_install_id_is_created_once_with_a_notice(sent, capsys, tmp_path):
     secret_table().collect()
     secret_table().collect()
