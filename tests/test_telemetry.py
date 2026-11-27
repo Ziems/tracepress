@@ -106,6 +106,29 @@ def test_cache_and_cost_accounting():
     assert stats.unpriced_calls == 1 and stats.cost_usd == pytest.approx(0.85)
 
 
+def test_costs_table_has_a_row_per_model_and_a_total_of_the_known_costs():
+    stats = RunStats()
+    assert stats.costs().model.tolist() == ["total"]
+    priced, unknown = dspy.LM("openrouter/openai/gpt-6-luna"), dspy.LM("openai/acme-unreleased-model")
+    stats.record(priced, "lm_map", 1.0, 1_000_000, 1_000_000, ok=True, cached=False)
+    stats.record(priced, "lm_map", 0.0, 0, 0, ok=True, cached=True)
+    stats.record(unknown, "lm_reduce", 1.0, 100, 10, ok=True, cached=False)
+    costs = stats.costs()
+    assert costs.columns.tolist() == [
+        "model",
+        "calls",
+        "cached_calls",
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd",
+    ]
+    assert costs.model.tolist() == [priced.model, unknown.model, "total (excludes 1 unpriced call)"]
+    assert costs.calls.tolist() == [2, 1, 3] and costs.cached_calls.tolist() == [1, 0, 1]
+    assert costs.prompt_tokens.tolist() == [1_000_000, 100, 1_000_100]
+    assert costs.cost_usd[0] == pytest.approx(0.60) and costs.cost_usd.isna()[1]
+    assert costs.cost_usd[2] == pytest.approx(0.60)
+
+
 @pytest.mark.parametrize("env", [{"TRACEPRESS_TELEMETRY": "0"}, {"TRACEPRESS_TELEMETRY": "off"}, {"DO_NOT_TRACK": "1"}])
 def test_opt_out_env(sent, monkeypatch, env):
     for name, value in env.items():

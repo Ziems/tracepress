@@ -2,7 +2,7 @@
 
 from . import pipelines, read, watch
 from .adapters import Adapter, from_pandas, from_rows, replay
-from .lm import configure
+from .lm import configure, prices
 from .plan import GroupedTable, Table, acollect, collect, every, rows_to_pandas
 from .rows import Closed, Row, RowAdded, RowUpdated
 from .schema import Schema
@@ -37,6 +37,7 @@ __all__ = [
     "from_rows",
     "last_run",
     "pipelines",
+    "prices",
     "read",
     "replay",
     "rows_to_pandas",

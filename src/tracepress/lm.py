@@ -28,7 +28,8 @@ SUGGESTED_LM = "openrouter:openai/gpt-6-luna"
 PORTKEY_BASE_URL = "https://api.portkey.ai/v1"
 
 # USD per million (input, output) tokens, for models DSPy's price table doesn't cover.
-# Extend with `tp.configure(prices={...})`, keyed by the model name (`lm.model`).
+# Keyed by `lm.model`. Extend with `tp.configure(prices={...})`, keyed by the model string you
+# configure (`openrouter:acme/x`) or by `lm.model` (`openrouter/acme/x`).
 PRICES = {
     "openrouter/openai/gpt-6-luna": (0.10, 0.50),
     # typesafe.ai lists $42 per billion input tokens; it lists no output price, so this assumes
@@ -73,7 +74,8 @@ def configure(**kwargs: Any) -> Config:
         if not hasattr(_config, name):
             raise TypeError(f"unknown setting {name!r}")
         if name == "prices":
-            value = {**_config.prices, **value}  # added to the prices so far (built-ins included), not a new table
+            # Added to the prices so far (built-ins included), keyed by `lm.model`.
+            value = {**_config.prices, **{model_name(model): price for model, price in value.items()}}
         setattr(_config, name, value)
     return _config
 
@@ -110,33 +112,31 @@ def _openrouter(model: str, spec: str) -> dspy.LM:
     # For models with no known price (e.g. ones newer than DSPy's price table), ask
     # OpenRouter to report each call's cost. Only for those: the flag changes the request,
     # so adding it to priced models would miss every response already cached for them.
-    priced = call_cost(f"openrouter/{model}", 1, 1)
-    kwargs: dict[str, Any] = {} if priced else {"extra_body": {"usage": {"include": True}}}
-    return _labeled(dspy.LM(f"openrouter/{model}", **kwargs), "openrouter", model)
+    name = model_name(spec)
+    kwargs: dict[str, Any] = {} if call_cost(name, 1, 1) else {"extra_body": {"usage": {"include": True}}}
+    return _labeled(dspy.LM(name, **kwargs), "openrouter", model)
 
 
 def _portkey(model: str, spec: str) -> dspy.LM:
     # Portkey's Model Catalog addresses models as `@<provider slug>/<model>`, sent to its
-    # OpenAI-compatible gateway with the Portkey key. `portkey:openai-prod/gpt-5` and
-    # `portkey:@openai-prod/gpt-5` are the same model.
+    # OpenAI-compatible gateway with the Portkey key.
     if "/" not in model:
         raise ValueError(f"{spec!r}: Portkey models look like 'portkey:<provider slug>/<model>'")
-    slug_model = model if model.startswith("@") else f"@{model}"
     key = _require_env("PORTKEY_API_KEY", spec)
     lm = dspy.LM(
-        f"openai/{slug_model}",
+        model_name(spec),
         api_base=os.environ.get("PORTKEY_BASE_URL", PORTKEY_BASE_URL),
         api_key=key,
         extra_headers={"x-portkey-api-key": key},
     )
-    return _labeled(lm, "portkey", slug_model.split("/", 1)[1])  # the slug can name an org
+    return _labeled(lm, "portkey", model.split("/", 1)[1])  # the slug can name an org
 
 
 def _typesafe(model: str, spec: str) -> dspy.LM:
     # TypeSafe's System One models (Jev) answer decision outputs (Noul, Score, Choice) with
     # probabilities instead of generating text. DSPy routes `typesafe:` models natively.
     _require_env("TYPESAFE_API_KEY", spec)
-    return _labeled(dspy.LM(f"typesafe:{model}"), "typesafe", model)
+    return _labeled(dspy.LM(model_name(spec)), "typesafe", model)
 
 
 PROVIDERS = {"openrouter": _openrouter, "portkey": _portkey, "typesafe": _typesafe}
@@ -161,7 +161,20 @@ def make_lm(spec: str) -> dspy.LM:
         if not model:
             raise ValueError(f"{spec!r} names no model")
         return PROVIDERS[prefix](model, spec)
-    return _labeled(dspy.LM(spec), "litellm", spec)
+    return _labeled(dspy.LM(model_name(spec)), "litellm", spec)
+
+
+def model_name(spec: str) -> str:
+    """The `lm.model` of the LM `make_lm(spec)` builds, without building it or reading API keys.
+
+    A Portkey slug's `@` is optional: `portkey:openai-prod/gpt-5` is `portkey:@openai-prod/gpt-5`.
+    """
+    provider, sep, model = spec.partition(":")
+    if sep and provider == "openrouter":
+        return f"openrouter/{model}"
+    if sep and provider == "portkey":
+        return f"openai/{model if model.startswith('@') else '@' + model}"
+    return spec
 
 
 def _labeled(lm: dspy.LM, gateway: str, model: str) -> dspy.LM:
@@ -213,10 +226,40 @@ def call_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float |
     """USD for one call, from `Config.prices` or DSPy's price table; None if unknown."""
     if not prompt_tokens and not completion_tokens:
         return 0.0
-    price = _config.prices.get(model) or _table_price(model)
-    if price is None:
+    if (found := _price(model)) is None:
         return None
-    return (prompt_tokens * price[0] + completion_tokens * price[1]) / 1e6 or None
+    (input_price, output_price), _ = found
+    return (prompt_tokens * input_price + completion_tokens * output_price) / 1e6 or None
+
+
+def _price(model: str) -> tuple[tuple[float, float], str] | None:
+    """USD per million (input, output) tokens and where it came from; None if unknown. Free counts as unknown."""
+    if (price := _config.prices.get(model)) is not None:
+        source = "built-in" if PRICES.get(model) == price else "configured"
+    elif (price := _table_price(model)) is not None:
+        source = "dspy"
+    else:
+        return None
+    return (price, source) if any(price) else None
+
+
+def prices(*models: str):
+    """The USD per million tokens a run charges each model, and where that price came from, as a DataFrame.
+
+    With no names, the configured prices: the built-ins plus `configure(prices=...)`. Name models, as you
+    configure them (`openrouter:openai/gpt-6-luna`) or as `lm.model` names them, to look them up in DSPy's
+    price table too. Rows show the `lm.model` name, as `costs()` does.
+    A model with no price shows NaN.
+    """
+    import pandas as pd
+
+    rows = []
+    for model in map(model_name, models) if models else _config.prices:
+        (input_price, output_price), source = _price(model) or ((None, None), None)
+        rows.append(
+            {"model": model, "usd_per_1m_input": input_price, "usd_per_1m_output": output_price, "source": source}
+        )
+    return pd.DataFrame(rows, columns=["model", "usd_per_1m_input", "usd_per_1m_output", "source"])
 
 
 def _table_price(model: str) -> tuple[float, float] | None:
@@ -275,6 +318,30 @@ class RunStats:
         self.finished = time.monotonic()
         self.error = error
         self.status = "completed" if error is None else "failed" if isinstance(error, Exception) else "cancelled"
+
+    def costs(self):
+        """Calls, tokens and estimated USD per model as a DataFrame, then a total row.
+
+        A model with an unpriced call has no cost (NaN). The total sums the known costs, and its label
+        counts the unpriced calls it leaves out.
+        """
+        import pandas as pd
+
+        rows: list[dict[str, Any]] = [
+            {
+                "model": name,
+                "calls": m.calls,
+                "cached_calls": m.cached_calls,
+                "prompt_tokens": m.prompt_tokens,
+                "completion_tokens": m.completion_tokens,
+                "cost_usd": m.cost_usd,
+            }
+            for name, m in self.by_model.items()
+        ]
+        total = {k: sum(r[k] for r in rows) for k in ("calls", "cached_calls", "prompt_tokens", "completion_tokens")}
+        n = self.unpriced_calls
+        label = f"total (excludes {n} unpriced call{'s' * (n != 1)})" if n else "total"
+        return pd.DataFrame([*rows, {"model": label, **total, "cost_usd": self.cost_usd}])
 
     def latency(self) -> dict[str, float]:
         """Per-call latency percentiles, in seconds."""
