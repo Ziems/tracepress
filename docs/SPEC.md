@@ -168,7 +168,8 @@ results are combined with the merge signature.
   closes go to listeners as JSON over a websocket (`client.listen(name, from_start=False)`
   yields `ServerEvent(kind, row, prefix)`); `from_start` sends the newest version of each row so
   far first. Unregistering, or the pipeline stopping, ends listeners' streams; a client hanging
-  up ends its own listener at once, even while the pipeline is idle.
+  up ends its own listener at once, even while the pipeline is idle. If the pipeline failed,
+  `listen` raises its error, also for a listener that connects after the failure.
 - LM defaults come from the server (`--lm`, its environment and `.env`). Registering runs
   pickled code, so the server binds to localhost by default and needs `--token` (checked as a
   bearer token) for any other host. Both `tracepress serve` and `tp.connect` fall back to the
