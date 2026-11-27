@@ -1,6 +1,7 @@
-"""A fake LM whose answers are computed from the prompt's input fields."""
+"""Fake LMs: answers computed from the prompt's input fields, or fixed JSON."""
 
 import asyncio
+import json
 import re
 
 import dspy
@@ -80,3 +81,54 @@ class HangingLM(FuncLM):
         if self.attempts <= self.hangs:
             await asyncio.sleep(3600)
         return self._answer(request)
+
+
+class _JSONEngine:
+    """Answers every request with fixed JSON, declaring JSON outputs like OpenAI's engine."""
+
+    supported_params = ("response_format", "temperature", "max_tokens", "n")
+
+    def __init__(self, answer: dict, schemas: bool):
+        self.supports_response_schema = schemas
+        self.answer = json.dumps(answer)
+        self.requests = []
+
+    def complete(self, request):
+        self.requests.append(request)
+        return Response(
+            id=None,
+            model="json",
+            message=Message.assistant([TextPart(self.answer)]),
+            finish_reason="stop",
+            usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
+
+    def close(self):
+        pass
+
+
+class _AsyncJSONEngine:
+    def __init__(self, engine):
+        self.engine = engine
+
+    async def complete(self, request):
+        return self.engine.complete(request)
+
+    async def aclose(self):
+        pass
+
+
+class JSONLM(dspy.LM):
+    engine_requests: list  # what reached its engine
+
+
+def structured_lm(answer: dict, schemas: bool = True) -> JSONLM:
+    """A dspy.LM that answers with `answer` as JSON, taking DSPy's structured-output path
+    (or, with `schemas=False`, its plain JSON mode).
+
+    Its engine's `requests` lists what reached it, so a cache hit shows as no new request.
+    """
+    engine = _JSONEngine(answer, schemas)
+    lm = JSONLM("openai/json", engine=engine, async_engine=_AsyncJSONEngine(engine))
+    lm.engine_requests = engine.requests
+    return lm

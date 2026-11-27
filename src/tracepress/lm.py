@@ -8,10 +8,12 @@ pays for calls whose inputs changed.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 import re
 import time
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -37,6 +39,65 @@ PRICES = {
 }
 
 
+class JSONAdapter(dspy.JSONAdapter):
+    """DSPy's JSONAdapter, choosing each call's response format once instead of every call.
+
+    For models with structured outputs, DSPy builds a new pydantic model and its JSON schema
+    on every call, a large part of what a cached call costs. The choice depends on the LM's
+    capabilities, the output fields and `use_native_function_calling`, so it's made once per
+    LM and fields and reused; an LM's capabilities are taken as fixed after its first call.
+    A call that brings options of its own (tools, or a reasoning effort DSPy adds for a
+    reasoning model) goes through DSPy as before, since those can change the choice.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._forget_formats()
+
+    def _forget_formats(self) -> None:
+        self._formats: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # LM -> fields -> format
+
+    def __getstate__(self) -> dict[str, Any]:
+        return {k: v for k, v in self.__dict__.items() if k != "_formats"}  # weak references don't pickle
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._forget_formats()
+
+    def _prepare_response_format(self, lm: dspy.BaseLM, lm_kwargs: dict[str, Any], signature: Any) -> None:
+        if lm_kwargs:
+            return super()._prepare_response_format(lm, lm_kwargs, signature)
+        # Types compare equal regardless of order (Literal["a", "b"] == Literal["b", "a"]), but
+        # their schemas keep it, so the key holds each type's repr too.
+        fields = (
+            self.use_native_function_calling,
+            *((name, f.annotation, repr(f.annotation), repr(f.default)) for name, f in signature.output_fields.items()),
+        )
+        try:
+            formats = self._formats.setdefault(lm, {})
+            known = fields in formats
+        except TypeError:  # an LM that can't be weakly referenced, or an output type that can't be hashed
+            return super()._prepare_response_format(lm, lm_kwargs, signature)
+        if not known:
+            chosen: dict[str, Any] = {}
+            super()._prepare_response_format(lm, chosen, signature)
+            formats[fields] = _copied_on_read(chosen.get("response_format"))
+        if (format_ := formats[fields]) is not None:
+            lm_kwargs["response_format"] = format_ if isinstance(format_, type) else copy.deepcopy(format_)
+
+
+def _copied_on_read(format_: Any) -> Any:
+    """A response format calls can share: each read of its schema returns a fresh copy.
+
+    LiteLLM has edited a request's schema in place (dspy#10375); with one shared schema, that
+    edit would reach every later call and change its cache key.
+    """
+    if isinstance(format_, type) and hasattr(format_, "model_json_schema"):
+        schema = copy.deepcopy(format_.model_json_schema())
+        format_.model_json_schema = lambda *args, **kwargs: copy.deepcopy(schema)
+    return format_
+
+
 @dataclass
 class Config:
     # A `provider:model` string (see `resolve_lm`), a plain DSPy model string, or a
@@ -44,7 +105,7 @@ class Config:
     lm: str | dspy.LM | None = None
     # How prompts and structured outputs are formatted. JSON parses more reliably than
     # DSPy's default text markers with the models we use.
-    adapter: dspy.Adapter = field(default_factory=dspy.JSONAdapter)
+    adapter: dspy.Adapter = field(default_factory=JSONAdapter)
     # Tried in order when a response can't be parsed. A different format is also a
     # different cache entry, so a cached bad response can't fail the same call forever.
     fallback_adapters: list[dspy.Adapter] = field(default_factory=lambda: [dspy.XMLAdapter()])
