@@ -198,6 +198,78 @@ def test_join_onto_a_provisional_row_waits_for_its_final_version():
     assert [(r.msg, r.summary) for r in joined.collect()] == [("t1-1", "full"), ("t1-2", "full"), ("t1-3", "full")]
 
 
+def _join_calls(scenario: str, trials: int) -> int:
+    """Run one JoinOp scenario and count its function calls: a timing-free measure of work."""
+    import sys
+
+    import tracepress.operators as ops
+
+    keys = [(("trial", f"t{i}"),) for i in range(trials)]
+
+    async def late_match(on):  # every step and close of the left side comes before its match
+        op = ops.JoinOp(depth=1, on=on)
+        out: asyncio.Queue = asyncio.Queue()
+        op.outputs.append(out)
+        for key in keys:
+            for s in range(5):
+                await op.on_row(Row((*key, ("step", s)), {"msg": s}), False)
+            await op.on_close(key)
+        right: asyncio.Queue = asyncio.Queue()
+        for i, key in enumerate(keys):
+            right.put_nowait(RowAdded(Row(key, {"reward": float(i)})))
+            right.put_nowait(Closed(key))
+        right.put_nowait(ops.END)
+        await op.consume_right(right)
+        await op.on_end()
+        events = [out.get_nowait() for _ in range(out.qsize())]
+        rows = [e.row for e in events if isinstance(e, RowAdded)]
+        assert [(r.key[0][1], r.reward) for r in rows] == [
+            (k[0][1], float(i)) for i, k in enumerate(keys) for _ in range(5)
+        ]
+        assert [e.prefix for e in events if isinstance(e, Closed)] == keys  # each after its rows, in order
+
+    async def late_final():  # rows join provisional matches; one close over them all waits for each to settle
+        op = ops.JoinOp(depth=1)
+        out: asyncio.Queue = asyncio.Queue()
+        op.outputs.append(out)
+        right: asyncio.Queue = asyncio.Queue()
+        for key in keys:
+            right.put_nowait(RowAdded(Row(key, {"reward": 0.0}, final=False)))
+        consuming = asyncio.ensure_future(op.consume_right(right))
+        await asyncio.sleep(0)  # the join takes every provisional row, then waits for more
+        for key in keys:
+            for s in range(5):
+                await op.on_row(Row((*key, ("step", s)), {"msg": s}), False)
+        await op.on_close(())
+        for i, key in enumerate(keys):
+            right.put_nowait(RowAdded(Row(key, {"reward": float(i)}, version=1)))
+        right.put_nowait(ops.END)
+        await consuming
+        await op.on_end()
+        events = [out.get_nowait() for _ in range(out.qsize())]
+        assert [e.prefix for e in events if isinstance(e, Closed)] == [()]
+        assert isinstance(events[-1], Closed)  # after every row's final version
+
+    calls = []
+    sys.setprofile(lambda frame, event, arg: calls.append(1) if event in ("call", "c_call") else None)
+    try:
+        asyncio.run(
+            {"level": lambda: late_match(None), "column": lambda: late_match(("trial",)), "late final": late_final}[
+                scenario
+            ]()
+        )
+    finally:
+        sys.setprofile(None)
+    return len(calls)
+
+
+@pytest.mark.parametrize("scenario", ["level", "column", "late final"])
+def test_join_work_grows_linearly_with_its_rows(scenario):
+    """Rows waiting for a match, or joined to one that can still change, cost the same each."""
+    small, large = _join_calls(scenario, 100), _join_calls(scenario, 400)
+    assert large <= 4.5 * small  # 4x the trials: 4x the calls, where rescanning made about 60x
+
+
 def test_join_stops_cleanly_when_a_run_fails():
     """A billing error downstream of a join (still waiting on its right side) ends the run."""
     import dspy
