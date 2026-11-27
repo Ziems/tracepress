@@ -256,3 +256,26 @@ def test_finished_sends_are_forgotten(sent):
         _wait()
     assert len(sent) == 5
     assert len(telemetry._pending) == 1  # only the latest; the rest finished before it started
+
+
+def test_a_quiet_optimize_in_one_thread_leaves_other_threads_runs_reported(sent, harbor_dir):
+    import threading
+
+    inside, release = threading.Event(), threading.Event()
+
+    def optimizing():
+        with telemetry.quiet():
+            inside.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=optimizing)
+    thread.start()
+    try:
+        assert inside.wait(10)
+        # a map, not a bare read: a run that only reads a source sends nothing anyway
+        tp.read.harbor(harbor_dir).trials.map(lambda r: {"n": 1}, columns={"n": int}).collect()
+    finally:
+        release.set()
+        thread.join()
+    _wait()
+    assert len(_events(sent, "run_completed")) == 1

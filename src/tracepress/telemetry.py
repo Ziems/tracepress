@@ -22,6 +22,7 @@ instead of sending it.
 from __future__ import annotations
 
 import atexit
+import contextvars
 import json
 import os
 import platform
@@ -82,22 +83,19 @@ PUBLIC_ERROR_MODULES = ("builtins", "asyncio", "concurrent", "tracepress", "dspy
 
 _pending: list[threading.Thread] = []  # sends still in flight, for _flush to wait on at exit
 _pending_lock = threading.Lock()
-_quiet = 0
-_quiet_lock = threading.Lock()
+# Per context, not per process: an optimize() in one thread mustn't silence other threads' runs.
+_quiet: contextvars.ContextVar[bool] = contextvars.ContextVar("tracepress_telemetry_quiet", default=False)
 
 
 @contextmanager
 def quiet():
     """Runs inside don't send their own `run_completed`: `optimize()` sends one event for the
     whole search instead of one per candidate prompt."""
-    global _quiet
-    with _quiet_lock:
-        _quiet += 1
+    token = _quiet.set(True)
     try:
         yield
     finally:
-        with _quiet_lock:
-            _quiet -= 1
+        _quiet.reset(token)
 
 
 def _truthy(value: str | None) -> bool:
@@ -273,7 +271,7 @@ def report(
     lineage: bool = False,
 ) -> None:
     """Send (or, in debug mode, print) the run's event. Never raises."""
-    if _quiet or _only_read(stats, nodes, error):
+    if _quiet.get() or _only_read(stats, nodes, error):
         return
     _emit(EVENT, lambda: payload(stats, nodes, operators, error, lineage))
 
