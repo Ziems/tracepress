@@ -322,7 +322,7 @@ not levels, so `group_by("task")` can compare approaches across jobs.
 | `trials` | trial | task, dataset, job_id, agent, model, agent_kwargs, reward, exception_type, cost_usd, tokens, started/finished/duration, n_steps |
 | `steps` | step | step_id, source, message, tool_calls, observations (paired with their calls), metrics, timestamp, is_sidechain |
 | `tool_calls` | step > call | function_name, arguments, result |
-| `tests` | trial > test | per-test pass/fail from `ctrf.json` |
+| `tests` | trial > test | name, status, duration_ms, message, trace from `ctrf.json`; the `test` key is the name, prefixed with `filePath::` (or the suite) when two tests in a trial share it |
 
 Handling:
 
